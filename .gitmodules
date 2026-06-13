@@ -10,3 +10,6 @@
 [submodule "submodules/zed"]
 	path = submodules/zed
 	url = https://github.com/zed-industries/zed.git
+[submodule "submodules/gpui-flow"]
+	path = submodules/gpui-flow
+	url = https://github.com/pacifio/gpui-flow.git

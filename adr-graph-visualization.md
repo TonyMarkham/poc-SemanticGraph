@@ -22,6 +22,12 @@ Official GPUI references:
 - https://www.gpui.rs/
 - https://github.com/zed-industries/zed/tree/main/crates/gpui
 
+This repository also includes `gpui-flow` as a submodule at
+`submodules/gpui-flow` (`cfa578758ee251657f15f281d893a08b85aedbff` at the time
+of audit). It is a GPUI-native node graph editor inspired by React Flow /
+xyflow, and is useful as a concrete reference for the first graph visualization
+vertical slices.
+
 The GPUI README describes it as a hybrid immediate/retained-mode,
 GPU-accelerated UI framework for Rust. It also states that GPUI is still
 pre-1.0 and may have breaking changes. The same README describes low-level
@@ -37,11 +43,148 @@ rather than trying to draw the entire database at once. Start with CPU layout
 and GPU-accelerated rendering through GPUI. Do not attempt GPU-accelerated graph
 layout in the first slices.
 
+Use `gpui-flow` as an implementation reference, and potentially as a forked or
+adapted base for the first UI slices. Do not use its in-memory `FlowState` as
+the durable graph model. SQLite remains the source of truth; any `FlowNode` /
+`FlowEdge` state should be a view projection.
+
 The graph visualizer should be developed in vertical slices:
 
 1. Simple graph visualizer.
 2. Node selection with an inspector pane.
 3. Edge selection with an inspector pane.
+
+## gpui-flow Findings
+
+`gpui-flow` is already close to the shape needed for the initial UI. Its README
+lists custom node renderers, Bezier/straight/smooth-step edges, edge labels,
+pan and zoom, node dragging, selection, connection handles, delete, undo/redo,
+minimap, controls, viewport culling, theming, and graph utilities. See:
+
+- `submodules/gpui-flow/README.md:12-32`
+
+The public API exports `FlowGraph`, `FlowState`, `Minimap`, `Controls`, and all
+core types from a small surface area. See:
+
+- `submodules/gpui-flow/src/lib.rs:1-12`
+
+The core graph types are simple and usable for a view projection:
+
+- `NodeId` and `EdgeId` are `SharedString`.
+- `FlowNode` stores ID, position, type, label, handles, selection flags,
+  draggability, deletability, visibility, z-index, and measured size.
+- `FlowEdge` stores ID, source, target, optional handles, edge type, selection
+  flags, visibility, label, color, and stroke width.
+- `Viewport` provides `flow_to_screen` and `screen_to_flow`.
+
+See:
+
+- `submodules/gpui-flow/src/types.rs:3-8`
+- `submodules/gpui-flow/src/types.rs:92-251`
+- `submodules/gpui-flow/src/types.rs:253-287`
+
+`FlowState` is an in-memory editor store. It owns `Vec<FlowNode>` and
+`Vec<FlowEdge>`, keeps a node lookup index, tracks viewport and interaction
+state, and keeps undo/redo stacks by cloning whole node and edge vectors. This
+is appropriate for a flow editor, but not as the canonical semantic graph
+model. See:
+
+- `submodules/gpui-flow/src/store.rs:27-75`
+- `submodules/gpui-flow/src/store.rs:85-129`
+
+The viewport and traversal helpers are directly useful. `fit_view`, `zoom_in`,
+`zoom_out`, `set_center`, `get_incomers`, `get_outgoers`, and
+`get_connected_edges` provide a good starting point for view behavior and
+inspector queries. See:
+
+- `submodules/gpui-flow/src/store.rs:254-361`
+
+`FlowGraph` supports custom renderers per node type. This maps well to semantic
+node kinds such as crate, module, type, trait, impl, method, function, field,
+namespace, class, interface, and reference. See:
+
+- `submodules/gpui-flow/src/graph.rs:15-38`
+- `submodules/gpui-flow/src/graph.rs:59-77`
+
+The renderer already uses an edge canvas layer, a node layer, and an edge-label
+layer. It culls nodes outside the viewport before rendering them, then paints
+edges on a canvas. See:
+
+- `submodules/gpui-flow/src/graph.rs:606-744`
+
+Edge rendering is a useful reusable piece. It supports Bezier, straight, and
+smooth-step edges, per-edge color and stroke width, selected-edge styling,
+arrowheads, and endpoint-based edge culling. See:
+
+- `submodules/gpui-flow/src/edges/mod.rs:17-153`
+
+Node selection and edge selection already exist. Node clicks update selected
+state and support multi-select. Edge selection is implemented by hit-testing
+edges from background mouse-down events. See:
+
+- `submodules/gpui-flow/src/graph.rs:224-278`
+- `submodules/gpui-flow/src/graph.rs:745-772`
+
+Edge hit testing is good enough for a first slice but not a large-graph
+solution. It scans every edge and approximates Bezier distance by sampling. See:
+
+- `submodules/gpui-flow/src/edges/mod.rs:222-310`
+
+`Minimap` and `Controls` are already separate GPUI components sharing the same
+`Entity<FlowState>`. This composition maps well to a main graph viewport plus
+right-side inspector pane. See:
+
+- `submodules/gpui-flow/src/minimap.rs:9-83`
+- `submodules/gpui-flow/src/controls.rs:5-77`
+
+The stress example demonstrates 1000 nodes, viewport culling, incremental edge
+addition, a minimap, controls, and a simple status overlay. It is useful as the
+initial performance and composition reference, but it only caps random added
+edges at 200 and does not prove large semantic-graph scale. See:
+
+- `submodules/gpui-flow/examples/stress.rs:1-12`
+- `submodules/gpui-flow/examples/stress.rs:92-190`
+- `submodules/gpui-flow/examples/stress.rs:221-297`
+
+`gpui-flow` depends on GPUI directly from the Zed git repository. Since this
+repo also tracks Zed as a submodule, the graph viewer should pin or patch GPUI
+to the local Zed submodule to avoid version drift. See:
+
+- `submodules/gpui-flow/Cargo.toml:13-17`
+
+## gpui-flow Reuse Strategy
+
+Use these pieces directly or by adaptation:
+
+- Viewport coordinate transforms.
+- GPUI component split: graph viewport, minimap, and controls.
+- Custom node renderers by semantic node kind.
+- Canvas-based edge rendering.
+- Bezier/straight/smooth-step edge path generation.
+- Basic pan, zoom, node selection, and edge selection interactions.
+- Viewport culling patterns.
+
+Avoid carrying these editor assumptions into the semantic graph model:
+
+- Connection handles and drag-to-connect behavior in the initial viewer.
+- Delete and undo/redo behavior in the initial viewer.
+- Selection flags as durable node or edge facts.
+- `FlowState` as the canonical store.
+- Full-vector undo snapshots for large graphs.
+- Rendering all labels at all zoom levels.
+- O(E) edge hit testing as the final dense-graph strategy.
+
+Recommended adapter shape:
+
+```text
+SQLite durable graph
+  -> graph query / projection layer
+  -> layout table / layout engine
+  -> semantic view model
+  -> gpui-flow-compatible FlowNode / FlowEdge projection
+  -> GPUI graph viewport
+  -> inspector pane queries SQLite by selected node_id or edge_id
+```
 
 ## Base Reasoning
 
@@ -292,4 +435,3 @@ Costs:
 - Implementing graph editing in the initial slices.
 - Implementing GPU-accelerated graph layout in the initial slices.
 - Rendering the entire database at once regardless of size.
-
