@@ -141,13 +141,6 @@ Rust workspace:
 - `Cargo.toml`: workspace manifest.
 - `crates/wip`: current placeholder Rust crate.
 
-Known caveat:
-
-- The workspace manifest currently lists a workspace dependency at
-  `submodules/scip/bindings/rust`, but no `submodules/scip` checkout is present
-  in the current submodule set. Verify or fix this before assuming workspace
-  `cargo` commands will succeed.
-
 ## Working Rules for Agents
 
 Evidence:
@@ -180,7 +173,7 @@ Validation:
 
 - For documentation-only changes, reread the changed file and inspect the diff.
 - For Rust changes, run the most specific practical `cargo check` or
-  `cargo test` command if the workspace dependency caveat is resolved.
+  `cargo test` command for the changed crate or workspace area.
 - For C# changes, run the most specific practical `dotnet build` or test.
 - If validation is skipped or blocked, state exactly why.
 
@@ -194,4 +187,3 @@ rg -n "FlowGraph|FlowState|hit_test_edges|viewport|culling" submodules/gpui-flow
 rg -n "BlazorDiagram|NodeModel|BaseLinkModel|SelectionChanged|Virtualization" submodules/Blazor.Diagrams
 rg -n "command|invoke|ipc|webview|sql" submodules/tauri
 ```
-
