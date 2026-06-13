@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/semantic-graph-extract",
     "crates/semantic-graph-store",
     "crates/wip",
 ]
@@ -13,6 +14,8 @@ edition = "2024"
 clap                  = { version = "4.6.1", features = ["derive"] }
 error-location        = { version = "0.1.0" }
 hex                   = { version = "0.4.3" }
+# Keep this pinned to the version used by the submodules/rust-analyzer/crates/rust-analyzer/Cargo.toml.
+lsp-types             = { version = "=0.95.0", features = ["proposed"] }
 prost                 = { version = "0.14.4" }
 prost-build           = { version = "0.14.4" }
 serde                 = { version = "1.0.228", features = ["derive"] }

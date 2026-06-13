@@ -1,6 +1,7 @@
 set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
 
 package := "semantic-graph-store"
+extract_package := "semantic-graph-extract"
 local_dir := ".local"
 demo_db := ".local/semantic-graph-store-demo.db"
 sqlx_db := ".local/sqlx-prepare.db"
@@ -57,4 +58,18 @@ confidence:
     SQLX_OFFLINE=true cargo check -p {{package}}
     SQLX_OFFLINE=true cargo clippy -p {{package}} --all-targets -- -D warnings
     SQLX_OFFLINE=true cargo test -p {{package}}
+    SQLX_OFFLINE=true cargo check -p {{extract_package}}
+    SQLX_OFFLINE=true cargo clippy -p {{extract_package}} --all-targets -- -D warnings
+    SQLX_OFFLINE=true cargo test -p {{extract_package}}
     just --justfile {{justfile()}} db-smoke
+
+# Exercise rust-analyzer document-symbol extraction against crates/wip.
+rust-extract-smoke:
+    mkdir -p {{local_dir}}
+    rm -f .local/rust-extract-wip.db
+    cargo run -p {{extract_package}} -- rust-document-symbols \
+      --db .local/rust-extract-wip.db \
+      --workspace-root . \
+      --package-path crates/wip \
+      --file crates/wip/src/lib.rs
+    cargo run -p {{package}} -- stats --db .local/rust-extract-wip.db

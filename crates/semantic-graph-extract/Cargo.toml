@@ -1,0 +1,21 @@
+[package]
+name = "semantic-graph-extract"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+clap                 = { workspace = true }
+hex                  = { workspace = true }
+lsp-types            = { workspace = true }
+semantic-graph-store = { path = "../semantic-graph-store" }
+serde                = { workspace = true }
+serde_json           = { workspace = true }
+sha2                 = { workspace = true }
+thiserror            = { workspace = true }
+tokio                = { workspace = true, features = ["io-util", "process", "time"] }
+
+[dev-dependencies]
+sqlx = { workspace = true }
+
+[lints]
+workspace = true
