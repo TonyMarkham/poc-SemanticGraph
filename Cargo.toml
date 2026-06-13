@@ -1,6 +1,7 @@
 [workspace]
 members = [
-    "crates/semantic-graph-store"
+    "crates/semantic-graph-store",
+    "crates/wip",
 ]
 resolver = "3"
 
