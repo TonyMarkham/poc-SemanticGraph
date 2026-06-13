@@ -13,3 +13,6 @@
 [submodule "submodules/gpui-flow"]
 	path = submodules/gpui-flow
 	url = https://github.com/pacifio/gpui-flow.git
+[submodule "submodules/Blazor.Diagrams"]
+	path = submodules/Blazor.Diagrams
+	url = https://github.com/Blazor-Diagrams/Blazor.Diagrams.git
