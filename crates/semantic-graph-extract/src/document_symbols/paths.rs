@@ -3,7 +3,7 @@ use std::path::{Component, Path, PathBuf};
 use sha2::{Digest, Sha256};
 
 use crate::error::{ExtractError, Result};
-use crate::model::DocumentSymbolRequest;
+use crate::model::{DocumentSymbolBatchRequest, DocumentSymbolRequest};
 
 pub fn validate_document_symbol_request(
     request: DocumentSymbolRequest,
@@ -12,18 +12,36 @@ pub fn validate_document_symbol_request(
     let package_path = canonicalize_path(&request.package_path, "canonicalize package path")?;
     let file_path = canonicalize_path(&request.file_path, "canonicalize source file")?;
 
-    if !file_path.starts_with(&workspace_root) {
-        return Err(ExtractError::InvalidPath {
-            path: file_path,
-            workspace_root,
-            message: "source file is outside the workspace root".to_string(),
-        });
-    }
+    validate_package_path(&workspace_root, &package_path)?;
+    validate_source_path(&workspace_root, &package_path, &file_path)?;
 
     Ok(DocumentSymbolRequest {
         workspace_root,
         package_path,
         file_path,
+    })
+}
+
+pub fn validate_document_symbol_batch_request(
+    request: DocumentSymbolBatchRequest,
+) -> Result<DocumentSymbolBatchRequest> {
+    let workspace_root = canonicalize_path(&request.workspace_root, "canonicalize workspace root")?;
+    let package_path = canonicalize_path(&request.package_path, "canonicalize package path")?;
+    validate_package_path(&workspace_root, &package_path)?;
+
+    let mut file_paths = Vec::with_capacity(request.file_paths.len());
+    for file_path in request.file_paths {
+        let file_path = canonicalize_path(&file_path, "canonicalize source file")?;
+        validate_source_path(&workspace_root, &package_path, &file_path)?;
+        file_paths.push(file_path);
+    }
+    file_paths.sort();
+    file_paths.dedup();
+
+    Ok(DocumentSymbolBatchRequest {
+        workspace_root,
+        package_path,
+        file_paths,
     })
 }
 
@@ -83,6 +101,42 @@ pub fn percent_encode_component(value: &str) -> String {
 fn canonicalize_path(path: &Path, context: &str) -> Result<PathBuf> {
     path.canonicalize()
         .map_err(|source| ExtractError::io(context, Some(path.to_path_buf()), source))
+}
+
+fn validate_package_path(workspace_root: &Path, package_path: &Path) -> Result<()> {
+    if !package_path.starts_with(workspace_root) {
+        return Err(ExtractError::InvalidPath {
+            path: package_path.to_path_buf(),
+            workspace_root: workspace_root.to_path_buf(),
+            message: "package path is outside the workspace root".to_string(),
+        });
+    }
+
+    Ok(())
+}
+
+fn validate_source_path(
+    workspace_root: &Path,
+    package_path: &Path,
+    file_path: &Path,
+) -> Result<()> {
+    if !file_path.starts_with(workspace_root) {
+        return Err(ExtractError::InvalidPath {
+            path: file_path.to_path_buf(),
+            workspace_root: workspace_root.to_path_buf(),
+            message: "source file is outside the workspace root".to_string(),
+        });
+    }
+
+    if !file_path.starts_with(package_path) {
+        return Err(ExtractError::InvalidPath {
+            path: file_path.to_path_buf(),
+            workspace_root: workspace_root.to_path_buf(),
+            message: "source file is outside the package path".to_string(),
+        });
+    }
+
+    Ok(())
 }
 
 fn path_with_forward_slashes(

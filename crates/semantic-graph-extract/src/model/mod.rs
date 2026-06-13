@@ -1,3 +1,5 @@
+mod document_symbol_batch_extraction;
+mod document_symbol_batch_request;
 mod document_symbol_extraction;
 mod document_symbol_request;
 mod extracted_relation;
@@ -6,6 +8,8 @@ mod graph_language;
 mod provider_id;
 mod source_file;
 
+pub use document_symbol_batch_extraction::DocumentSymbolBatchExtraction;
+pub use document_symbol_batch_request::DocumentSymbolBatchRequest;
 pub use document_symbol_extraction::DocumentSymbolExtraction;
 pub use document_symbol_request::DocumentSymbolRequest;
 pub use extracted_relation::ExtractedRelation;

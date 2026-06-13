@@ -73,3 +73,22 @@ rust-extract-smoke:
       --package-path crates/wip \
       --file crates/wip/src/lib.rs
     cargo run -p {{package}} -- stats --db .local/rust-extract-wip.db
+
+# Exercise crate-scoped rust-analyzer document-symbol extraction against crates/wip.
+rust-crate-extract-smoke:
+    mkdir -p {{local_dir}}
+    rm -f .local/rust-crate-extract-wip.db
+    cargo run -p {{extract_package}} -- rust-crate-document-symbols \
+      --db .local/rust-crate-extract-wip.db \
+      --workspace-root . \
+      --package-path crates/wip
+    cargo run -p {{package}} -- stats --db .local/rust-crate-extract-wip.db
+
+# Exercise workspace-scoped rust-analyzer document-symbol extraction.
+rust-workspace-extract-smoke:
+    mkdir -p {{local_dir}}
+    rm -f .local/rust-workspace-extract.db
+    cargo run -p {{extract_package}} -- rust-workspace-document-symbols \
+      --db .local/rust-workspace-extract.db \
+      --workspace-root .
+    cargo run -p {{package}} -- stats --db .local/rust-workspace-extract.db

@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 
 use crate::document_symbols::paths::basename_from_relative_path;
 use crate::error::{ExtractError, Result};
-use crate::model::DocumentSymbolExtraction;
+use crate::model::{DocumentSymbolBatchExtraction, DocumentSymbolExtraction};
 use crate::persist::PersistenceSummary;
 
 pub struct ExtractionPersister;
@@ -51,6 +51,84 @@ impl ExtractionPersister {
                 Err(error)
             }
         }
+    }
+
+    pub async fn persist_document_symbol_batch(
+        &self,
+        store: &GraphStore,
+        workspace_root_uri: &str,
+        extraction: &DocumentSymbolBatchExtraction,
+    ) -> Result<PersistenceSummary> {
+        let first_extraction = extraction.extractions.first().ok_or_else(|| {
+            ExtractError::response_shape(
+                extraction.provider.as_str(),
+                "textDocument/documentSymbol",
+                "document symbol batch contained no files",
+            )
+        })?;
+        let workspace_id = store
+            .create_workspace(
+                workspace_root_uri,
+                first_extraction.source_file.language.workspace_kind(),
+            )
+            .await?;
+        let run_id = store
+            .start_run(
+                workspace_id,
+                extraction.provider.as_str(),
+                extraction.provider_version.as_deref(),
+                None,
+            )
+            .await?;
+
+        let result = self
+            .persist_batch_after_run_started(store, workspace_id, run_id, extraction)
+            .await;
+
+        match result {
+            Ok(summary) => {
+                store.finish_run(run_id, "complete").await?;
+                Ok(summary)
+            }
+            Err(error) => {
+                let finish_result = store.finish_run(run_id, "failed").await;
+                if let Err(finish_error) = finish_result {
+                    return Err(ExtractError::Storage(finish_error));
+                }
+                Err(error)
+            }
+        }
+    }
+
+    async fn persist_batch_after_run_started(
+        &self,
+        store: &GraphStore,
+        workspace_id: i64,
+        run_id: i64,
+        extraction: &DocumentSymbolBatchExtraction,
+    ) -> Result<PersistenceSummary> {
+        let mut summary = PersistenceSummary {
+            workspace_id,
+            run_id,
+            files: 0,
+            nodes: 0,
+            edges: 0,
+            occurrences: 0,
+            evidence: 0,
+        };
+
+        for file_extraction in &extraction.extractions {
+            let file_summary = self
+                .persist_after_run_started(store, workspace_id, run_id, file_extraction)
+                .await?;
+            summary.files += file_summary.files;
+            summary.nodes += file_summary.nodes;
+            summary.edges += file_summary.edges;
+            summary.occurrences += file_summary.occurrences;
+            summary.evidence += file_summary.evidence;
+        }
+
+        Ok(summary)
     }
 
     async fn persist_after_run_started(

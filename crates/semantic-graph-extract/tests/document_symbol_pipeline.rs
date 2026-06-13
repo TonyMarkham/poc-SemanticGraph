@@ -1,13 +1,18 @@
 use std::env;
 use std::error::Error;
+use std::fs;
 use std::io;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use lsp_types::DocumentSymbolResponse;
-use semantic_graph_extract::document_symbols::paths::file_uri;
+use semantic_graph_extract::document_symbols::paths::{
+    file_uri, validate_document_symbol_batch_request,
+};
 use semantic_graph_extract::error::ExtractError;
-use semantic_graph_extract::model::DocumentSymbolRequest;
+use semantic_graph_extract::model::{
+    DocumentSymbolBatchExtraction, DocumentSymbolBatchRequest, DocumentSymbolRequest, ProviderId,
+};
 use semantic_graph_extract::persist::ExtractionPersister;
 use semantic_graph_extract::providers::rust_analyzer::RustDocumentSymbolMapper;
 use semantic_graph_store::{GraphStore, GraphStoreStats};
@@ -15,12 +20,16 @@ use serde_json::json;
 use sqlx::SqlitePool;
 
 fn request() -> std::result::Result<DocumentSymbolRequest, Box<dyn Error>> {
+    request_for("crates/wip/src/lib.rs")
+}
+
+fn request_for(relative_path: &str) -> std::result::Result<DocumentSymbolRequest, Box<dyn Error>> {
     let cwd = repo_root()?;
 
     Ok(DocumentSymbolRequest {
         workspace_root: cwd.clone(),
         package_path: cwd.join("crates/wip"),
-        file_path: cwd.join("crates/wip/src/lib.rs"),
+        file_path: cwd.join(relative_path),
     })
 }
 
@@ -41,12 +50,83 @@ fn fixture_response() -> std::result::Result<DocumentSymbolResponse, Box<dyn Err
     Ok(serde_json::from_str(fixture)?)
 }
 
+fn models_fixture_response() -> std::result::Result<DocumentSymbolResponse, Box<dyn Error>> {
+    let fixture = include_str!("fixtures/rust_document_symbols_models.json");
+    Ok(serde_json::from_str(fixture)?)
+}
+
+fn pipeline_fixture_response() -> std::result::Result<DocumentSymbolResponse, Box<dyn Error>> {
+    let fixture = include_str!("fixtures/rust_document_symbols_pipeline.json");
+    Ok(serde_json::from_str(fixture)?)
+}
+
+fn batch_fixture_extraction() -> std::result::Result<DocumentSymbolBatchExtraction, Box<dyn Error>>
+{
+    let provider_version = Some("fixture-rust-analyzer".to_string());
+    let extractions = vec![
+        RustDocumentSymbolMapper::map_response(
+            request_for("crates/wip/src/lib.rs")?,
+            fixture_response()?,
+            provider_version.clone(),
+            json!({ "fixture": "lib.rs" }),
+        )?,
+        RustDocumentSymbolMapper::map_response(
+            request_for("crates/wip/src/models.rs")?,
+            models_fixture_response()?,
+            provider_version.clone(),
+            json!({ "fixture": "models.rs" }),
+        )?,
+        RustDocumentSymbolMapper::map_response(
+            request_for("crates/wip/src/pipeline.rs")?,
+            pipeline_fixture_response()?,
+            provider_version.clone(),
+            json!({ "fixture": "pipeline.rs" }),
+        )?,
+    ];
+
+    Ok(DocumentSymbolBatchExtraction {
+        provider: ProviderId::rust_analyzer(),
+        provider_version,
+        extractions,
+        raw_metadata: json!({ "fixture": "crate batch" }),
+    })
+}
+
 fn temp_db_path() -> std::result::Result<PathBuf, Box<dyn Error>> {
     let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
     Ok(env::temp_dir().join(format!(
         "poc-semanticgraph-extract-{}-{stamp}.db",
         std::process::id()
     )))
+}
+
+fn temp_workspace_path(name: &str) -> std::result::Result<PathBuf, Box<dyn Error>> {
+    let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+    Ok(env::temp_dir().join(format!(
+        "poc-semanticgraph-extract-{name}-{}-{stamp}",
+        std::process::id()
+    )))
+}
+
+#[test]
+fn batch_validation_rejects_files_outside_workspace_root() -> std::result::Result<(), Box<dyn Error>>
+{
+    let workspace_root = temp_workspace_path("workspace")?;
+    let package_path = workspace_root.join("crates/example");
+    let outside_root = temp_workspace_path("outside")?;
+    fs::create_dir_all(&package_path)?;
+    fs::create_dir_all(&outside_root)?;
+    let outside_file = outside_root.join("outside.rs");
+    fs::write(&outside_file, "")?;
+
+    let result = validate_document_symbol_batch_request(DocumentSymbolBatchRequest {
+        workspace_root,
+        package_path,
+        file_paths: vec![outside_file],
+    });
+
+    assert!(matches!(result, Err(ExtractError::InvalidPath { .. })));
+    Ok(())
 }
 
 #[test]
@@ -132,6 +212,88 @@ async fn persists_fixture_symbols_into_sqlite() -> std::result::Result<(), Box<d
     assert_eq!(definitions, 4);
     assert_eq!(contains_edges, 4);
     assert_eq!(evidence, 4);
+    Ok(())
+}
+
+#[tokio::test]
+async fn persists_batch_fixture_symbols_into_one_sqlite_run()
+-> std::result::Result<(), Box<dyn Error>> {
+    let db_path = temp_db_path()?;
+    let store = GraphStore::connect(&db_path).await?;
+    store.migrate().await?;
+    let workspace_root_uri = file_uri(&repo_root()?)?;
+    let extraction = batch_fixture_extraction()?;
+
+    let summary = ExtractionPersister
+        .persist_document_symbol_batch(&store, &workspace_root_uri, &extraction)
+        .await?;
+
+    assert_eq!(summary.files, 3);
+    assert_eq!(summary.nodes, 27);
+    assert_eq!(summary.edges, 24);
+    assert_eq!(summary.occurrences, 24);
+    assert_eq!(summary.evidence, 24);
+    assert_eq!(
+        store.stats().await?,
+        GraphStoreStats {
+            workspaces: 1,
+            extraction_runs: 1,
+            files: 3,
+            nodes: 27,
+            edges: 24,
+            occurrences: 24,
+            edge_evidence: 24,
+        }
+    );
+
+    let pool = SqlitePool::connect(&format!("sqlite://{}", db_path.display())).await?;
+    let file_rows: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM files
+        WHERE path IN (
+          'crates/wip/src/lib.rs',
+          'crates/wip/src/models.rs',
+          'crates/wip/src/pipeline.rs'
+        )
+        "#,
+    )
+    .fetch_one(&pool)
+    .await?;
+    let file_nodes: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM nodes WHERE kind = 'file'")
+        .fetch_one(&pool)
+        .await?;
+    let model_file_contains_widget_id: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM edges
+        JOIN nodes src ON src.id = edges.src_node_id
+        JOIN nodes dst ON dst.id = edges.dst_node_id
+        WHERE edges.relation = 'contains'
+          AND src.kind = 'file'
+          AND src.qualified_name = 'crates/wip/src/models.rs'
+          AND dst.name = 'WidgetId'
+        "#,
+    )
+    .fetch_one(&pool)
+    .await?;
+    let nested_new_on_widget_id: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM nodes child
+        JOIN nodes parent ON parent.id = child.container_node_id
+        WHERE child.name = 'new'
+          AND parent.name = 'WidgetId'
+          AND parent.qualified_name = 'WidgetId'
+        "#,
+    )
+    .fetch_one(&pool)
+    .await?;
+
+    assert_eq!(file_rows, 3);
+    assert_eq!(file_nodes, 3);
+    assert_eq!(model_file_contains_widget_id, 1);
+    assert_eq!(nested_new_on_widget_id, 1);
     Ok(())
 }
 

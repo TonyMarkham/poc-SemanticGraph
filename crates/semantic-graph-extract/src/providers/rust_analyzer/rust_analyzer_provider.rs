@@ -4,12 +4,18 @@ use std::process::Command;
 use lsp_types::DocumentSymbolResponse;
 use serde_json::{Value, json};
 
-use crate::document_symbols::paths::{file_uri, validate_document_symbol_request};
+use crate::document_symbols::paths::{
+    file_uri, validate_document_symbol_batch_request, validate_document_symbol_request,
+};
 use crate::error::{ExtractError, Result};
 use crate::lsp_stdio::LspStdioClient;
-use crate::model::{DocumentSymbolExtraction, DocumentSymbolRequest, GraphLanguage, ProviderId};
+use crate::model::{
+    DocumentSymbolBatchExtraction, DocumentSymbolBatchRequest, DocumentSymbolExtraction,
+    DocumentSymbolRequest, GraphLanguage, ProviderId,
+};
 use crate::provider::DocumentSymbolProvider;
 use crate::providers::rust_analyzer::RustDocumentSymbolMapper;
+use crate::providers::rust_analyzer::rust_lsif_discovery::discover_rust_source_files_with_lsif;
 
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 
@@ -34,17 +40,53 @@ impl RustAnalyzerProvider {
         }
     }
 
+    pub async fn extract_document_symbol_batch(
+        &self,
+        request: DocumentSymbolBatchRequest,
+    ) -> Result<DocumentSymbolBatchExtraction> {
+        self.run_batch(request).await
+    }
+
+    pub fn discover_rust_source_files(
+        &self,
+        workspace_root: &std::path::Path,
+        package_path: &std::path::Path,
+    ) -> Result<Vec<std::path::PathBuf>> {
+        discover_rust_source_files_with_lsif(&self.binary, workspace_root, package_path)
+    }
+
+    pub fn discover_rust_workspace_source_files(
+        &self,
+        workspace_root: &std::path::Path,
+    ) -> Result<Vec<std::path::PathBuf>> {
+        discover_rust_source_files_with_lsif(&self.binary, workspace_root, workspace_root)
+    }
+
     async fn run(&self, request: DocumentSymbolRequest) -> Result<DocumentSymbolExtraction> {
         let request = validate_document_symbol_request(request)?;
-        let workspace_uri = file_uri(&request.workspace_root)?;
-        let source_uri = file_uri(&request.file_path)?;
-        let source_text = fs::read_to_string(&request.file_path).map_err(|source| {
-            ExtractError::io(
-                "read source file for textDocument/didOpen",
-                Some(request.file_path.clone()),
-                source,
+        let mut batch = self
+            .run_batch(DocumentSymbolBatchRequest {
+                workspace_root: request.workspace_root,
+                package_path: request.package_path,
+                file_paths: vec![request.file_path],
+            })
+            .await?;
+
+        batch.extractions.pop().ok_or_else(|| {
+            ExtractError::response_shape(
+                self.provider_id().as_str(),
+                "textDocument/documentSymbol",
+                "single-file document symbol extraction returned no files",
             )
-        })?;
+        })
+    }
+
+    async fn run_batch(
+        &self,
+        request: DocumentSymbolBatchRequest,
+    ) -> Result<DocumentSymbolBatchExtraction> {
+        let request = validate_document_symbol_batch_request(request)?;
+        let workspace_uri = file_uri(&request.workspace_root)?;
         let fallback_version = discover_binary_version(&self.binary);
         let mut client = LspStdioClient::spawn(&self.binary, self.provider_id())?;
 
@@ -62,51 +104,80 @@ impl RustAnalyzerProvider {
             client
                 .notify("initialized", Some(json!({})), self.timeout_ms)
                 .await?;
-            client
-                .notify(
-                    "textDocument/didOpen",
-                    Some(json!({
-                        "textDocument": {
-                            "uri": source_uri,
-                            "languageId": "rust",
-                            "version": 1,
-                            "text": source_text
-                        }
-                    })),
-                    self.timeout_ms,
-                )
-                .await?;
-            let document_symbol_result = client
-                .request(
-                    "textDocument/documentSymbol",
-                    json!({
-                        "textDocument": {
-                            "uri": source_uri
-                        }
-                    }),
-                    self.timeout_ms,
-                )
-                .await?;
-            let response: Option<DocumentSymbolResponse> =
-                serde_json::from_value(document_symbol_result).map_err(|source| {
-                    ExtractError::json("parse documentSymbol response", source)
-                })?;
-            let response = response.ok_or_else(|| {
-                ExtractError::response_shape(
-                    self.provider_id().as_str(),
-                    "textDocument/documentSymbol",
-                    "rust-analyzer returned null for document symbols",
-                )
-            })?;
+            let mut extractions = Vec::with_capacity(request.file_paths.len());
 
-            RustDocumentSymbolMapper::map_response(
-                request,
-                response,
+            for file_path in &request.file_paths {
+                let source_uri = file_uri(file_path)?;
+                let source_text = fs::read_to_string(file_path).map_err(|source| {
+                    ExtractError::io(
+                        "read source file for textDocument/didOpen",
+                        Some(file_path.clone()),
+                        source,
+                    )
+                })?;
+
+                client
+                    .notify(
+                        "textDocument/didOpen",
+                        Some(json!({
+                            "textDocument": {
+                                "uri": source_uri.clone(),
+                                "languageId": "rust",
+                                "version": 1,
+                                "text": source_text
+                            }
+                        })),
+                        self.timeout_ms,
+                    )
+                    .await?;
+                let document_symbol_result = client
+                    .request(
+                        "textDocument/documentSymbol",
+                        json!({
+                            "textDocument": {
+                                "uri": source_uri
+                            }
+                        }),
+                        self.timeout_ms,
+                    )
+                    .await?;
+                let response: Option<DocumentSymbolResponse> =
+                    serde_json::from_value(document_symbol_result.clone()).map_err(|source| {
+                        ExtractError::json("parse documentSymbol response", source)
+                    })?;
+                let response = response.ok_or_else(|| {
+                    ExtractError::response_shape(
+                        self.provider_id().as_str(),
+                        "textDocument/documentSymbol",
+                        "rust-analyzer returned null for document symbols",
+                    )
+                })?;
+                let extraction = RustDocumentSymbolMapper::map_response(
+                    DocumentSymbolRequest {
+                        workspace_root: request.workspace_root.clone(),
+                        package_path: request.package_path.clone(),
+                        file_path: file_path.clone(),
+                    },
+                    response,
+                    provider_version.clone(),
+                    json!({
+                        "initialize": initialize_result.clone(),
+                        "document_symbol": document_symbol_result
+                    }),
+                )?;
+
+                extractions.push(extraction);
+            }
+
+            Ok(DocumentSymbolBatchExtraction {
+                provider: self.provider_id(),
                 provider_version,
-                json!({
-                    "initialize": initialize_result
+                extractions,
+                raw_metadata: json!({
+                    "initialize": initialize_result,
+                    "file_count": request.file_paths.len(),
                 }),
-            )
+            })
         }
         .await;
 

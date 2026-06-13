@@ -28,14 +28,6 @@ impl RustDocumentSymbolMapper {
     ) -> Result<DocumentSymbolExtraction> {
         match response {
             DocumentSymbolResponse::Nested(symbols) => {
-                if symbols.is_empty() {
-                    return Err(ExtractError::response_shape(
-                        ProviderId::rust_analyzer().as_str(),
-                        "textDocument/documentSymbol",
-                        "rust-analyzer returned an empty document symbol result",
-                    ));
-                }
-
                 Self::map_nested_symbols(request, &symbols, provider_version, raw_metadata)
             }
             DocumentSymbolResponse::Flat(_) => Err(ExtractError::response_shape(
