@@ -9,6 +9,30 @@ I want you to Audit the graphify repo in this repo's submodules with the followi
 - It is my intention to use `csharp-language-server` (source in this repo's submodules) as an LSP for building the semantic model for C# solutions
 ```
 
+```text
+I think I want to have the option of saving a plain-text version of the database so it can be commited to version control.
+To avoid having to use LFS, it would be nice if the plain-text version used a multi-file approach
+Is there a standard we can use to accomplish this?
+```
+
+```text
+I REALLY like the speed of Zed and it's underlying GPUI. How feasible do you think it might be to use GPUI to render the semantic graph like grphify does but in a GPU-Accellerated, pure rust impl
+```
+
+```text
+Lets save this as a seperate ADR specifically for graph visualization.
+##Initial Vertical Slice:
+- Simple Graph Visualizer
+
+## 2nd Vertical Slice
+- Allow node selection with mouse
+- Selected node displays it's data in an inspector pane on the right edge of the window
+
+## 3rd Vertical Slice
+- Allow edge selection with mouse
+- Selected edge displays it's data in an inspector pane on the right edge of the window
+```
+
 
 ---
 

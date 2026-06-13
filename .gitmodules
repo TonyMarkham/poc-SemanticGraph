@@ -7,3 +7,6 @@
 [submodule "submodules/rust-analyzer"]
 	path = submodules/rust-analyzer
 	url = https://github.com/rust-lang/rust-analyzer.git
+[submodule "submodules/zed"]
+	path = submodules/zed
+	url = https://github.com/zed-industries/zed.git
