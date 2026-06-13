@@ -1,0 +1,9 @@
+[submodule "submodules/graphify"]
+	path = submodules/graphify
+	url = https://github.com/safishamsi/graphify.git
+[submodule "submodules/csharp-language-server"]
+	path = submodules/csharp-language-server
+	url = https://github.com/razzmatazz/csharp-language-server.git
+[submodule "submodules/rust-analyzer"]
+	path = submodules/rust-analyzer
+	url = https://github.com/rust-lang/rust-analyzer.git
