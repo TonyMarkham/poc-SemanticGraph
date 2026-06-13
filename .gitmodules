@@ -16,3 +16,6 @@
 [submodule "submodules/Blazor.Diagrams"]
 	path = submodules/Blazor.Diagrams
 	url = https://github.com/Blazor-Diagrams/Blazor.Diagrams.git
+[submodule "submodules/tauri"]
+	path = submodules/tauri
+	url = https://github.com/tauri-apps/tauri.git
