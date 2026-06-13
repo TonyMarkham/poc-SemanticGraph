@@ -1,0 +1,60 @@
+set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
+
+package := "semantic-graph-store"
+local_dir := ".local"
+demo_db := ".local/semantic-graph-store-demo.db"
+sqlx_db := ".local/sqlx-prepare.db"
+sqlx_migrations := "crates/semantic-graph-store/migrations"
+
+# Show available recipes.
+default:
+    just --list
+
+# Format the storage slice.
+fmt:
+    cargo fmt -p {{package}}
+
+# Type-check the storage slice.
+check:
+    cargo check -p {{package}}
+
+# Run clippy with workspace lint expectations.
+clippy:
+    cargo clippy -p {{package}} --all-targets -- -D warnings
+
+# Run storage slice tests.
+test:
+    cargo test -p {{package}}
+
+# Regenerate SQLx offline metadata after query or migration changes.
+sqlx-prepare:
+    mkdir -p {{local_dir}}
+    rm -f {{sqlx_db}}
+    DATABASE_URL=sqlite://{{sqlx_db}} cargo sqlx database create
+    DATABASE_URL=sqlite://{{sqlx_db}} cargo sqlx migrate run --source {{sqlx_migrations}}
+    DATABASE_URL=sqlite://{{sqlx_db}} cargo sqlx prepare --workspace -- --all-targets
+
+# Fail if checked SQLx metadata is stale.
+sqlx-check:
+    mkdir -p {{local_dir}}
+    rm -f {{sqlx_db}}
+    DATABASE_URL=sqlite://{{sqlx_db}} cargo sqlx database create
+    DATABASE_URL=sqlite://{{sqlx_db}} cargo sqlx migrate run --source {{sqlx_migrations}}
+    DATABASE_URL=sqlite://{{sqlx_db}} cargo sqlx prepare --check --workspace -- --all-targets
+
+# Exercise the CLI against a disposable SQLite database.
+db-smoke db=demo_db:
+    mkdir -p {{local_dir}}
+    rm -f {{db}}
+    cargo run -p {{package}} -- init --db {{db}}
+    cargo run -p {{package}} -- demo-seed --db {{db}} --root-uri file:///tmp/poc-semanticgraph
+    cargo run -p {{package}} -- stats --db {{db}}
+
+# Main local confidence checker.
+confidence:
+    just --justfile {{justfile()}} sqlx-prepare
+    just --justfile {{justfile()}} fmt
+    SQLX_OFFLINE=true cargo check -p {{package}}
+    SQLX_OFFLINE=true cargo clippy -p {{package}} --all-targets -- -D warnings
+    SQLX_OFFLINE=true cargo test -p {{package}}
+    just --justfile {{justfile()}} db-smoke

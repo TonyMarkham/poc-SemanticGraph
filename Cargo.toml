@@ -1,6 +1,6 @@
 [workspace]
 members = [
-    "crates/wip"
+    "crates/semantic-graph-store"
 ]
 resolver = "3"
 
@@ -9,19 +9,22 @@ version = "0.1.0"
 edition = "2024"
 
 [workspace.dependencies]
-clap                  = { version = "4.5.50", features = ["derive"] }
+clap                  = { version = "4.6.1", features = ["derive"] }
 error-location        = { version = "0.1.0" }
+hex                   = { version = "0.4.3" }
 prost                 = { version = "0.14.4" }
 prost-build           = { version = "0.14.4" }
+serde                 = { version = "1.0.228", features = ["derive"] }
+serde_json            = { version = "1.0.150" }
+sha2                  = { version = "0.11.0" }
+sqlx                  = { version = "0.9.0", features = ["macros", "migrate", "runtime-tokio", "sqlite"] }
 thiserror             = { version = "2.0.18" }
-tree-sitter           = { version = "0.25.10" }
+tokio                 = { version = "1.52.3", features = ["macros", "rt-multi-thread"] }
+tree-sitter           = { version = "0.26.9" }
 tree-sitter-c-sharp   = { version = "0.23.5" }
 tree-sitter-css       = { version = "0.25.0" }
 tree-sitter-razor     = { version = "0.1.0" }
 tree-sitter-rust      = { version = "0.24.2" }
-
-scip                  = { path = "submodules/scip/bindings/rust" }
-
 
 [workspace.lints.clippy]
 unwrap_used           = "deny"

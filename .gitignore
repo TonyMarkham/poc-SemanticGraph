@@ -1,2 +1,10 @@
 # Build Artifacts
 target/
+
+# Local generated state
+.local/
+*.db
+*.db-*
+
+# IDE
+.idea/
