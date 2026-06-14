@@ -9,6 +9,55 @@
                 <h1>Semantic Graph Visualizer</h1>
                 <span title="@DatabasePathText">@DatabasePathText</span>
             </div>
+
+            <div class="toolbar-search">
+                <RadzenTextBox @bind-Value="SearchQuery"
+                               Placeholder="Search nodes"
+                               class="toolbar-search-input"
+                               Disabled="@IsSearching"
+                               @onkeydown="@OnSearchKeyDown" />
+                <RadzenButton Icon="search"
+                              ButtonStyle="ButtonStyle.Light"
+                              Size="ButtonSize.Small"
+                              Disabled="@IsSearching"
+                              Title="Search nodes"
+                              Click="@SearchAsync" />
+
+                @if (ShowSearchPanel)
+                {
+                    <div class="search-results-panel">
+                        @if (IsSearching)
+                        {
+                            <div class="search-state">Searching</div>
+                        }
+                        else if (SearchErrorMessage is not null)
+                        {
+                            <div class="search-state search-error">@SearchErrorMessage</div>
+                        }
+                        else if (SearchResults.Count == 0)
+                        {
+                            <div class="search-state">No results</div>
+                        }
+                        else
+                        {
+                            <div class="search-results-list">
+                                @foreach (var result in SearchResults)
+                                {
+                                    <button type="button"
+                                            class="search-result-row"
+                                            @onclick="async () => await SelectSearchResultAsync(result)">
+                                        <span class="search-result-kind">@result.Node.Kind</span>
+                                        <strong>@result.Node.DisplayLabel</strong>
+                                        <span class="search-result-path">@FormatOptional(result.Node.SourceFilePath)</span>
+                                        <span class="search-result-visibility">@(result.IsVisible ? "Visible" : "Details")</span>
+                                    </button>
+                                }
+                            </div>
+                        }
+                    </div>
+                }
+            </div>
+
             <div class="toolbar-stats">
                 <span class="stat-label">Nodes</span>
                 <RadzenBadge BadgeStyle="BadgeStyle.Info" Text="@NodeCountText" />
@@ -62,68 +111,201 @@
             </section>
 
             <aside class="inspector-panel">
-                <RadzenTabs>
-                    <Tabs>
-                        <RadzenTabsItem Text="Summary">
-                            <dl class="summary-grid">
-                                <dt>Limit</dt>
-                                <dd>@ProjectionLimit</dd>
-                                <dt>Database</dt>
-                                <dd>@DatabasePathText</dd>
-                                <dt>Relation</dt>
-                                <dd>@RelationSummaryText</dd>
-                            </dl>
-                        </RadzenTabsItem>
-                        <RadzenTabsItem Text="Inspector">
-                            @if (SelectedNode is not null)
-                            {
+                @{
+                    var nodeDetails = SelectedNodeDetails;
+                    var edgeDetails = SelectedEdgeDetails;
+                }
+
+                @if (IsSelectionLoading)
+                {
+                    <div class="inspector-loading">
+                        <RadzenProgressBarCircular Mode="ProgressBarMode.Indeterminate"
+                                                   Size="ProgressBarCircularSize.Small" />
+                        <span>Loading selection</span>
+                    </div>
+                }
+                else if (SelectionErrorMessage is not null)
+                {
+                    <div class="empty-inspector error-state">
+                        <strong>Selection failed</strong>
+                        <span>@SelectionErrorMessage</span>
+                    </div>
+                }
+                else if (nodeDetails is not null)
+                {
+                    <RadzenTabs>
+                        <Tabs>
+                            <RadzenTabsItem Text="Details">
                                 <div class="inspector-content">
                                     <div class="inspector-title">
-                                        <span>@SelectedNode.View.Kind</span>
-                                        <strong>@SelectedNode.View.DisplayLabel</strong>
+                                        <span>@nodeDetails.Kind</span>
+                                        <strong>@nodeDetails.DisplayLabel</strong>
                                     </div>
                                     <dl class="inspector-grid">
-                                        <dt>Kind</dt>
-                                        <dd>@SelectedNode.View.Kind</dd>
-                                        <dt>Language</dt>
-                                        <dd>@SelectedNode.View.Language</dd>
+                                        <dt>Name</dt>
+                                        <dd>@nodeDetails.Name</dd>
                                         <dt>Qualified</dt>
-                                        <dd>@SelectedNode.View.QualifiedName</dd>
+                                        <dd>@FormatOptional(nodeDetails.QualifiedName)</dd>
+                                        <dt>Language</dt>
+                                        <dd>@nodeDetails.Language</dd>
                                         <dt>File</dt>
-                                        <dd>@SelectedNode.View.SourceFilePath</dd>
+                                        <dd>@FormatOptional(nodeDetails.SourceFilePath)</dd>
+                                        <dt>Range</dt>
+                                        <dd>@FormatRange(nodeDetails.StartLine, nodeDetails.StartCol, nodeDetails.EndLine, nodeDetails.EndCol)</dd>
+                                        <dt>Selection start</dt>
+                                        <dd>@FormatPoint(nodeDetails.SelectionStartLine, nodeDetails.SelectionStartCol)</dd>
+                                        <dt>Container</dt>
+                                        <dd>@FormatOptional(nodeDetails.ContainerDisplayLabel)</dd>
+                                        <dt>Runs</dt>
+                                        <dd>@FormatOptional(nodeDetails.FirstSeenRunId) / @FormatOptional(nodeDetails.LastSeenRunId)</dd>
                                         <dt>ID</dt>
-                                        <dd>@SelectedNode.Id</dd>
+                                        <dd>@nodeDetails.NodeId</dd>
                                     </dl>
+
+                                    <div class="relation-counts">
+                                        <span>Incoming @nodeDetails.IncomingEdgeCount</span>
+                                        <span>Outgoing @nodeDetails.OutgoingEdgeCount</span>
+                                    </div>
+
+                                    @if (nodeDetails.Relations.Count > 0)
+                                    {
+                                        <table class="compact-table">
+                                            <thead>
+                                                <tr>
+                                                    <th>Direction</th>
+                                                    <th>Relation</th>
+                                                    <th>Count</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                @foreach (var relation in nodeDetails.Relations)
+                                                {
+                                                    <tr>
+                                                        <td>@relation.Direction</td>
+                                                        <td>@relation.Relation</td>
+                                                        <td>@relation.EdgeCount</td>
+                                                    </tr>
+                                                }
+                                            </tbody>
+                                        </table>
+                                    }
                                 </div>
-                            }
-                            else if (SelectedEdge is not null)
-                            {
+                            </RadzenTabsItem>
+                            <RadzenTabsItem Text="Occurrences">
+                                <div class="inspector-content">
+                                    @if (nodeDetails.Occurrences.Count == 0)
+                                    {
+                                        <div class="empty-inspector">No occurrences</div>
+                                    }
+                                    else
+                                    {
+                                        <table class="compact-table">
+                                            <thead>
+                                                <tr>
+                                                    <th>Role</th>
+                                                    <th>File</th>
+                                                    <th>Range</th>
+                                                    <th>Run</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                @foreach (var occurrence in nodeDetails.Occurrences)
+                                                {
+                                                    <tr>
+                                                        <td>@occurrence.Role</td>
+                                                        <td>@occurrence.SourceFilePath</td>
+                                                        <td>@FormatRange(occurrence.StartLine, occurrence.StartCol, occurrence.EndLine, occurrence.EndCol)</td>
+                                                        <td>@occurrence.RunId</td>
+                                                    </tr>
+                                                }
+                                            </tbody>
+                                        </table>
+                                    }
+                                </div>
+                            </RadzenTabsItem>
+                            <RadzenTabsItem Text="Raw">
+                                <pre class="raw-json">@NodePropertiesJsonText</pre>
+                            </RadzenTabsItem>
+                        </Tabs>
+                    </RadzenTabs>
+                }
+                else if (edgeDetails is not null)
+                {
+                    <RadzenTabs>
+                        <Tabs>
+                            <RadzenTabsItem Text="Details">
                                 <div class="inspector-content">
                                     <div class="inspector-title">
-                                        <span>@SelectedEdge.Edge.Relation</span>
-                                        <strong>@SelectedEdge.Edge.Id</strong>
+                                        <span>@edgeDetails.Relation</span>
+                                        <strong>@edgeDetails.EdgeId</strong>
                                     </div>
                                     <dl class="inspector-grid">
                                         <dt>Relation</dt>
-                                        <dd>@SelectedEdge.Edge.Relation</dd>
+                                        <dd>@edgeDetails.Relation</dd>
+                                        <dt>Context</dt>
+                                        <dd>@FormatOptional(edgeDetails.Context)</dd>
                                         <dt>Confidence</dt>
-                                        <dd>@SelectedEdge.Edge.Confidence</dd>
-                                        <dt>Score</dt>
-                                        <dd>@SelectedEdge.Edge.ConfidenceScore</dd>
-                                        <dt>Source</dt>
-                                        <dd>@SelectedEdge.Edge.SourceNodeId</dd>
-                                        <dt>Target</dt>
-                                        <dd>@SelectedEdge.Edge.TargetNodeId</dd>
+                                        <dd>@edgeDetails.Confidence (@edgeDetails.ConfidenceScore)</dd>
+                                        <dt>Weight</dt>
+                                        <dd>@edgeDetails.Weight</dd>
+                                        <dt>Runs</dt>
+                                        <dd>@FormatOptional(edgeDetails.FirstSeenRunId) / @FormatOptional(edgeDetails.LastSeenRunId)</dd>
                                     </dl>
+
+                                    <div class="endpoint-block">
+                                        <span>Source</span>
+                                        <strong>@edgeDetails.Source.DisplayLabel</strong>
+                                        <small>@edgeDetails.Source.NodeId</small>
+                                    </div>
+                                    <div class="endpoint-block">
+                                        <span>Target</span>
+                                        <strong>@edgeDetails.Target.DisplayLabel</strong>
+                                        <small>@edgeDetails.Target.NodeId</small>
+                                    </div>
                                 </div>
-                            }
-                            else
-                            {
-                                <div class="empty-inspector">No selection</div>
-                            }
-                        </RadzenTabsItem>
-                    </Tabs>
-                </RadzenTabs>
+                            </RadzenTabsItem>
+                            <RadzenTabsItem Text="Evidence">
+                                <div class="inspector-content">
+                                    @if (edgeDetails.Evidence.Count == 0)
+                                    {
+                                        <div class="empty-inspector">No evidence</div>
+                                    }
+                                    else
+                                    {
+                                        <table class="compact-table">
+                                            <thead>
+                                                <tr>
+                                                    <th>Provider</th>
+                                                    <th>Method</th>
+                                                    <th>File</th>
+                                                    <th>Range</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                @foreach (var evidence in edgeDetails.Evidence)
+                                                {
+                                                    <tr>
+                                                        <td>@evidence.Provider</td>
+                                                        <td>@FormatOptional(evidence.LspMethod)</td>
+                                                        <td>@FormatOptional(evidence.SourceFilePath)</td>
+                                                        <td>@FormatRange(evidence.StartLine, evidence.StartCol, evidence.EndLine, evidence.EndCol)</td>
+                                                    </tr>
+                                                }
+                                            </tbody>
+                                        </table>
+                                    }
+                                </div>
+                            </RadzenTabsItem>
+                            <RadzenTabsItem Text="Raw">
+                                <pre class="raw-json">@EdgePropertiesJsonText</pre>
+                            </RadzenTabsItem>
+                        </Tabs>
+                    </RadzenTabs>
+                }
+                else
+                {
+                    <div class="empty-inspector">No selection</div>
+                }
             </aside>
         </main>
     </RadzenBody>

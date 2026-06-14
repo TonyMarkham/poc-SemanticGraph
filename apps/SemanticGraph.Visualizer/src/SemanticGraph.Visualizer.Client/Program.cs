@@ -11,7 +11,7 @@ builder.RootComponents.Add<HeadOutlet>("head::after");
 var backendBaseUrl = builder.Configuration["SemanticGraph:BackendBaseUrl"] ?? builder.HostEnvironment.BaseAddress;
 builder.Services.AddRadzenComponents();
 builder.Services.AddScoped(_ => new HttpClient { BaseAddress = CreateBaseUri(backendBaseUrl) });
-builder.Services.AddScoped<GraphProjectionClient>();
+builder.Services.AddScoped<GraphClient>();
 
 await builder.Build().RunAsync();
 

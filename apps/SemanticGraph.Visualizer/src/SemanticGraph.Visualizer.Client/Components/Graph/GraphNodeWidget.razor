@@ -17,7 +17,17 @@
     [Parameter]
     public SemanticGraphNodeModel Node { get; set; } = null!;
 
-    private string CssClass => Node.View.IsFile
-        ? "semantic-node file-node"
-        : $"semantic-node symbol-node relation-{Node.View.KindCssClass}";
+    private string CssClass
+    {
+        get
+        {
+            var nodeKindClass = Node.View.IsFile
+                ? "file-node"
+                : $"symbol-node relation-{Node.View.KindCssClass}";
+            var selectedClass = Node.Selected ? " is-selected" : string.Empty;
+            var relatedClass = Node.IsRelatedEndpoint ? " is-related-endpoint" : string.Empty;
+
+            return $"semantic-node {nodeKindClass}{selectedClass}{relatedClass}";
+        }
+    }
 }

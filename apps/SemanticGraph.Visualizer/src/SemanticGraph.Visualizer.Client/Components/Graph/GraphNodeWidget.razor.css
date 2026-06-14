@@ -22,6 +22,18 @@
     border-left: 4px solid #5279b8;
 }
 
+.semantic-node.is-selected {
+    border-color: #1d4ed8;
+    background: #eff6ff;
+    box-shadow: 0 0 0 3px rgba(29, 78, 216, 0.22), 0 3px 8px rgba(16, 24, 40, 0.14);
+}
+
+.semantic-node.is-related-endpoint:not(.is-selected) {
+    border-color: #5b8f74;
+    background: #f3faf6;
+    box-shadow: 0 0 0 2px rgba(91, 143, 116, 0.18), 0 1px 3px rgba(16, 24, 40, 0.08);
+}
+
 .relation-module,
 .relation-object,
 .relation-struct,

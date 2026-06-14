@@ -1,7 +1,7 @@
 mod config;
 mod dto;
 mod error;
-mod projection;
+mod query;
 mod rpc;
 mod server;
 

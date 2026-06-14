@@ -65,8 +65,9 @@ Visualization:
 - The current implemented visualization slice is browser-hosted Blazor
   WebAssembly in `apps/SemanticGraph.Visualizer`, backed by
   `crates/semantic-graph-visualizer-server`.
-- The visualizer backend serves JSON-RPC 2.0 on `POST /rpc`; the current method
-  is `graph.projection`.
+- The visualizer backend serves JSON-RPC 2.0 on `POST /rpc`; current methods
+  are `graph.projection`, `graph.node_details`, `graph.edge_details`, and
+  `graph.search_nodes`.
 - Tauri is still the preferred desktop host candidate when a Rust backend is
   useful, but the current slice does not use Tauri and the Tauri/Blazor bridge
   still needs a spike.
@@ -158,8 +159,8 @@ Rust workspace:
 - `crates/semantic-graph-extract`: Rust document-symbol extractor CLI/library.
 - `crates/semantic-graph-smoke-tests`: route smoke-test/report surface.
 - `crates/semantic-graph-store`: SQLite graph store and stats/demo CLI.
-- `crates/semantic-graph-visualizer-server`: local JSON-RPC projection backend
-  for the visualizer.
+- `crates/semantic-graph-visualizer-server`: local read-only JSON-RPC backend
+  for visualizer projection, search, and node/edge inspection.
 - `crates/wip`: small Rust crate used as the local extraction target.
 
 Applications:
@@ -216,7 +217,8 @@ Validation:
 - For visualizer client changes, run
   `dotnet build SemanticGraph.Visualizer.slnx`.
 - For visualizer behavior changes, smoke the local backend/client flow where
-  practical, including a `graph.projection` request to `POST /rpc`.
+  practical, including `graph.projection`, `graph.search_nodes`,
+  `graph.node_details`, and `graph.edge_details` requests to `POST /rpc`.
 - If smoke-report counts or documented route examples change, update
   `README.md` in the same change.
 - Do not present Rust work as complete while `cargo check` emits warnings.
@@ -234,7 +236,7 @@ rg -n "rust-analyzer-lib|rust-workspace-document-symbols|document_symbol" crates
 rg -n "semantic-graph-smoke-tests|workspace.persistence|crate.persistence" README.md crates
 rg -n "anyhow|error-location|ExtractError|GraphStoreError|RustAnalyzerLibError" crates Cargo.toml
 rg -n "use super|::\\*|pub use .*::\\*" crates
-rg -n "semantic-graph-visualizer-server|graph.projection|POST /rpc" README.md crates
+rg -n "semantic-graph-visualizer-server|graph.projection|graph.node_details|graph.edge_details|graph.search_nodes|POST /rpc" README.md crates
 rg -n "SemanticGraph.Visualizer|Blazor.Diagrams|Radzen|appsettings.json" README.md apps
 rg -n "callHierarchy|outgoingCalls|incomingCalls" submodules/csharp-language-server
 rg -n "call_hierarchy|outgoing|references|documentSymbol" submodules/rust-analyzer

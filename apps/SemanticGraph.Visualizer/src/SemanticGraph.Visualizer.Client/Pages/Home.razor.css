@@ -50,6 +50,102 @@
     white-space: nowrap;
 }
 
+.toolbar-search {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    width: min(34vw, 380px);
+    min-width: 250px;
+}
+
+.toolbar-search-input {
+    width: 100%;
+}
+
+.search-results-panel {
+    position: absolute;
+    z-index: 20;
+    top: calc(100% + 0.45rem);
+    left: 0;
+    width: min(460px, calc(100vw - 2rem));
+    max-height: min(420px, calc(100vh - 110px));
+    overflow: auto;
+    border: 1px solid #d9dee7;
+    border-radius: 6px;
+    background: #ffffff;
+    box-shadow: 0 12px 28px rgba(16, 24, 40, 0.14);
+}
+
+.search-results-list {
+    display: grid;
+}
+
+.search-result-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.16rem 0.55rem;
+    width: 100%;
+    padding: 0.62rem 0.75rem;
+    border: 0;
+    border-bottom: 1px solid #edf0f5;
+    background: #ffffff;
+    color: #1d2433;
+    text-align: left;
+    cursor: pointer;
+}
+
+.search-result-row:hover,
+.search-result-row:focus {
+    background: #f4f7fb;
+    outline: none;
+}
+
+.search-result-kind {
+    color: #667085;
+    font-size: 0.66rem;
+    font-weight: 800;
+    line-height: 1;
+    text-transform: uppercase;
+}
+
+.search-result-row strong {
+    grid-column: 1 / 2;
+    overflow: hidden;
+    font-size: 0.84rem;
+    line-height: 1.2;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.search-result-path {
+    grid-column: 1 / 2;
+    overflow: hidden;
+    color: #667085;
+    font-size: 0.72rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.search-result-visibility {
+    grid-column: 2 / 3;
+    grid-row: 1 / 4;
+    align-self: center;
+    color: #475467;
+    font-size: 0.68rem;
+    font-weight: 700;
+}
+
+.search-state {
+    padding: 0.8rem;
+    color: #667085;
+    font-size: 0.84rem;
+}
+
+.search-error {
+    color: #8f1d1d;
+}
+
 .stat-label {
     color: #5b6472;
     font-size: 0.78rem;
@@ -88,26 +184,16 @@
     background: #ffffff;
 }
 
-.summary-grid {
-    display: grid;
-    grid-template-columns: 86px minmax(0, 1fr);
-    gap: 0.7rem 0.85rem;
-    margin: 1rem;
-    font-size: 0.86rem;
-}
-
-.summary-grid dt {
-    color: #667085;
-    font-weight: 700;
-}
-
-.summary-grid dd {
-    min-width: 0;
-    margin: 0;
-    overflow-wrap: anywhere;
-}
-
 .empty-inspector {
+    margin: 1rem;
+    color: #667085;
+    font-size: 0.9rem;
+}
+
+.inspector-loading {
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
     margin: 1rem;
     color: #667085;
     font-size: 0.9rem;
@@ -156,6 +242,80 @@
     overflow-wrap: anywhere;
 }
 
+.relation-counts {
+    display: flex;
+    gap: 0.5rem;
+    margin-top: 1rem;
+}
+
+.relation-counts span {
+    padding: 0.28rem 0.45rem;
+    border: 1px solid #d9dee7;
+    border-radius: 5px;
+    background: #f7f8fa;
+    color: #475467;
+    font-size: 0.74rem;
+    font-weight: 700;
+}
+
+.compact-table {
+    width: 100%;
+    margin-top: 1rem;
+    border-collapse: collapse;
+    font-size: 0.76rem;
+    table-layout: fixed;
+}
+
+.compact-table th,
+.compact-table td {
+    padding: 0.45rem 0.38rem;
+    border-bottom: 1px solid #edf0f5;
+    overflow-wrap: anywhere;
+    text-align: left;
+    vertical-align: top;
+}
+
+.compact-table th {
+    color: #667085;
+    font-weight: 800;
+}
+
+.endpoint-block {
+    display: grid;
+    gap: 0.12rem;
+    margin-top: 0.8rem;
+    padding-top: 0.8rem;
+    border-top: 1px solid #eaecf0;
+}
+
+.endpoint-block span {
+    color: #667085;
+    font-size: 0.68rem;
+    font-weight: 800;
+    text-transform: uppercase;
+}
+
+.endpoint-block strong,
+.endpoint-block small {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.endpoint-block small {
+    color: #667085;
+    font-size: 0.72rem;
+}
+
+.raw-json {
+    margin: 0;
+    padding: 1rem;
+    overflow: auto;
+    color: #1d2433;
+    font-size: 0.75rem;
+    line-height: 1.35;
+    white-space: pre-wrap;
+}
+
 .state-overlay {
     position: absolute;
     inset: 0;
@@ -177,6 +337,15 @@
     .visualizer-toolbar {
         align-items: flex-start;
         flex-direction: column;
+    }
+
+    .toolbar-search {
+        width: 100%;
+        min-width: 0;
+    }
+
+    .search-results-panel {
+        width: 100%;
     }
 
     .toolbar-title span {

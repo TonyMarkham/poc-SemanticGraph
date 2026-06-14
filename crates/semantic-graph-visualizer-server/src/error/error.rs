@@ -36,6 +36,12 @@ pub enum VisualizerServerError {
         location: ErrorLocation,
     },
 
+    #[error("not found at {location}: {message}")]
+    NotFound {
+        message: String,
+        location: ErrorLocation,
+    },
+
     #[error("json error at {location}")]
     Json {
         #[source]
@@ -86,6 +92,14 @@ impl VisualizerServerError {
     }
 
     #[track_caller]
+    pub fn not_found(message: String) -> Self {
+        Self::NotFound {
+            message,
+            location: ErrorLocation::from(Location::caller()),
+        }
+    }
+
+    #[track_caller]
     pub fn json(source: serde_json::Error) -> Self {
         Self::Json {
             source,
@@ -99,7 +113,8 @@ impl VisualizerServerError {
             Self::Io { .. } => "io error",
             Self::InvalidConfig { message, .. }
             | Self::InvalidParams { message, .. }
-            | Self::InvalidRequest { message, .. } => message,
+            | Self::InvalidRequest { message, .. }
+            | Self::NotFound { message, .. } => message,
             Self::Json { .. } => "json error",
         }
     }

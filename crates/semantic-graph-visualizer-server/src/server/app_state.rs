@@ -1,20 +1,20 @@
-use crate::projection::GraphProjectionService;
+use crate::query::GraphQueryService;
 
 use std::{path::PathBuf, sync::Arc};
 
 #[derive(Clone)]
 pub struct AppState {
-    projection_service: Arc<GraphProjectionService>,
+    query_service: Arc<GraphQueryService>,
 }
 
 impl AppState {
     pub fn new(database_path: PathBuf) -> Self {
         Self {
-            projection_service: Arc::new(GraphProjectionService::new(database_path)),
+            query_service: Arc::new(GraphQueryService::new(database_path)),
         }
     }
 
-    pub fn projection_service(&self) -> &GraphProjectionService {
-        &self.projection_service
+    pub fn query_service(&self) -> &GraphQueryService {
+        &self.query_service
     }
 }

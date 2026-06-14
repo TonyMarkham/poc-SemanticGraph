@@ -21,4 +21,17 @@ public sealed class SemanticGraphNodeModel : NodeModel
     }
 
     public GraphNodeViewModel View { get; }
+
+    public bool IsRelatedEndpoint { get; private set; }
+
+    public void SetRelatedEndpoint(bool value)
+    {
+        if (IsRelatedEndpoint == value)
+        {
+            return;
+        }
+
+        IsRelatedEndpoint = value;
+        Refresh();
+    }
 }

@@ -5,8 +5,9 @@ SQLite graph.
 
 Right now, the useful path is Rust document-symbol extraction through the
 checked-in `rust-analyzer` libraries. The extractor supports single-file,
-crate-scoped, and workspace-scoped routes. A first read-only visualizer slice is
-available through a Rust JSON-RPC backend and a Blazor WebAssembly client.
+crate-scoped, and workspace-scoped routes. A read-only visualizer slice with
+projection, search, selection inspection, and evidence display is available
+through a Rust JSON-RPC backend and a Blazor WebAssembly client.
 
 ## Extract One Rust File
 
@@ -133,7 +134,7 @@ workspace.
 Example successful output for the current repo workspace:
 
 ```text
-workspace=1 run=1 files=111 nodes=862 edges=751 occurrences=751 evidence=751
+workspace=1 run=1 files=130 nodes=1098 edges=968 occurrences=968 evidence=968
 ```
 
 Inspect the result:
@@ -148,11 +149,11 @@ Expected shape:
 ```text
 workspaces=1
 extraction_runs=1
-files=111
-nodes=862
-edges=751
-occurrences=751
-edge_evidence=751
+files=130
+nodes=1098
+edges=968
+occurrences=968
+edge_evidence=968
 ```
 
 ## Visualize A Rust Workspace
@@ -178,9 +179,10 @@ cargo run -p semantic-graph-visualizer-server -- \
   --bind 127.0.0.1:5179
 ```
 
-It serves `graph.projection` over JSON-RPC 2.0 at
-`http://127.0.0.1:5179/rpc`. The default projection limit is 150 non-file
-symbols plus their file nodes and any selected edges.
+It serves `graph.projection`, `graph.node_details`, `graph.edge_details`, and
+`graph.search_nodes` over JSON-RPC 2.0 at `http://127.0.0.1:5179/rpc`. The
+default projection limit is 150 non-file symbols plus their file nodes and any
+edges whose endpoints are both included in the projection.
 
 Optional backend smoke request:
 
@@ -200,6 +202,9 @@ ASPNETCORE_URLS=http://127.0.0.1:5180 \
 
 Open `http://127.0.0.1:5180`. The client reads the backend base URL from
 `apps/SemanticGraph.Visualizer/src/SemanticGraph.Visualizer.Client/wwwroot/appsettings.json`.
+The toolbar search finds SQLite-backed graph nodes by name, qualified name, or
+source path. Selecting visible nodes or edges loads details, occurrences, or
+edge evidence into the right inspector.
 
 ## Start Fresh
 
@@ -252,15 +257,15 @@ and the extractor workspace route. Current headline counts are:
 crate.persistence.files=4
 crate.persistence.nodes=57
 crate.persistence.edges=53
-workspace.discovery.count=111
+workspace.discovery.count=130
 workspace.discovery.submodule_files=0
-workspace.batch.files=111
-workspace.batch.symbols=751
-workspace.persistence.files=111
-workspace.persistence.nodes=862
-workspace.persistence.edges=751
-workspace.persistence.occurrences=751
-workspace.persistence.evidence=751
+workspace.batch.files=130
+workspace.batch.symbols=968
+workspace.persistence.files=130
+workspace.persistence.nodes=1098
+workspace.persistence.edges=968
+workspace.persistence.occurrences=968
+workspace.persistence.evidence=968
 ```
 
 ## Storage CLI
@@ -319,14 +324,14 @@ dotnet build SemanticGraph.Visualizer.slnx
 
 - `crates/semantic-graph-store`: SQLite graph store and stats/demo CLI.
 - `crates/semantic-graph-extract`: Rust document-symbol extractor.
-- `crates/semantic-graph-visualizer-server`: local JSON-RPC projection backend
-  for the visualizer.
+- `crates/semantic-graph-visualizer-server`: local read-only JSON-RPC backend
+  for visualizer projection, search, and inspection.
 - `crates/rust-analyzer-lib`: in-process facade over the pinned
   `rust-analyzer` submodule crates.
 - `crates/semantic-graph-smoke-tests`: route smoke-test/report surface.
 - `crates/wip`: small Rust crate used as the local extraction target.
 - `apps/SemanticGraph.Visualizer`: Blazor WebAssembly, Radzen, and
-  Blazor.Diagrams client for the first read-only graph viewport.
+  Blazor.Diagrams client for the read-only graph viewport and inspector.
 
 The extractor currently writes:
 
@@ -345,7 +350,8 @@ The extractor currently writes:
 - C# extraction.
 - CSV snapshots.
 - Stale-row handling.
-- Full graph exploration UI beyond the first bounded read-only projection.
+- Full graph exploration UI beyond the bounded read-only projection, search,
+  and inspector slice.
 
 ## Notes
 

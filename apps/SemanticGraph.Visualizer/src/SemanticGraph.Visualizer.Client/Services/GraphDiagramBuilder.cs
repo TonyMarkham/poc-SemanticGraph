@@ -104,31 +104,31 @@ public static class GraphDiagramBuilder
         return new Point(330 + column * 260, 36 + row * 220 + slot * 40);
     }
 
-    private static void ApplyRelationStyle(LinkModel link, string relation)
+    private static void ApplyRelationStyle(SemanticGraphLinkModel link, string relation)
     {
         switch (relation)
         {
             case "contains":
                 link.Color = "#8a96a8";
                 link.SelectedColor = "#4d607a";
-                link.Width = 1.35;
+                link.SetWidths(1.35, 3.25);
                 break;
             case "calls":
                 link.Color = "#c2410c";
                 link.SelectedColor = "#9a3412";
-                link.Width = 3;
+                link.SetWidths(3, 4.5);
                 link.TargetMarker = LinkMarker.Arrow;
                 break;
             case "references":
                 link.Color = "#2563eb";
                 link.SelectedColor = "#1d4ed8";
-                link.Width = 2;
+                link.SetWidths(2, 4);
                 link.TargetMarker = LinkMarker.Arrow;
                 break;
             default:
                 link.Color = "#667085";
                 link.SelectedColor = "#374151";
-                link.Width = 1.75;
+                link.SetWidths(1.75, 3.5);
                 break;
         }
     }
