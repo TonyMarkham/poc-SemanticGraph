@@ -3,11 +3,12 @@
 SemanticGraph is a proof of concept for extracting code facts into a durable
 SQLite graph.
 
-Right now, the useful path is Rust document-symbol extraction through the
-checked-in `rust-analyzer` libraries. The extractor supports single-file,
-crate-scoped, and workspace-scoped routes. A read-only visualizer slice with
-projection, search, selection inspection, and evidence display is available
-through a Rust JSON-RPC backend and a Blazor WebAssembly client.
+Right now, the useful path is Rust document-symbol extraction and workspace
+reference extraction through the checked-in `rust-analyzer` libraries. The
+extractor supports single-file, crate-scoped, workspace-scoped, and
+workspace-reference routes. A read-only visualizer slice with projection,
+search, selection inspection, and evidence display is available through a Rust
+JSON-RPC backend and a Blazor WebAssembly client.
 
 ## Extract One Rust File
 
@@ -134,7 +135,7 @@ workspace.
 Example successful output for the current repo workspace:
 
 ```text
-workspace=1 run=1 files=130 nodes=1098 edges=968 occurrences=968 evidence=968
+workspace=1 run=1 files=147 nodes=1337 edges=1190 occurrences=1190 evidence=1190
 ```
 
 Inspect the result:
@@ -149,25 +150,58 @@ Expected shape:
 ```text
 workspaces=1
 extraction_runs=1
-files=130
-nodes=1098
-edges=968
-occurrences=968
-edge_evidence=968
+files=147
+nodes=1337
+edges=1190
+occurrences=1190
+edge_evidence=1190
+```
+
+## Extract Rust Workspace References
+
+Use this when you want current Rust symbols and current Rust `references`
+edges in one run:
+
+```sh
+cargo run -p semantic-graph-extract -- rust-workspace-references \
+  --db .local/rust-workspace-references.db \
+  --workspace-root .
+```
+
+The references route refreshes document symbols first, then queries
+`rust-analyzer` references for eligible workspace symbols. Reference edges are
+stored as directed `source --references--> target` edges with occurrence and
+edge evidence proof.
+
+Example successful output for the current repo workspace:
+
+```text
+workspace=1 run=1 files=147 nodes=1337 contains_edges=1190 references_edges=2484 reference_occurrences=2968 evidence=4158 routes_complete=148 stale_nodes_closed=0 stale_edges_closed=0
+```
+
+Expected shape:
+
+```text
+workspaces=1
+extraction_runs=1
+files=147
+nodes=1337
+edges=3674
+occurrences=4158
+edge_evidence=4158
 ```
 
 ## Visualize A Rust Workspace
 
 The visualizer reads an existing SQLite graph and renders a bounded read-only
-projection. The Rust backend defaults to `.local/rust-workspace-extract-new.db`,
-which is the local fixture path used by the first UI slice.
+projection. The Rust backend defaults to `.local/rust-workspace-extract.db`,
+which is the local fixture path used by the UI slice.
 
 Create or refresh that fixture from the current workspace:
 
 ```sh
-rm -f .local/rust-workspace-extract-new.db
-cargo run -p semantic-graph-extract -- rust-workspace-document-symbols \
-  --db .local/rust-workspace-extract-new.db \
+cargo run -p semantic-graph-extract -- rust-workspace-references \
+  --db .local/rust-workspace-extract.db \
   --workspace-root .
 ```
 
@@ -175,7 +209,7 @@ Start the local JSON-RPC backend:
 
 ```sh
 cargo run -p semantic-graph-visualizer-server -- \
-  --database-path .local/rust-workspace-extract-new.db \
+  --database-path .local/rust-workspace-extract.db \
   --bind 127.0.0.1:5179
 ```
 
@@ -242,6 +276,7 @@ Crate and workspace smoke routes:
 ```sh
 just rust-crate-extract-smoke
 just rust-workspace-extract-smoke
+just rust-workspace-references-smoke
 ```
 
 The smoke-test crate also prints a route-level report:
@@ -251,21 +286,36 @@ SQLX_OFFLINE=true cargo run -p semantic-graph-smoke-tests
 ```
 
 That report exercises the `rust-analyzer-lib` facade, the extractor crate route,
-and the extractor workspace route. Current headline counts are:
+the extractor workspace route, and the workspace references route. Current
+headline counts are:
 
 ```text
 crate.persistence.files=4
 crate.persistence.nodes=57
 crate.persistence.edges=53
-workspace.discovery.count=130
+workspace.discovery.count=147
 workspace.discovery.submodule_files=0
-workspace.batch.files=130
-workspace.batch.symbols=968
-workspace.persistence.files=130
-workspace.persistence.nodes=1098
-workspace.persistence.edges=968
-workspace.persistence.occurrences=968
-workspace.persistence.evidence=968
+workspace.batch.files=147
+workspace.batch.symbols=1190
+workspace.persistence.files=147
+workspace.persistence.nodes=1337
+workspace.persistence.edges=1190
+workspace.persistence.occurrences=1190
+workspace.persistence.evidence=1190
+workspace.references.targets=1153
+workspace.references.edges=2484
+workspace.references.occurrences=2968
+workspace.references.file_fallbacks=647
+workspace.references.skipped_external=0
+workspace.references.persistence.files=147
+workspace.references.persistence.nodes=1337
+workspace.references.persistence.contains_edges=1190
+workspace.references.persistence.references_edges=2484
+workspace.references.persistence.reference_occurrences=2968
+workspace.references.persistence.evidence=4158
+workspace.references.persistence.routes_complete=148
+workspace.references.persistence.stale_nodes_closed=0
+workspace.references.persistence.stale_edges_closed=0
 ```
 
 ## Storage CLI
@@ -323,7 +373,8 @@ dotnet build SemanticGraph.Visualizer.slnx
 ## What Exists
 
 - `crates/semantic-graph-store`: SQLite graph store and stats/demo CLI.
-- `crates/semantic-graph-extract`: Rust document-symbol extractor.
+- `crates/semantic-graph-extract`: Rust document-symbol and workspace-reference
+  extractor.
 - `crates/semantic-graph-visualizer-server`: local read-only JSON-RPC backend
   for visualizer projection, search, and inspection.
 - `crates/rust-analyzer-lib`: in-process facade over the pinned
@@ -341,15 +392,23 @@ The extractor currently writes:
 - `definition` occurrences for symbols;
 - `contains` edges from file to top-level symbols and parent symbols to nested
   symbols;
-- edge evidence with `lsp_method = "textDocument/documentSymbol"`.
+- `references` edges from referencing symbols or fallback files to referenced
+  symbols;
+- reference occurrences for `textDocument/references` locations;
+- edge evidence with `lsp_method = "textDocument/documentSymbol"` or
+  `lsp_method = "textDocument/references"`;
+- route status and route observations for document-symbol/reference freshness
+  and stale closing.
 
 ## Not Yet Implemented
 
 - First-class persisted crate/package rows.
-- Calls, references, definitions, implementations, or type hierarchy.
+- Call edges, dedicated definition edges, implementation/inheritance edges, or
+  type hierarchy.
 - C# extraction.
 - CSV snapshots.
-- Stale-row handling.
+- Stale-row ownership policies for future semantic routes beyond document
+  symbols and references.
 - Full graph exploration UI beyond the bounded read-only projection, search,
   and inspector slice.
 

@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use crate::{
-    document_symbols_for_file, load_workspace, package_source_files, provider_version,
-    workspace_source_files,
+    ResolvedReferenceTarget, document_symbols_for_file, load_workspace, package_source_files,
+    provider_version, references_for_symbols, workspace_source_files,
 };
 use lsp_types::DocumentSymbol;
 
@@ -83,6 +83,36 @@ fn extracts_document_symbols_for_wip_test_module() -> Result<(), Box<dyn Error>>
 }
 
 #[test]
+fn extracts_references_for_wip_symbol() -> Result<(), Box<dyn Error>> {
+    let _guard = workspace_load_guard()?;
+    let repo_root = repo_root()?;
+    let target_file_path = repo_root.join("crates/wip/src/pipeline.rs");
+    let symbols = document_symbols_for_file(&repo_root, &target_file_path)?;
+    let target_symbol = find_symbol(&symbols, "WidgetProcessor")
+        .ok_or_else(|| io::Error::other("WidgetProcessor symbol was not found"))?;
+
+    let references = references_for_symbols(
+        &repo_root,
+        &[ResolvedReferenceTarget {
+            file_path: target_file_path.clone(),
+            selection_range: target_symbol.selection_range,
+            name: target_symbol.name.clone(),
+        }],
+    )?;
+
+    assert_eq!(references.len(), 1);
+    assert!(references[0].references.iter().any(|location| {
+        relative_path(&repo_root, &location.file_path).as_deref()
+            == Some("crates/wip/src/tests/mod.rs")
+    }));
+    assert!(!references[0].references.iter().any(|location| {
+        location.file_path == target_file_path && location.range == target_symbol.selection_range
+    }));
+
+    Ok(())
+}
+
+#[test]
 fn provider_version_is_deterministic_without_binary_probe() {
     assert_eq!(
         provider_version(),
@@ -121,4 +151,19 @@ fn collect_symbol_names(symbols: &[DocumentSymbol], names: &mut Vec<String>) {
             collect_symbol_names(children, names);
         }
     }
+}
+
+fn find_symbol<'a>(symbols: &'a [DocumentSymbol], name: &str) -> Option<&'a DocumentSymbol> {
+    for symbol in symbols {
+        if symbol.name == name {
+            return Some(symbol);
+        }
+        if let Some(children) = &symbol.children
+            && let Some(child) = find_symbol(children, name)
+        {
+            return Some(child);
+        }
+    }
+
+    None
 }

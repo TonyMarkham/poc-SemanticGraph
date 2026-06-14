@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const DEFAULT_DATABASE_PATH: &str = ".local/rust-workspace-extract-new.db";
+const DEFAULT_DATABASE_PATH: &str = ".local/rust-workspace-extract.db";
 const DEFAULT_BIND_ADDRESS: &str = "127.0.0.1:5179";
 const DATABASE_PATH_ENV: &str = "SEMANTIC_GRAPH_DB_PATH";
 const BIND_ADDRESS_ENV: &str = "SEMANTIC_GRAPH_VISUALIZER_BIND";

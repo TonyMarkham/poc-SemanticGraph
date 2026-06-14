@@ -23,7 +23,8 @@ The short version:
   analysis, artifact lifecycle, and export/query ergonomics.
 - SemanticGraph is much cleaner as a durable source-of-truth design: SQLite
   canonical rows, evidence tables, extraction runs, directed edges, and a
-  read-only projection API.
+  read-only projection API. It now also has route status, route observations,
+  stale closing, and provider-backed Rust references.
 - Graphify is a mature generated graph artifact system; SemanticGraph is a
   younger durable semantic graph store and extraction pipeline.
 - Graphify has richer graph theory in practice; SemanticGraph has a better
@@ -44,41 +45,45 @@ Graphify, as analyzed, has two semantic layers:
 
 See `graphify-semantic-model-analysis.md:57-79`.
 
-SemanticGraph, as analyzed, currently implements one production extraction
-route:
+SemanticGraph, as analyzed, currently implements two Rust production extraction
+families:
 
 - Rust document-symbol extraction into a durable SQLite containment graph.
+- Rust workspace references into directed `references` edges, reference
+  occurrences, edge evidence, route observations, and stale closing.
 
-Its measured workspace route is 130 files, 968 symbols, 1098 persisted nodes,
-968 persisted edges, 968 occurrences, and 968 edge-evidence rows. See
-`semanticgraph-codebase-analysis.md:73-101`.
+Its measured workspace document-symbol route is 147 files, 1190 symbols, 1337
+persisted nodes, 1190 `contains` edges, 1190 occurrences, and 1190
+edge-evidence rows. Its measured workspace references route adds 2484
+`references` edges and 2968 reference occurrences, for 4158 total occurrence
+and evidence rows. See `semanticgraph-codebase-analysis.md`.
 
 That means the fair comparison is:
 
 - Graphify: broad, artifact-oriented, analysis-rich, but looser as durable
   evidence.
-- SemanticGraph: narrow, evidence-oriented, storage-rich, but not yet
-  semantically broad.
+- SemanticGraph: narrower than Graphify, but now relation-rich for Rust
+  containment plus references and stronger as durable evidence storage.
 
 ## Scorecard
 
 | Dimension | Graphify | SemanticGraph | Head-to-head result |
 | --- | --- | --- | --- |
-| Semantic breadth | Code structure, docs, papers, images, transcripts, rationale, concepts, similarity, hyperedges | Rust document-symbol containment only | Graphify is broader |
-| Semantic authority for Rust/C# code | Syntax-first code extraction with heuristic/name-based resolution | Provider-backed Rust project/file-structure route through pinned libraries | SemanticGraph has the better authority model, but narrower facts |
+| Semantic breadth | Code structure, docs, papers, images, transcripts, rationale, concepts, similarity, hyperedges | Rust document-symbol containment and provider-backed Rust references | Graphify is still broader; SemanticGraph is now deeper for one code relation |
+| Semantic authority for Rust/C# code | Syntax-first code extraction with heuristic/name-based resolution | Provider-backed Rust project/file-structure and references through pinned libraries | SemanticGraph has the better authority model for implemented Rust facts |
 | Durable source of truth | NetworkX node-link JSON plus sidecars and caches | SQLite normalized schema with runs, files, nodes, edges, occurrences, evidence | SemanticGraph is stronger |
 | Evidence retention | Source fields and raw-ish artifacts exist, but merge/dedup can overwrite/collapse | Canonical graph rows separated from append-only occurrence/evidence rows | SemanticGraph is stronger |
-| Relation richness | Broad relation vocabulary, contexts, semantic/document edges, domain labels | Production relation is `contains`; other labels are schema/UI/test readiness | Graphify is richer |
-| Confidence model | Labels plus scores used in extraction, export, tests, and analysis | Labels and scores in schema; production route always `EXTRACTED`/`1.0` | Graphify exercises it more; SemanticGraph stores it cleanly |
+| Relation richness | Broad relation vocabulary, contexts, semantic/document edges, domain labels | Production relations are `contains` and `references` | Graphify is richer overall; SemanticGraph now has a real semantic edge family |
+| Confidence model | Labels plus scores used in extraction, export, tests, and analysis | Labels and scores in schema; `contains` is `EXTRACTED`, references can be `EXTRACTED` or `AMBIGUOUS` | Graphify exercises it more broadly; SemanticGraph now exercises it durably |
 | Direction | Directional semantics often recovered from `_src`/`_tgt` because default graph is undirected | Directed edges are first-class SQL columns | SemanticGraph is stronger |
 | Multigraph pressure | Simple graph pressure; dedicated MultiDiGraph compatibility probing | Unique edge claim by source, target, relation, context; evidence accumulates separately | SemanticGraph has the cleaner canonical model |
-| Tracked data lifecycle | Rich lifecycle under `graphify-out`: manifest, caches, conversions, fragments, graph JSON, telemetry | Explicit database classes, but route freshness and stale closing incomplete | Mixed: Graphify exposes more lifecycle pressure; SemanticGraph has better boundaries |
+| Tracked data lifecycle | Rich lifecycle under `graphify-out`: manifest, caches, conversions, fragments, graph JSON, telemetry | Explicit route status, route observations, runs, stale closing, canonical rows, and proof rows | SemanticGraph has the cleaner durable lifecycle; Graphify exposes more product lifecycle pressure |
 | Graph algorithms | Communities, cohesion, god nodes, betweenness, surprise ranking, cycles, hyperedge projection pressure | No centrality/community/cycle algorithms yet; graph theory section is readiness analysis | Graphify is stronger today |
 | Projection discipline | Many product projections, but canonical artifact also mixes derived fields | Read-only bounded projection API; no analytical projections yet | SemanticGraph is cleaner; Graphify is more mature |
 | Query/search | Graph-file query server with IDF scoring, BFS/DFS behavior, telemetry | JSON-RPC projection/details/search over read-only SQLite; search is simple `LIKE` | Graphify is richer; SemanticGraph is better integrated with evidence |
 | UI/export | HTML, report, Obsidian, canvas, graph formats, assistant hooks | Blazor.Diagrams/Radzen read-only viewport and inspector | Graphify is broader; SemanticGraph is more aligned to durable inspection |
 | Validation | Broad tests around extraction behavior, confidence, hyperedges, analysis | Strong route smoke tests and storage/backend tests for current slice | Tie by maturity-adjusted scope |
-| Biggest risk | Artifact merges/projections can be mistaken for durable truth | Narrow containment graph can be mistaken for full semantic modelling | Different risks |
+| Biggest risk | Artifact merges/projections can be mistaken for durable truth | Rust references can be overread as full semantic modelling without calls/types/imports | Different risks |
 
 ## Core Difference
 
@@ -93,7 +98,7 @@ hyperedges live at top level or graph metadata. See
 
 SemanticGraph's contract is normalized: workspaces, extraction runs, files,
 nodes, edges, occurrences, edge evidence, and search scaffolding are separate.
-See `semanticgraph-codebase-analysis.md:162-199`.
+See `semanticgraph-codebase-analysis.md`.
 
 That is the architectural split:
 
@@ -112,17 +117,17 @@ analysis says its code graph is mostly syntax-first. It also has a separate
 LLM semantic layer mainly for non-code corpus material. See
 `graphify-semantic-model-analysis.md:57-79`.
 
-SemanticGraph uses a narrower Rust route, but the route is backed by pinned
-Rust project loading and file structure through `rust-analyzer-lib`. Its
-analysis is explicit that this is structurally semantic, not full resolved
-semantic extraction: project loading and file inclusion are provider-backed,
-but references and calls are not yet resolved. See
-`semanticgraph-codebase-analysis.md:410-489`.
+SemanticGraph uses narrower Rust routes, but they are backed by pinned Rust
+project loading, file structure, and `analysis.find_all_refs` through
+`rust-analyzer-lib`. Document symbols are structurally semantic; references are
+resolved semantic facts. Calls, types, imports, implementations, and C# facts
+are not yet implemented. See `semanticgraph-codebase-analysis.md`.
 
 Head-to-head:
 
 - Graphify has more extraction categories today.
-- SemanticGraph has the better long-term authority model for Rust/C# code.
+- SemanticGraph has the better authority model for the Rust facts it does
+  implement.
 - SemanticGraph should not chase broad syntax-first extraction just to match
   Graphify's vocabulary count.
 - Graphify's extraction breadth should be treated as a requirements catalog,
@@ -138,9 +143,8 @@ state, and product fields can live in the same artifact namespace. See
 
 SemanticGraph's graph contract is database-first. Canonical nodes and edges
 are separate from occurrence and edge evidence. The source analysis calls this
-the right boundary, while also noting that route freshness is still too coarse.
-See `semanticgraph-codebase-analysis.md:162-199` and
-`semanticgraph-codebase-analysis.md:492-549`.
+the right boundary, and VS-10 added route status and route observations for
+freshness and stale closing. See `semanticgraph-codebase-analysis.md`.
 
 Head-to-head:
 
@@ -170,7 +174,7 @@ fields. It normalizes LSP symbol kinds into strings such as `file`, `module`,
 `function`, `method`, `field`, `struct`, `enum`, `interface`, and
 `type_parameter`. Its own analysis calls out that this LSP-derived vocabulary
 will be too coarse for future type-system routes. See
-`semanticgraph-codebase-analysis.md:201-246`.
+`semanticgraph-codebase-analysis.md`.
 
 Head-to-head:
 
@@ -201,7 +205,7 @@ SemanticGraph hashes typed identity parts for durable node and edge IDs. It
 still uses document-symbol keys that include file URI, kind, selection range,
 name, and parent path. The analysis flags this as deterministic but
 range-sensitive and rename/move-sensitive. See
-`semanticgraph-codebase-analysis.md:248-285`.
+`semanticgraph-codebase-analysis.md`.
 
 Head-to-head:
 
@@ -221,16 +225,17 @@ broader and include structure, type, dependency, call, construction, domain,
 LLM/concept, and hyperedge relation families. See
 `graphify-semantic-model-analysis.md:170-237`.
 
-SemanticGraph production extraction emits exactly one relation:
+SemanticGraph production extraction emits two relations:
 
 - `contains`
+- `references`
 
-The schema and UI anticipate more, but production data is currently a
-containment graph. See `semanticgraph-codebase-analysis.md:287-337`.
+The schema and UI still anticipate more relation families, but production data
+is no longer only containment. See `semanticgraph-codebase-analysis.md`.
 
 Head-to-head:
 
-- Graphify wins on relation breadth.
+- Graphify still wins on relation breadth.
 - SemanticGraph wins on evidence-preserving storage for relation claims.
 - Graphify's vocabulary is a good discovery catalog, but too open-ended to
   adopt directly as canonical storage.
@@ -244,7 +249,7 @@ Useful synthesis:
 | Containment | Implemented broadly | Implemented for document symbols | Keep, but define lexical/file/module meanings |
 | Imports/dependencies | Implemented in places | Not implemented | Add as separate projection-friendly family |
 | Calls | Implemented syntax/heuristic side | Not implemented | Add via provider-backed route, not name matching |
-| References/types | Broad contexts | Not implemented | Add route-specific evidence and context |
+| References/types | Broad contexts | Rust references implemented; type edges not implemented | Extend context/type policy after reference identity stabilizes |
 | Inheritance/implementation | Present | Not implemented | Add once type identity is stronger |
 | Conceptual/similarity | Present | Not implemented | Defer until document/concept corpus exists |
 | Hyperedges | Present outside core edge topology | Not implemented | Defer or model with first-class tables |
@@ -256,14 +261,16 @@ parameter type, return type, generic argument, attribute, value, and type. See
 `graphify-semantic-model-analysis.md:238-265`.
 
 SemanticGraph already has an edge `context` column and makes context part of
-edge uniqueness, but production extraction currently writes `None` for
-document-symbol relations. See `semanticgraph-codebase-analysis.md:377-408`.
+edge uniqueness. Document-symbol `contains` still writes `None`, while
+`references` writes `context = 'symbol'`. See
+`semanticgraph-codebase-analysis.md`.
 
 Head-to-head:
 
 - Graphify demonstrates why context matters.
-- SemanticGraph has the better storage slot for context.
-- SemanticGraph needs route policy for context before adding many relation
+- SemanticGraph has the better storage slot for context and now uses it for
+  references.
+- SemanticGraph still needs broader route policy before adding many relation
   types.
 
 Implementation rule:
@@ -284,15 +291,16 @@ tests, export defaults, and analysis behavior that treats uncertain edges as
 noteworthy. See `graphify-semantic-model-analysis.md:267-306` and
 `graphify-semantic-model-analysis.md:958-993`.
 
-SemanticGraph has the labels and scores in schema, but the only production
-route stamps document-symbol containment as `EXTRACTED` with score `1.0`. See
-`semanticgraph-codebase-analysis.md:339-375`.
+SemanticGraph has the labels and scores in schema. Document-symbol containment
+is `EXTRACTED` with score `1.0`; references are `EXTRACTED` with score `1.0`
+when source and target symbols resolve, or `AMBIGUOUS` with score `0.6` when
+the source falls back to a file node. See `semanticgraph-codebase-analysis.md`.
 
 Head-to-head:
 
-- Graphify has richer confidence behavior.
+- Graphify has broader confidence behavior.
 - SemanticGraph has a cleaner place to store confidence as durable edge
-  metadata.
+  metadata and now exercises ambiguity for file-fallback references.
 - SemanticGraph should preserve the distinction between epistemic confidence
   and graph-analysis weight. Graphify's graph-theory analysis explicitly shows
   why they should not be collapsed.
@@ -318,22 +326,22 @@ Its manifest has separate AST and semantic freshness concepts, and missing
 semantic hashes requeue semantic extraction. See
 `graphify-semantic-model-analysis.md:593-623`.
 
-SemanticGraph tracks fewer lifecycle classes, but does so with clearer
-boundaries: workspace, extraction run, source file, canonical node, canonical
-edge, node proof, edge proof, provider payload, search index, projection DTOs,
-diagram state, and smoke output. See
-`semanticgraph-codebase-analysis.md:492-549`.
+SemanticGraph tracks fewer product lifecycle classes, but does so with clearer
+boundaries: workspace, extraction run, route status, route observation, source
+file, canonical node, canonical edge, node proof, edge proof, provider
+payload, search index, projection DTOs, diagram state, and smoke output. See
+`semanticgraph-codebase-analysis.md`.
 
 Head-to-head:
 
 | Lifecycle concern | Graphify | SemanticGraph | Practical conclusion |
 | --- | --- | --- | --- |
-| Route freshness | AST/semantic distinction exists in manifest | File/run level only | SemanticGraph should add per-route freshness |
+| Route freshness | AST/semantic distinction exists in manifest | DB route status and observations implemented for Rust document symbols/references | Extend the pattern per new route |
 | Raw evidence | Present but mixed with artifact/cache behavior | Separate occurrence/evidence tables | Preserve SemanticGraph boundary |
 | Cache | Mature and cost-aware | Minimal/not central | Add caches only as disposable acceleration |
 | Generated outputs | Mature | Minimal | Add exports after DB truth is stable |
 | Telemetry | Query logging exists | No comparable telemetry | Keep telemetry local/opt-in if added |
-| Stale handling | Merge/prune behavior exists | Schema ready, not implemented | Implement stale closing in DB |
+| Stale handling | Merge/prune behavior exists | DB stale closing implemented for Rust document symbols/references | Define ownership carefully for future routes |
 
 Deep conclusion:
 
@@ -352,15 +360,17 @@ overwrite, repair, dedup, or prune. See
 `graphify-semantic-model-analysis.md:734-766`.
 
 SemanticGraph's canonical rows are upserted, while occurrence and edge
-evidence rows are appended every run. It already has `first_seen_run_id`,
-`last_seen_run_id`, and `valid_to_run_id`, but stale-row closing is not
-implemented. See `semanticgraph-codebase-analysis.md:492-522`.
+evidence rows are appended every run. It has `first_seen_run_id`,
+`last_seen_run_id`, `valid_to_run_id`, route observations, and implemented
+stale-row closing for document-symbol and reference routes. See
+`semanticgraph-codebase-analysis.md`.
 
 Head-to-head:
 
 - Graphify has a more complete artifact update story.
 - SemanticGraph has a more correct durability story.
-- SemanticGraph needs to implement the missing negative-observation path.
+- SemanticGraph has implemented the basic negative-observation path; future
+  routes need route-specific ownership rules.
 - Graphify's shrinkage/prune protections are a useful product idea, but in
   SemanticGraph they should become run/state transitions, not artifact guards.
 
@@ -381,11 +391,11 @@ SemanticGraph's graph-theory model is currently simple:
 
 - directed property graph with evidence side tables;
 - file-rooted containment forest;
-- no production cross-file edges;
+- production Rust `references` edges overlaid on that forest;
 - no hyperedges;
 - no persisted centrality/community/cycle/layout projections.
 
-See `semanticgraph-codebase-analysis.md:651-736`.
+See `semanticgraph-codebase-analysis.md`.
 
 Head-to-head:
 
@@ -400,9 +410,9 @@ Head-to-head:
 
 Deep conclusion:
 
-SemanticGraph should not run global graph algorithms on the current
-containment forest and call the results architecture. Graphify proves the
-value of algorithms, but also proves they must be projection-specific.
+SemanticGraph should not run global graph algorithms over mixed `contains` and
+`references` edges and call the results architecture. Graphify proves the value
+of algorithms, but also proves they must be projection-specific.
 
 ## Query And Search
 
@@ -414,7 +424,7 @@ hub expansion limits, and optional query logging. See
 SemanticGraph's query layer is cleaner as a backend boundary. It opens SQLite
 read-only, serves JSON-RPC methods, returns bounded projections, fetches
 details/evidence on demand, and searches name/display/qualified/path with
-escaped `LIKE` patterns. See `semanticgraph-codebase-analysis.md:551-607`.
+escaped `LIKE` patterns. See `semanticgraph-codebase-analysis.md`.
 
 Head-to-head:
 
@@ -438,7 +448,7 @@ SemanticGraph has a narrower but architecturally cleaner UI slice: Blazor
 client, JSON-RPC backend, bounded projection, search, node selection, edge
 selection, details, occurrences, evidence, and raw JSON. It separates durable
 records, backend DTOs, diagram models, and selection state. See
-`semanticgraph-codebase-analysis.md:609-649`.
+`semanticgraph-codebase-analysis.md`.
 
 Head-to-head:
 
@@ -457,12 +467,13 @@ clustering, analysis, query, and lifecycle behavior.
 
 SemanticGraph is mature in slice quality. Its analysis cites store tests,
 extract tests, smoke tests, visualizer backend tests, and strict lint
-expectations. See `semanticgraph-codebase-analysis.md:774-815`.
+expectations. See `semanticgraph-codebase-analysis.md`.
 
 Head-to-head:
 
 - Graphify has broader behavioral coverage.
-- SemanticGraph has strong end-to-end coverage for its current narrow route.
+- SemanticGraph has strong end-to-end coverage for its current Rust document
+  symbol and reference routes.
 - SemanticGraph's test pattern should scale with new relation families:
   fixture mapper test, persistence test, smoke count, query/detail test, and
   UI behavior check where relevant.
@@ -510,8 +521,8 @@ the foundation is worth preserving while adding richer routes.
    is the better durable foundation.
 
 2. Do not add algorithms before relation richness.
-   Graphify has strong algorithm examples, but SemanticGraph's current
-   containment forest is not a meaningful architecture graph.
+   Graphify has strong algorithm examples, but SemanticGraph should first add
+   explicit projections over its now-mixed containment/reference graph.
 
 3. Do not treat confidence as graph weight.
    Graphify shows why uncertainty and topology are different dimensions.
@@ -519,12 +530,13 @@ the foundation is worth preserving while adding richer routes.
 
 4. Do not collapse route freshness into file freshness.
    Graphify's AST/semantic manifest split shows the pressure. SemanticGraph
-   should generalize it into per-route database state.
+   has generalized it into per-route database state for document symbols and
+   references; future routes should reuse that pattern.
 
 5. Do not overload `context` accidentally.
    Graphify shows context is useful. SemanticGraph has a context column, but
-   production extraction does not use it yet. Add policy before adding many
-   relation families.
+   only references currently use it meaningfully. Add policy before adding
+   many relation families.
 
 6. Do not interpret UI projection as whole-graph truth.
    Both analyses independently converge on projection discipline.
@@ -565,15 +577,16 @@ SemanticGraph contributes:
 
 Priority 1: route freshness and stale closing.
 
-SemanticGraph already has `valid_to_run_id`, but no implemented stale closing.
-Add route-level status before adding many new edge families. This directly
-addresses both documents' lifecycle findings.
+Implemented for Rust document symbols and references. Keep this as a mandatory
+pattern for every new route: explicit route status, observations, successful
+route completion before stale closing, and no stale closing on failed routes.
 
-Priority 2: one relation-rich Rust route.
+Priority 2: the next relation-rich Rust route.
 
-Add references or calls end to end, with provider-backed facts, canonical
-edges, edge evidence, confidence, context, persistence tests, smoke counts, and
-visualizer details. Do not add three half-routes.
+References are implemented end to end. The next best candidate is calls,
+implemented with provider-backed facts, canonical edges, edge evidence,
+confidence, context, persistence tests, smoke counts, and visualizer details.
+Do not add three half-routes.
 
 Priority 3: controlled relation/context vocabulary.
 
@@ -604,9 +617,9 @@ truth.
 | Context/subtyping | Yes | Yes | Make query-critical context structured |
 | Source evidence | Partly | Yes | Preserve observations separately |
 | Cache strategy | Yes, as pressure | No, not as truth | Cache is acceleration |
-| Manifest/freshness | Yes, as pressure | Yes, with DB routes | Add per-route freshness |
+| Manifest/freshness | Yes, as pressure | Yes, with DB routes | Extend per-route freshness |
 | Graph JSON export | Yes | No | Export from SQLite, not truth |
-| Communities | Yes | Not yet | Wait for relation-rich projections |
+| Communities | Yes | Not yet | Wait for explicit relation-rich projections |
 | God nodes | Yes | Not yet | Projection-specific only |
 | Surprise ranking | Yes | Not yet | Derived finding with score policy |
 | Hyperedges | Yes | Not yet | First-class tables if adopted |
@@ -621,8 +634,9 @@ it has many kinds of edges, projections, summaries, and artifacts.
 SemanticGraph is the stronger example of how a semantic graph should be stored
 if the goal is durable, auditable, incrementally refreshable code intelligence.
 
-The next correct move is not to make SemanticGraph look like Graphify. The
-next correct move is to give SemanticGraph one richer provider-backed relation
-route while keeping its SQLite/evidence model intact, then add Graphify-style
-projection and analysis ideas only after the graph contains relations that make
-those algorithms meaningful.
+The next correct move is not to make SemanticGraph look like Graphify. VS-10
+proved the intended path: add one richer provider-backed relation route while
+keeping the SQLite/evidence/freshness model intact. The next moves should add
+another high-value provider-backed route, likely calls, and then bring in
+Graphify-style projection and analysis ideas only through explicit
+relation-aware projections.

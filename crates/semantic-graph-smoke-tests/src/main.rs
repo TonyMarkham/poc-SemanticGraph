@@ -5,7 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use lsp_types::DocumentSymbol;
 use semantic_graph_extract::document_symbols::paths::file_uri;
-use semantic_graph_extract::model::DocumentSymbolBatchRequest;
+use semantic_graph_extract::model::{DocumentSymbolBatchRequest, ReferenceBatchRequest};
 use semantic_graph_extract::persist::ExtractionPersister;
 use semantic_graph_extract::providers::rust_analyzer::RustAnalyzerProvider;
 use semantic_graph_store::GraphStore;
@@ -135,7 +135,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
         .extract_document_symbol_batch(DocumentSymbolBatchRequest {
             workspace_root: workspace_root.clone(),
             package_path: workspace_root.clone(),
-            file_paths: workspace_files,
+            file_paths: workspace_files.clone(),
         })
         .await?;
     let workspace_symbol_count: usize = workspace_extraction
@@ -205,6 +205,108 @@ async fn run() -> Result<(), Box<dyn Error>> {
     ensure(
         workspace_summary.evidence > summary.evidence,
         "workspace persistence wrote more edge evidence than the WIP crate",
+    )?;
+
+    let reference_extraction = provider
+        .extract_rust_references(ReferenceBatchRequest {
+            workspace_root: workspace_root.clone(),
+            package_path: workspace_root.clone(),
+            file_paths: workspace_files,
+        })
+        .await?;
+    println!(
+        "workspace.references.targets={}",
+        reference_extraction.summary.targets_queried
+    );
+    println!(
+        "workspace.references.edges={}",
+        reference_extraction.summary.reference_edges
+    );
+    println!(
+        "workspace.references.occurrences={}",
+        reference_extraction.summary.reference_occurrences
+    );
+    println!(
+        "workspace.references.file_fallbacks={}",
+        reference_extraction.summary.file_fallbacks
+    );
+    println!(
+        "workspace.references.skipped_external={}",
+        reference_extraction.summary.skipped_external
+    );
+    ensure(
+        reference_extraction.summary.targets_queried > 0,
+        "workspace references queried at least one target",
+    )?;
+    ensure(
+        reference_extraction.summary.reference_edges > 0,
+        "workspace references produced canonical edges",
+    )?;
+    ensure(
+        reference_extraction.summary.reference_occurrences > 0,
+        "workspace references produced occurrences",
+    )?;
+
+    let reference_db_path = temp_db_path("workspace-references")?;
+    let reference_store = GraphStore::connect(&reference_db_path).await?;
+    reference_store.migrate().await?;
+    let reference_summary = ExtractionPersister
+        .persist_reference_batch(&reference_store, &workspace_root_uri, &reference_extraction)
+        .await?;
+    println!(
+        "workspace.references.persistence.db={}",
+        reference_db_path.display()
+    );
+    println!(
+        "workspace.references.persistence.files={}",
+        reference_summary.files
+    );
+    println!(
+        "workspace.references.persistence.nodes={}",
+        reference_summary.nodes
+    );
+    println!(
+        "workspace.references.persistence.contains_edges={}",
+        reference_summary
+            .edges
+            .saturating_sub(reference_summary.reference_edges)
+    );
+    println!(
+        "workspace.references.persistence.references_edges={}",
+        reference_summary.reference_edges
+    );
+    println!(
+        "workspace.references.persistence.reference_occurrences={}",
+        reference_summary.reference_occurrences
+    );
+    println!(
+        "workspace.references.persistence.evidence={}",
+        reference_summary.evidence
+    );
+    println!(
+        "workspace.references.persistence.routes_complete={}",
+        reference_summary.routes_complete
+    );
+    println!(
+        "workspace.references.persistence.stale_nodes_closed={}",
+        reference_summary.stale_nodes_closed
+    );
+    println!(
+        "workspace.references.persistence.stale_edges_closed={}",
+        reference_summary.stale_edges_closed
+    );
+    ensure(
+        reference_summary.reference_edges == reference_extraction.summary.reference_edges,
+        "reference persistence wrote every reference edge",
+    )?;
+    ensure(
+        reference_summary.reference_occurrences
+            == reference_extraction.summary.reference_occurrences,
+        "reference persistence wrote every reference occurrence",
+    )?;
+    ensure(
+        reference_summary.routes_complete == reference_summary.files + 1,
+        "reference persistence completed document-symbol and reference routes",
     )?;
 
     println!("PASS semantic-graph rust route smoke");

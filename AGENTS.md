@@ -44,7 +44,7 @@ Storage:
 Language intelligence:
 
 - Rust semantic facts should come from `rust-analyzer`.
-- Current Rust document-symbol extraction uses the checked-in
+- Current Rust document-symbol and reference extraction use the checked-in
   `rust-analyzer` submodule crates in-process through `crates/rust-analyzer-lib`.
   Do not reintroduce runtime shelling out to `rust-analyzer` CLI/LSIF paths
   unless the user explicitly asks for that design change.
@@ -156,7 +156,8 @@ Rust workspace:
 - `Cargo.toml`: workspace manifest.
 - `crates/rust-analyzer-lib`: in-process facade over pinned `rust-analyzer`
   submodule crates.
-- `crates/semantic-graph-extract`: Rust document-symbol extractor CLI/library.
+- `crates/semantic-graph-extract`: Rust document-symbol and reference extractor
+  CLI/library.
 - `crates/semantic-graph-smoke-tests`: route smoke-test/report surface.
 - `crates/semantic-graph-store`: SQLite graph store and stats/demo CLI.
 - `crates/semantic-graph-visualizer-server`: local read-only JSON-RPC backend
@@ -232,8 +233,8 @@ Validation:
 
 ```sh
 git submodule status
-rg -n "rust-analyzer-lib|rust-workspace-document-symbols|document_symbol" crates
-rg -n "semantic-graph-smoke-tests|workspace.persistence|crate.persistence" README.md crates
+rg -n "rust-analyzer-lib|rust-workspace-document-symbols|rust-workspace-references|document_symbol|references" crates
+rg -n "semantic-graph-smoke-tests|workspace.persistence|workspace.references|crate.persistence" README.md crates
 rg -n "anyhow|error-location|ExtractError|GraphStoreError|RustAnalyzerLibError" crates Cargo.toml
 rg -n "use super|::\\*|pub use .*::\\*" crates
 rg -n "semantic-graph-visualizer-server|graph.projection|graph.node_details|graph.edge_details|graph.search_nodes|POST /rpc" README.md crates

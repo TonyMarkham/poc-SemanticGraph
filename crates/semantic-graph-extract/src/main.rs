@@ -3,7 +3,7 @@ use semantic_graph_extract::{
     document_symbols::paths::{
         file_uri, validate_document_symbol_batch_request, validate_document_symbol_request,
     },
-    model::{DocumentSymbolBatchRequest, DocumentSymbolRequest},
+    model::{DocumentSymbolBatchRequest, DocumentSymbolRequest, ReferenceBatchRequest},
     persist::ExtractionPersister,
     provider::DocumentSymbolProvider,
     providers::rust_analyzer::RustAnalyzerProvider,
@@ -45,6 +45,13 @@ enum Command {
     },
     #[command(name = "rust-workspace-document-symbols")]
     WorkspaceBatch {
+        #[arg(long)]
+        db: PathBuf,
+        #[arg(long)]
+        workspace_root: PathBuf,
+    },
+    #[command(name = "rust-workspace-references")]
+    WorkspaceReferences {
         #[arg(long)]
         db: PathBuf,
         #[arg(long)]
@@ -160,6 +167,48 @@ async fn run() -> ExtractResult<()> {
                 summary.edges,
                 summary.occurrences,
                 summary.evidence
+            );
+        }
+        Command::WorkspaceReferences { db, workspace_root } => {
+            let provider = RustAnalyzerProvider::new();
+            let file_paths = provider.discover_rust_workspace_source_files(&workspace_root)?;
+            let document_request =
+                validate_document_symbol_batch_request(DocumentSymbolBatchRequest {
+                    package_path: workspace_root.clone(),
+                    workspace_root,
+                    file_paths,
+                })?;
+            let workspace_root_uri = file_uri(&document_request.workspace_root)?;
+            let store = GraphStore::connect(db)
+                .await
+                .map_err(ExtractError::storage)?;
+            store.migrate().await.map_err(ExtractError::storage)?;
+
+            let extraction = provider
+                .extract_rust_references(ReferenceBatchRequest {
+                    workspace_root: document_request.workspace_root,
+                    package_path: document_request.package_path,
+                    file_paths: document_request.file_paths,
+                })
+                .await?;
+            let summary = ExtractionPersister
+                .persist_reference_batch(&store, &workspace_root_uri, &extraction)
+                .await?;
+            let contains_edges = summary.edges.saturating_sub(summary.reference_edges);
+
+            println!(
+                "workspace={} run={} files={} nodes={} contains_edges={} references_edges={} reference_occurrences={} evidence={} routes_complete={} stale_nodes_closed={} stale_edges_closed={}",
+                summary.workspace_id,
+                summary.run_id,
+                summary.files,
+                summary.nodes,
+                contains_edges,
+                summary.reference_edges,
+                summary.reference_occurrences,
+                summary.evidence,
+                summary.routes_complete,
+                summary.stale_nodes_closed,
+                summary.stale_edges_closed
             );
         }
     }

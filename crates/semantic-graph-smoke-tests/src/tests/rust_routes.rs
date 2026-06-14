@@ -5,7 +5,7 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use semantic_graph_extract::document_symbols::paths::file_uri;
-use semantic_graph_extract::model::DocumentSymbolBatchRequest;
+use semantic_graph_extract::model::{DocumentSymbolBatchRequest, ReferenceBatchRequest};
 use semantic_graph_extract::persist::ExtractionPersister;
 use semantic_graph_extract::providers::rust_analyzer::RustAnalyzerProvider;
 use semantic_graph_store::GraphStore;
@@ -160,6 +160,51 @@ fn workspace_route_persists_workspace_batch_without_binary() -> Result<(), Box<d
         assert!(summary.edges > 0);
         assert!(summary.occurrences > 0);
         assert!(summary.evidence > 0);
+
+        Ok::<(), Box<dyn Error>>(())
+    })?;
+
+    Ok(())
+}
+
+#[test]
+fn workspace_route_persists_workspace_references_without_binary() -> Result<(), Box<dyn Error>> {
+    let _guard = workspace_load_guard()?;
+    let repo_root = repo_root()?;
+    let provider = RustAnalyzerProvider::new();
+    let files = provider.discover_rust_workspace_source_files(&repo_root)?;
+    let file_count = files.len();
+
+    let runtime = Builder::new_current_thread().enable_all().build()?;
+    runtime.block_on(async {
+        let extraction = provider
+            .extract_rust_references(ReferenceBatchRequest {
+                workspace_root: repo_root.clone(),
+                package_path: repo_root.clone(),
+                file_paths: files,
+            })
+            .await?;
+
+        assert_eq!(extraction.document_symbols.extractions.len(), file_count);
+        assert!(extraction.summary.targets_queried > 0);
+        assert!(extraction.summary.reference_edges > 0);
+        assert!(extraction.summary.reference_occurrences > 0);
+
+        let db_path = temp_db_path("workspace-references")?;
+        let store = GraphStore::connect(&db_path).await?;
+        store.migrate().await?;
+        let workspace_root_uri = file_uri(&repo_root)?;
+        let summary = ExtractionPersister
+            .persist_reference_batch(&store, &workspace_root_uri, &extraction)
+            .await?;
+
+        assert_eq!(summary.files, file_count);
+        assert_eq!(summary.reference_edges, extraction.summary.reference_edges);
+        assert_eq!(
+            summary.reference_occurrences,
+            extraction.summary.reference_occurrences
+        );
+        assert_eq!(summary.routes_complete, file_count + 1);
 
         Ok::<(), Box<dyn Error>>(())
     })?;

@@ -156,10 +156,7 @@ async fn handle_graph_search_nodes(
     result_response(id, state.query_service().search_nodes(&query, limit).await)
 }
 
-fn deserialize_params<T>(
-    id: Option<Value>,
-    params: Option<Value>,
-) -> Result<T, JsonRpcResponseDto>
+fn deserialize_params<T>(id: Option<Value>, params: Option<Value>) -> Result<T, JsonRpcResponseDto>
 where
     T: serde::de::DeserializeOwned,
 {

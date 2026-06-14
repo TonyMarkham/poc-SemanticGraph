@@ -11,8 +11,8 @@ use crate::{
         graph_edge_evidence_row::GraphEdgeEvidenceRow, graph_edge_row::GraphEdgeRow,
         graph_node_details_row::GraphNodeDetailsRow,
         graph_node_occurrence_row::GraphNodeOccurrenceRow,
-        graph_node_relation_summary_row::GraphNodeRelationSummaryRow,
-        graph_node_row::GraphNodeRow, graph_node_search_result_row::GraphNodeSearchResultRow,
+        graph_node_relation_summary_row::GraphNodeRelationSummaryRow, graph_node_row::GraphNodeRow,
+        graph_node_search_result_row::GraphNodeSearchResultRow,
         sqlite_read_pool::open_read_only_pool,
     },
 };
@@ -50,10 +50,7 @@ impl GraphQueryService {
         })
     }
 
-    pub async fn node_details(
-        &self,
-        node_id: &str,
-    ) -> VisualizerServerResult<GraphNodeDetailsDto> {
+    pub async fn node_details(&self, node_id: &str) -> VisualizerServerResult<GraphNodeDetailsDto> {
         let pool = open_read_only_pool(&self.database_path).await?;
         let node = load_node_details_row(&pool, node_id).await?;
         let relations = load_node_relation_summaries(&pool, node_id).await?;
@@ -85,10 +82,7 @@ impl GraphQueryService {
         })
     }
 
-    pub async fn edge_details(
-        &self,
-        edge_id: &str,
-    ) -> VisualizerServerResult<GraphEdgeDetailsDto> {
+    pub async fn edge_details(&self, edge_id: &str) -> VisualizerServerResult<GraphEdgeDetailsDto> {
         let pool = open_read_only_pool(&self.database_path).await?;
         let edge = load_edge_details_row(&pool, edge_id).await?;
         let source = load_edge_endpoint(&pool, &edge.source_node_id).await?;

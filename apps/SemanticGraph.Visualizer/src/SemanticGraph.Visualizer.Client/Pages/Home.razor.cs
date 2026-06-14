@@ -67,7 +67,7 @@ public partial class Home : IDisposable
 
     private bool IsEmpty => Projection is { Nodes.Count: 0 };
 
-    private string DatabasePathText => Projection?.Metadata.DatabasePath ?? ".local/rust-workspace-extract-new.db";
+    private string DatabasePathText => Projection?.Metadata.DatabasePath ?? ".local/rust-workspace-extract.db";
 
     private string NodeCountText => (Projection?.Metadata.NodeCount ?? 0).ToString();
 

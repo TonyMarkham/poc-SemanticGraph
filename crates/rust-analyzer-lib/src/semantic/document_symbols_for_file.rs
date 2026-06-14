@@ -19,8 +19,8 @@ pub fn document_symbols_for_file(
 }
 
 pub(super) struct LoadedAnalysis {
-    analysis: ide::Analysis,
-    vfs: vfs::Vfs,
+    pub(super) analysis: ide::Analysis,
+    pub(super) vfs: vfs::Vfs,
 }
 
 impl LoadedAnalysis {
@@ -109,7 +109,7 @@ impl LoadedAnalysis {
         Ok(build_hierarchy(symbols))
     }
 
-    fn file_id_for_path(&self, file_path: &Path) -> RustAnalyzerLibResult<FileId> {
+    pub(super) fn file_id_for_path(&self, file_path: &Path) -> RustAnalyzerLibResult<FileId> {
         let abs_path = AbsPathBuf::assert_utf8(file_path.to_path_buf());
         let vfs_path = VfsPath::from(abs_path);
         match self.vfs.file_id(&vfs_path) {
@@ -142,14 +142,20 @@ fn build_hierarchy(mut symbols: Vec<(DocumentSymbol, Option<usize>)>) -> Vec<Doc
     roots
 }
 
-fn range(line_index: &ide::LineIndex, text_range: TextRange) -> RustAnalyzerLibResult<Range> {
+pub(super) fn range(
+    line_index: &ide::LineIndex,
+    text_range: TextRange,
+) -> RustAnalyzerLibResult<Range> {
     Ok(Range::new(
         position(line_index, text_range.start())?,
         position(line_index, text_range.end())?,
     ))
 }
 
-fn position(line_index: &ide::LineIndex, offset: TextSize) -> RustAnalyzerLibResult<Position> {
+pub(super) fn position(
+    line_index: &ide::LineIndex,
+    offset: TextSize,
+) -> RustAnalyzerLibResult<Position> {
     let line_col = line_index.line_col(offset);
     let line_col = line_index
         .to_wide(WideEncoding::Utf16, line_col)

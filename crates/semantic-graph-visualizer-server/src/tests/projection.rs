@@ -45,6 +45,25 @@ async fn projection_includes_selected_symbols_files_and_edges() -> Result<(), Bo
 }
 
 #[tokio::test]
+async fn projection_includes_reference_edges_when_endpoints_are_selected()
+-> Result<(), Box<dyn Error>> {
+    let database_path = seeded_database_path().await?;
+
+    let service = GraphQueryService::new(database_path.clone());
+    let projection = service.projection(3).await?;
+
+    assert!(
+        projection
+            .edges
+            .iter()
+            .any(|edge| edge.relation == "references")
+    );
+
+    std::fs::remove_file(database_path)?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn node_details_returns_metadata_occurrences_and_counts() -> Result<(), Box<dyn Error>> {
     let database_path = seeded_database_path().await?;
 
@@ -59,8 +78,8 @@ async fn node_details_returns_metadata_occurrences_and_counts() -> Result<(), Bo
     assert_eq!(Some("module-root"), details.container_node_id.as_deref());
     assert_eq!(Some("crate"), details.container_display_label.as_deref());
     assert_eq!(2, details.incoming_edge_count);
-    assert_eq!(1, details.outgoing_edge_count);
-    assert_eq!(2, details.relations.len());
+    assert_eq!(2, details.outgoing_edge_count);
+    assert_eq!(3, details.relations.len());
     assert!(
         details
             .relations
@@ -77,10 +96,48 @@ async fn node_details_returns_metadata_occurrences_and_counts() -> Result<(), Bo
                 && relation.relation == "contains"
                 && relation.edge_count == 1)
     );
+    assert!(
+        details
+            .relations
+            .iter()
+            .any(|relation| relation.direction == "outgoing"
+                && relation.relation == "references"
+                && relation.edge_count == 1)
+    );
     assert_eq!(1, details.occurrences.len());
     assert_eq!("definition", details.occurrences[0].role);
     assert_eq!("src/lib.rs", details.occurrences[0].source_file_path);
     assert_eq!(json!({ "visibility": "public" }), details.properties_json);
+
+    std::fs::remove_file(database_path)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn edge_details_returns_reference_context_weight_and_evidence() -> Result<(), Box<dyn Error>>
+{
+    let database_path = seeded_database_path().await?;
+
+    let service = GraphQueryService::new(database_path.clone());
+    let details = service.edge_details("edge-run-helper-reference").await?;
+
+    assert_eq!("edge-run-helper-reference", details.edge_id);
+    assert_eq!("references", details.relation);
+    assert_eq!(Some("symbol"), details.context.as_deref());
+    assert_eq!("EXTRACTED", details.confidence);
+    assert_eq!(2.0, details.weight);
+    assert_eq!("symbol-run", details.source.node_id);
+    assert_eq!("symbol-helper", details.target.node_id);
+    assert_eq!(1, details.evidence.len());
+    assert_eq!("rust-analyzer", details.evidence[0].provider);
+    assert_eq!(
+        Some("textDocument/references"),
+        details.evidence[0].lsp_method.as_deref()
+    );
+    assert_eq!(
+        Some("src/lib.rs"),
+        details.evidence[0].source_file_path.as_deref()
+    );
 
     std::fs::remove_file(database_path)?;
     Ok(())
@@ -106,8 +163,14 @@ async fn edge_details_returns_endpoints_and_evidence() -> Result<(), Box<dyn Err
         Some("textDocument/documentSymbol"),
         details.evidence[0].lsp_method.as_deref()
     );
-    assert_eq!(Some("src/lib.rs"), details.evidence[0].source_file_path.as_deref());
-    assert_eq!(json!({ "source": "edge-evidence" }), details.evidence[0].raw_json.clone().unwrap_or(Value::Null));
+    assert_eq!(
+        Some("src/lib.rs"),
+        details.evidence[0].source_file_path.as_deref()
+    );
+    assert_eq!(
+        json!({ "source": "edge-evidence" }),
+        details.evidence[0].raw_json.clone().unwrap_or(Value::Null)
+    );
 
     std::fs::remove_file(database_path)?;
     Ok(())
@@ -204,7 +267,11 @@ async fn rpc_invalid_params_and_missing_ids_return_json_rpc_errors() -> Result<(
         }),
     )
     .await?;
-    assert_rpc_error(&invalid_search_limit, -32602, "limit must be between 1 and 50")?;
+    assert_rpc_error(
+        &invalid_search_limit,
+        -32602,
+        "limit must be between 1 and 50",
+    )?;
 
     let missing_node = rpc_request(
         state.clone(),
@@ -525,6 +592,21 @@ async fn seed_fixture_database(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             1,
             1,
             NULL
+          ),
+          (
+            'edge-run-helper-reference',
+            1,
+            'symbol-run',
+            'symbol-helper',
+            'references',
+            'symbol',
+            'EXTRACTED',
+            1.0,
+            2.0,
+            '{"source_resolution":"symbol"}',
+            1,
+            1,
+            NULL
           );
 
         INSERT INTO occurrences (
@@ -540,19 +622,33 @@ async fn seed_fixture_database(pool: &SqlitePool) -> Result<(), sqlx::Error> {
           enclosing_node_id,
           raw_json
         )
-        VALUES (
-          1,
-          'symbol-run',
-          1,
-          1,
-          'definition',
-          10,
-          4,
-          12,
-          5,
-          'module-root',
-          '{"source":"occurrence"}'
-        );
+        VALUES
+          (
+            1,
+            'symbol-run',
+            1,
+            1,
+            'definition',
+            10,
+            4,
+            12,
+            5,
+            'module-root',
+            '{"source":"occurrence"}'
+          ),
+          (
+            2,
+            'symbol-helper',
+            1,
+            1,
+            'reference',
+            11,
+            8,
+            11,
+            14,
+            'symbol-run',
+            '{"source":"reference-occurrence"}'
+          );
 
         INSERT INTO edge_evidence (
           id,
@@ -567,19 +663,33 @@ async fn seed_fixture_database(pool: &SqlitePool) -> Result<(), sqlx::Error> {
           end_col,
           raw_json
         )
-        VALUES (
-          1,
-          'edge-file-run',
-          1,
-          'rust-analyzer',
-          'textDocument/documentSymbol',
-          1,
-          10,
-          4,
-          12,
-          5,
-          '{"source":"edge-evidence"}'
-        );
+        VALUES
+          (
+            1,
+            'edge-file-run',
+            1,
+            'rust-analyzer',
+            'textDocument/documentSymbol',
+            1,
+            10,
+            4,
+            12,
+            5,
+            '{"source":"edge-evidence"}'
+          ),
+          (
+            2,
+            'edge-run-helper-reference',
+            1,
+            'rust-analyzer',
+            'textDocument/references',
+            1,
+            11,
+            8,
+            11,
+            14,
+            '{"source":"reference-evidence"}'
+          );
         "#,
     )
     .execute(pool)

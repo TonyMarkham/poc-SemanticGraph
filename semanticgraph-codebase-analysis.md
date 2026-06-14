@@ -27,16 +27,18 @@ The short version:
 
 - The repository already has a durable SQLite graph core with canonical
   `nodes` and `edges`, plus separate `occurrences` and `edge_evidence`.
-- The only implemented extraction route is Rust document-symbol extraction.
-- The implemented graph is currently a containment graph, not yet a call,
-  reference, type, implementation, package, or multi-language graph.
+- The implemented Rust extraction routes are document-symbol extraction and
+  workspace-scoped `references` extraction.
+- The implemented graph now contains both lexical containment and semantic
+  reference edges, but not yet calls, type, implementation, package, or
+  multi-language graph facts.
 - The Rust extraction path is in-process and library-backed, not a runtime
   language-server process path.
 - The read-only visualizer is a bounded projection over SQLite, with search,
   selection, node details, edge details, occurrences, and evidence.
-- The schema is ahead of the current extractor: it already has run tracking,
-  validity columns, confidence, context, raw JSON, and search scaffolding that
-  are only partially exercised.
+- The schema and extractor now have route status, route observations, and
+  stale closing for the implemented Rust routes. Search scaffolding remains
+  only partially exercised.
 
 ## Evidence Base
 
@@ -46,6 +48,7 @@ Primary files inspected:
 - `Cargo.toml`
 - `Justfile`
 - `crates/semantic-graph-store/migrations/01_create_graph_store.sql`
+- `crates/semantic-graph-store/migrations/02_route_freshness.sql`
 - `crates/semantic-graph-store/src/store/graph_store.rs`
 - `crates/semantic-graph-store/src/ids.rs`
 - `crates/semantic-graph-extract/src/main.rs`
@@ -58,6 +61,7 @@ Primary files inspected:
 - `crates/rust-analyzer-lib/src/project/load_workspace.rs`
 - `crates/rust-analyzer-lib/src/semantic/document_symbols_for_file.rs`
 - `crates/rust-analyzer-lib/src/semantic/document_symbols_for_files.rs`
+- `crates/rust-analyzer-lib/src/semantic/references_for_symbols.rs`
 - `crates/semantic-graph-smoke-tests/src/main.rs`
 - `crates/semantic-graph-smoke-tests/src/tests/rust_routes.rs`
 - `crates/semantic-graph-visualizer-server/src/query/graph_query_service.rs`
@@ -74,31 +78,31 @@ Primary files inspected:
 
 The smoke report gives the current implemented graph scale:
 
-| Route | Files | Symbols | Persisted nodes | Persisted edges | Occurrences | Evidence |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| WIP crate | 4 | 53 | 57 | 53 | 53 | 53 |
-| Workspace | 130 | 968 | 1098 | 968 | 968 | 968 |
+| Route | Files | Symbols | Persisted nodes | Contains edges | Reference edges | Occurrences | Evidence |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| WIP crate document symbols | 4 | 53 | 57 | 53 | 0 | 53 | 53 |
+| Workspace document symbols | 147 | 1190 | 1337 | 1190 | 0 | 1190 | 1190 |
+| Workspace references | 147 | 1190 | 1337 | 1190 | 2484 | 4158 | 4158 |
 
 The node count is larger than the symbol count because every extracted source
-file also becomes a `file` node. The edge count matches the symbol count
-because every symbol currently receives one containment edge from either its
-file node or parent symbol.
+file also becomes a `file` node. For document-symbol-only routes, the edge
+count matches the symbol count because every symbol receives one containment
+edge from either its file node or parent symbol. The workspace references route
+adds 2484 canonical directed `references` edges and 2968 reference occurrence
+proof rows on top of the same current document-symbol graph.
 
 Evidence:
 
 - The smoke runner prints package discovery, document-symbol counts,
-  persistence counts, workspace discovery counts, and submodule exclusion. See
-  `crates/semantic-graph-smoke-tests/src/main.rs:40-65`,
-  `crates/semantic-graph-smoke-tests/src/main.rs:102-121`, and
-  `crates/semantic-graph-smoke-tests/src/main.rs:173-207`.
-- The same route is asserted in tests: WIP discovery is exactly four files,
-  workspace discovery excludes `submodules/`, and persisted workspace nodes
-  exceed persisted files. See
-  `crates/semantic-graph-smoke-tests/src/tests/rust_routes.rs:17-48`,
-  `crates/semantic-graph-smoke-tests/src/tests/rust_routes.rs:91-120`, and
-  `crates/semantic-graph-smoke-tests/src/tests/rust_routes.rs:158-159`.
+  persistence counts, workspace discovery counts, reference counts, and
+  submodule exclusion. See `crates/semantic-graph-smoke-tests/src/main.rs`.
+- The same routes are asserted in tests: WIP discovery is exactly four files,
+  workspace discovery excludes `submodules/`, persisted workspace nodes exceed
+  persisted files, and the workspace references route writes reference edges
+  and occurrences. See
+  `crates/semantic-graph-smoke-tests/src/tests/rust_routes.rs`.
 - The README documents the same current headline counts and available commands.
-  See `README.md:124-137`, `README.md:250-265`, and `README.md:336-345`.
+  See `README.md`.
 
 ## Core Finding
 
@@ -125,10 +129,11 @@ This codebase currently models a durable semantic graph in three layers:
    and
    `crates/semantic-graph-visualizer-server/src/rpc/rpc_handler.rs:45-48`.
 
-The conceptual model is strong, but the implemented semantic scope is narrow.
-Today, "semantic graph" means "durable Rust document-symbol containment graph
-with source proof." That is a real, useful foundation, but it should not be
-mistaken for a full code intelligence graph yet.
+The conceptual model is strong, and the implemented semantic scope has moved
+past pure containment. Today, "semantic graph" means "durable Rust
+document-symbol containment plus provider-backed Rust references with source
+proof and route freshness." That is a useful relation-rich foundation, but it
+should not be mistaken for a full code intelligence graph yet.
 
 ## Workspace And Crate Topology
 
@@ -148,9 +153,9 @@ Architectural roles:
 | Component | Role |
 | --- | --- |
 | `semantic-graph-store` | SQLite schema, storage API, stats/demo CLI |
-| `semantic-graph-extract` | Provider-neutral extraction models, Rust document-symbol route, persistence adapter |
-| `rust-analyzer-lib` | In-process Rust project loading and file-structure facade |
-| `semantic-graph-smoke-tests` | Cross-crate smoke report for discovery, extraction, and persistence |
+| `semantic-graph-extract` | Provider-neutral extraction models, Rust document-symbol/reference routes, persistence adapter |
+| `rust-analyzer-lib` | In-process Rust project loading, file-structure facade, and references facade |
+| `semantic-graph-smoke-tests` | Cross-crate smoke report for discovery, extraction, references, and persistence |
 | `semantic-graph-visualizer-server` | Local read-only JSON-RPC backend over SQLite |
 | `SemanticGraph.Visualizer.Client` | Blazor WebAssembly graph viewport and inspector |
 | `wip` | Small local Rust extraction target |
@@ -176,6 +181,9 @@ The durable contract is relational:
   runs, and validity.
 - `occurrences` stores source-level proof for nodes.
 - `edge_evidence` stores source-level proof for edges.
+- `extraction_route_status` records per-route status and freshness.
+- `route_observations` records which canonical nodes or edges a route observed
+  in a run, giving stale closing a route-owned current-state index.
 - `node_search` is an FTS5 table, but current query code uses direct `LIKE`
   matching instead of this virtual table.
 
@@ -183,9 +191,10 @@ Evidence:
 
 - Core schema is in
   `crates/semantic-graph-store/migrations/01_create_graph_store.sql:3-142`.
+- Route freshness schema is in
+  `crates/semantic-graph-store/migrations/02_route_freshness.sql`.
 - The store exposes create/start/finish/upsert/insert/stats operations in
-  `crates/semantic-graph-store/src/store/graph_store.rs:20-328` and
-  `crates/semantic-graph-store/src/store/graph_store.rs:497`.
+  `crates/semantic-graph-store/src/store/graph_store.rs`.
 - FTS5 exists at
   `crates/semantic-graph-store/migrations/01_create_graph_store.sql:142`,
   while visualizer search uses `LIKE` predicates in
@@ -193,10 +202,11 @@ Evidence:
 
 Deep implication:
 
-The store already has the right boundary between canonical graph state and
-proof. The critical future design question is not whether evidence can be
-stored; it is how new extraction routes will populate evidence without
-collapsing distinct observations into the current canonical rows too early.
+The store now has the right boundary between canonical graph state, proof, and
+route freshness. The critical future design question is no longer whether
+evidence or stale closing can be represented; it is how new extraction routes
+will choose ownership and observation scopes without closing rows they do not
+strongly own.
 
 ## Node Model
 
@@ -275,14 +285,15 @@ contents. See
 
 Deep implication:
 
-The current identity is deterministic and good enough for hierarchical
-document symbols. It is not yet a true semantic symbol identity. Including
-selection range makes identity sensitive to edits that move a symbol. Including
-parent path and name makes it vulnerable to rename/move churn. This is fine for
-the present route because canonical rows are refreshed and evidence is
-retained, but future definition/reference/call routes should prefer provider
-symbol identity where available and treat source range as evidence, not
-identity.
+The current identity is deterministic and good enough for the implemented
+slice, including references, because references are seeded from the current
+document-symbol nodes. It is still not a true semantic symbol identity.
+Including selection range makes identity sensitive to edits that move a
+symbol. Including parent path and name makes it vulnerable to rename/move
+churn. This is acceptable for VS-10 because canonical rows are refreshed,
+evidence is retained, and stale rows are soft-closed. Future definition, call,
+type, and implementation routes should still prefer provider symbol identity
+where available and treat source range as evidence, not identity.
 
 ## Relation Vocabulary
 
@@ -290,9 +301,10 @@ The durable edge schema can store arbitrary relation strings plus optional
 context. See
 `crates/semantic-graph-store/migrations/01_create_graph_store.sql:59-75`.
 
-The implemented extractor emits exactly one production relation:
+The implemented extractor emits two production relations:
 
 - `contains`
+- `references`
 
 Every document symbol receives a `contains` edge from its parent symbol when it
 has one, or from the file node when it is top-level. Those edges are
@@ -302,10 +314,22 @@ See
 and
 `crates/semantic-graph-extract/src/persist/extraction_persister.rs:261-284`.
 
-Other relation names exist only in demo, tests, or UI styling:
+Rust references are directed semantic edges:
+
+```text
+source node --references--> target node
+```
+
+The target is the referenced canonical symbol. The source is the deepest
+current canonical symbol whose range contains the reference occurrence. If no
+enclosing symbol is found, the source falls back to the file node and the edge
+is marked `AMBIGUOUS`. Reference edges use `context = 'symbol'`, `weight`
+equal to the number of observed reference locations for the edge in the current
+route run, reference occurrences, and `textDocument/references` edge evidence.
+
+Other relation names exist only in demo or UI styling:
 
 - `calls` appears in demo seed and link styling.
-- `references` appears in link styling.
 - Test fixtures use `contains` with a `document-symbol` context.
 
 See `crates/semantic-graph-store/src/store/graph_store.rs:369-496`,
@@ -315,16 +339,19 @@ and
 
 Deep implication:
 
-The current graph is a containment forest plus file roots. It is not yet a
-behavioral graph. Algorithms over it will mostly find file/symbol nesting, not
-execution flow, dependency flow, type usage, or architectural coupling.
+The current graph is now a containment forest plus cross-symbol reference
+edges. It is still not a behavioral call graph and does not yet model imports,
+type usage, implementation, inheritance, or package dependencies. Algorithms
+over the full graph can now see coupling through references, but they still
+need relation-aware projections to avoid mixing lexical containment with usage
+edges indiscriminately.
 
 Recommended next relation families:
 
 - `defines`: file/package to symbol definition when containment needs to be
   distinguished from semantic ownership.
 - `contains`: namespace/module/type/function lexical nesting.
-- `references`: textual or semantic symbol reference.
+- `references`: implemented as provider-backed Rust symbol reference.
 - `calls`: executable call edge.
 - `imports`: module/import dependency.
 - `implements`: type or impl block implements trait/interface.
@@ -359,10 +386,12 @@ and
 
 Deep implication:
 
-The confidence model exists but has not been exercised. That is appropriate
-for the current route because document-symbol containment is directly returned
-by the provider. Future routes should not blindly stamp everything
-`EXTRACTED`. A useful policy would be:
+The confidence model is now exercised in two ways. Document-symbol containment
+is directly returned by the provider and remains `EXTRACTED` with score `1.0`.
+Rust reference edges are `EXTRACTED` with score `1.0` when both source and
+target symbols are resolved, and `AMBIGUOUS` with score `0.6` when the source
+falls back to a file node. Future routes should continue this pattern instead
+of blindly stamping everything `EXTRACTED`. A useful policy remains:
 
 - `EXTRACTED`: directly returned by a semantic provider route with source
   range proof.
@@ -381,17 +410,18 @@ the edge uniqueness contract. See
 `crates/semantic-graph-store/migrations/01_create_graph_store.sql:59-75` and
 `crates/semantic-graph-store/src/ids.rs:7-20`.
 
-The current production persister always writes `context: None` for
-document-symbol relations. See
-`crates/semantic-graph-extract/src/persist/extraction_persister.rs:261-276`.
-The visualizer fixture uses `context = 'document-symbol'`, and edge details
-return context to the client. See
-`crates/semantic-graph-visualizer-server/src/tests/projection.rs:24-117` and
-`crates/semantic-graph-visualizer-server/src/dto/graph_edge_details_dto.rs:8-15`.
+The document-symbol persister still writes `context: None` for `contains`
+relations. The references persister writes `context: 'symbol'` for
+`references` relations. The visualizer fixture exercises reference context,
+weight, and evidence, and edge details return context to the client. See
+`crates/semantic-graph-extract/src/persist/extraction_persister.rs`,
+`crates/semantic-graph-visualizer-server/src/tests/projection.rs`, and
+`crates/semantic-graph-visualizer-server/src/dto/graph_edge_details_dto.rs`.
 
 Deep implication:
 
-Context is currently underused. It should become the route/subrelation
+Context has started to carry query-relevant semantics for references, but it
+is still underused for containment. It should become the route/subrelation
 dimension that prevents different facts from collapsing into one edge. For
 example:
 
@@ -409,13 +439,14 @@ semantic distinction.
 
 ## Extraction Semantics
 
-The extraction CLI exposes three implemented commands:
+The extraction CLI exposes four implemented commands:
 
 - `rust-document-symbols`
 - `rust-crate-document-symbols`
 - `rust-workspace-document-symbols`
+- `rust-workspace-references`
 
-See `crates/semantic-graph-extract/src/main.rs:26-46`.
+See `crates/semantic-graph-extract/src/main.rs`.
 
 The route flow is:
 
@@ -426,6 +457,10 @@ The route flow is:
    relations.
 5. Persist a run, files, file nodes, symbol nodes, definition occurrences,
    containment edges, and edge evidence.
+6. For the references route, query references for eligible current symbols,
+   map each reference occurrence to a source symbol or file fallback, group
+   repeated locations into canonical `references` edges, and persist reference
+   occurrences/evidence.
 
 Evidence:
 
@@ -435,28 +470,27 @@ Evidence:
   `crates/semantic-graph-extract/src/document_symbols/paths.rs:9-58` and
   `crates/semantic-graph-extract/src/document_symbols/paths.rs:104-170`.
 - The Rust provider discovers package and workspace files, runs batch
-  extraction, attaches provider version, and records raw metadata. See
-  `crates/semantic-graph-extract/src/providers/rust_analyzer/rust_analyzer_provider.rs:30-141`.
+  extraction, extracts references, attaches provider version, and records raw
+  metadata. See
+  `crates/semantic-graph-extract/src/providers/rust_analyzer/rust_analyzer_provider.rs`.
 - The mapper rejects flat `SymbolInformation[]` responses and requires
   hierarchical `DocumentSymbol[]`. See
   `crates/semantic-graph-extract/src/providers/rust_analyzer/rust_document_symbol_mapper.rs:23-40`
   and
   `crates/semantic-graph-extract/src/tests/rust_document_symbol_mapper.rs:1-33`.
 - Persistence starts one run per single-file or batch extraction and marks it
-  `complete` or `failed`. See
-  `crates/semantic-graph-extract/src/persist/extraction_persister.rs:18-63`
-  and
-  `crates/semantic-graph-extract/src/persist/extraction_persister.rs:100-106`.
+  `complete` or `failed`. It also starts/completes/fails per-route status,
+  records route observations, and closes stale rows after successful routes.
+  See `crates/semantic-graph-extract/src/persist/extraction_persister.rs`.
 
 Deep implication:
 
-The extraction architecture is already route-shaped, but the route model is
-implicit in code rather than durable schema. There is an `extraction_runs`
-table, but there is no child table for per-route status, per-file route
-freshness, request parameters, route-specific errors, or route capabilities.
-That will matter as soon as document symbols are joined with references,
-definitions, implementations, call hierarchy, type hierarchy, package
-metadata, or C# routes.
+The extraction architecture is now explicitly route-shaped for implemented
+Rust routes. `extraction_runs` track the whole run, while
+`extraction_route_status` and `route_observations` track freshness and
+negative observation per route. Future routes still need their own ownership
+policy, but references no longer depend on an implicit "latest run wins"
+convention.
 
 ## Rust Facade Semantics
 
@@ -479,15 +513,25 @@ See `crates/rust-analyzer-lib/src/semantic/document_symbols_for_file.rs:26-109`
 and
 `crates/rust-analyzer-lib/src/semantic/document_symbols_for_file.rs:129-160`.
 
+References are queried in-process through `ide::Analysis::find_all_refs`:
+
+- The facade accepts target file paths, selection ranges, and names.
+- It converts UTF-16 LSP ranges to rust-analyzer text offsets.
+- It calls `find_all_refs` with the pinned analysis database.
+- It converts returned reference ranges back to UTF-16 LSP ranges and standard
+  filesystem paths.
+- It filters the declaration range before returning provider-neutral reference
+  locations.
+
+See `crates/rust-analyzer-lib/src/semantic/references_for_symbols.rs`.
+
 Deep implication:
 
-The facade uses semantic project loading, but the extracted fact is still file
-structure. That makes the route more authoritative than raw parsing for
-workspace membership and file inclusion, but it does not yet resolve references
-or calls. The phrase "library-backed extraction" should not be overread as
-"full semantic extraction." Today it is structurally semantic: the project
-model is semantic, the symbol hierarchy is provider-backed, and the relations
-are containment-only.
+The facade uses semantic project loading for both file-structure and
+references. Document symbols are still structural facts, but references are
+resolved semantic facts from rust-analyzer. The phrase "library-backed
+extraction" should still not be overread as "full semantic extraction": calls,
+types, implementations, imports, and C# facts remain unimplemented.
 
 ## Persistence Lifecycle
 
@@ -499,7 +543,10 @@ The storage lifecycle is split cleanly:
 - `first_seen_run_id`, `last_seen_run_id`, and `valid_to_run_id` exist on
   canonical rows.
 - Upserts reset `valid_to_run_id` to `NULL`.
-- No implemented route currently marks stale rows by setting `valid_to_run_id`.
+- Successful document-symbol routes close stale file-owned symbol nodes and
+  `contains` edges.
+- Successful workspace reference routes close stale `references` edges.
+- Failed routes update diagnostics but do not close stale rows.
 
 Evidence:
 
@@ -514,12 +561,11 @@ Evidence:
 
 Deep implication:
 
-The system already distinguishes current best graph state from historical
-proof. That is the right durability stance. The missing lifecycle piece is
-negative observation: a later run that fails to see a previous node or edge
-should be able to close it with `valid_to_run_id` without deleting its
-evidence. The schema is ready; the extractor does not yet implement stale-row
-handling.
+The system distinguishes current best graph state from historical proof and
+now has a negative-observation path for implemented Rust routes. A later
+successful route run can close rows it previously observed but no longer sees
+with `valid_to_run_id`, without deleting evidence. The remaining design work is
+per-route ownership for future facts, not the basic stale-closing mechanism.
 
 ## Tracked Data Classes
 
@@ -534,6 +580,8 @@ The repository currently tracks these data classes:
 | Canonical edge | `edges` | Upserted by hash ID |
 | Node proof | `occurrences` | Appended per run |
 | Edge proof | `edge_evidence` | Appended per run |
+| Route status | `extraction_route_status` | Upserted per route/scope/provider |
+| Route observation | `route_observations` | Appended per route run |
 | Provider payload | `raw_json`, `properties_json` | Stored as JSON text |
 | Search index | `node_search` FTS5 | Present but not populated by current code |
 | Visualizer projection | JSON-RPC DTOs | Derived on demand |
@@ -542,11 +590,12 @@ The repository currently tracks these data classes:
 
 Deep implication:
 
-The architecture has the right storage boundary, but route freshness is too
-coarse. `files.last_seen_run_id` tells when a file participated in a run. It
-does not say whether references, calls, definitions, implementations, semantic
-tokens, or type hierarchy were fresh for that file. Future semantic modelling
-should add route-level freshness before adding many new edge types.
+The architecture has the right storage boundary, and route freshness is now
+first-class for document symbols and references. `files.last_seen_run_id` still
+answers only file participation, while `extraction_route_status` answers route
+freshness and `route_observations` answers stale-closing ownership. Future
+semantic modelling should extend this pattern rather than invent per-route
+JSON conventions.
 
 ## Query And RPC Model
 
@@ -659,28 +708,30 @@ Current graph-theory shape:
 - File nodes are roots.
 - Symbol nodes form hierarchical trees under file nodes.
 - Each symbol has one incoming `contains` edge from its immediate container.
-- Edges are directed from container to contained symbol.
-- There are no implemented cross-file semantic edges in the production route.
+- `contains` edges are directed from container to contained symbol.
+- `references` edges are directed from referencing source node to referenced
+  target symbol.
+- Cross-file semantic edges are implemented for Rust references.
 - There are no implemented hyperedges.
 - There are no persisted algorithmic projections such as communities,
   centrality, layout, cycles, or component summaries.
 
 ### Containment Forest
 
-The current production graph is a forest of containment trees, one tree per
-source file, with possible nested symbol nodes. This is confirmed by the
-document-symbol mapper and smoke counts: every symbol becomes exactly one
-`contains` relation, and each file also becomes a file node.
+The document-symbol projection is a forest of containment trees, one tree per
+source file, with possible nested symbol nodes. The full workspace references
+route overlays that forest with cross-symbol `references` edges.
 
 Graph-theory consequence:
 
 - Degree mostly measures nesting breadth, not architectural influence.
 - Betweenness mostly finds lexical containers, not dependency bridges.
-- Connected components mostly correspond to files unless future cross-file
-  edges are added.
+- Connected components no longer correspond only to files once references are
+  included.
 - Shortest paths are useful for containment ancestry but not for behavior.
-- Cycle detection is not meaningful on the current production route because
-  containment should be acyclic.
+- Cycle detection is still projection-dependent: containment should be acyclic,
+  while references can form usage cycles that mean something different from
+  dependency or call cycles.
 
 ### Directed Edges
 
@@ -690,8 +741,9 @@ direction is first-class. See
 
 Current direction convention:
 
-- source = container,
-- target = contained symbol.
+- `contains`: source = container, target = contained symbol.
+- `references`: source = referencing symbol or fallback file, target =
+  referenced symbol.
 
 Deep implication:
 
@@ -757,7 +809,6 @@ The code does not yet implement:
 - call graph projections,
 - package/module summaries,
 - layout persistence,
-- stale-row closing,
 - CSV/Data Package snapshots,
 - hyperedges.
 
@@ -765,11 +816,12 @@ See `README.md:346-354` for the current missing features list.
 
 Deep implication:
 
-The repository is at the correct stage for adding semantic routes before
-adding global graph algorithms. Running centrality or community detection on a
-pure containment graph would produce mechanically valid but low-value results.
-The next analytical milestone should be a relation-rich graph, not an
-algorithm-heavy graph.
+The repository has crossed the threshold from pure containment to a
+relation-rich graph, but it is still early for global graph algorithms. Running
+centrality or community detection over mixed `contains` and `references`
+without a named projection would produce noisy results. The next analytical
+milestone should be explicit projections for relation families, not an
+algorithm-heavy graph over all edges at once.
 
 ## Quality And Validation Model
 
@@ -785,23 +837,26 @@ See `Cargo.toml:51-57`.
 Validation surfaces:
 
 - Store tests cover schema creation, deterministic IDs, upsert behavior, and
-  foreign-key enforcement.
+  foreign-key enforcement, route status, route observations, stale closing, and
+  row reopening.
 - Extract tests cover path validation, symbol mapping, fixture persistence,
-  batch persistence, and provider error formatting.
+  batch persistence, provider error formatting, reference extraction,
+  reference persistence, and reference stale closing.
 - Smoke tests cover the Rust facade route, crate extraction route, workspace
-  extraction route, persistence, and submodule exclusion.
+  extraction route, workspace references route, persistence, and submodule
+  exclusion.
 - Visualizer backend tests cover projection, node details, edge details,
-  search, and JSON-RPC error handling.
+  reference edge details, search, and JSON-RPC error handling.
 - The Blazor client builds through the solution.
 
 Evidence:
 
 - Store tests: `crates/semantic-graph-store/src/tests/store.rs:1-140`.
 - Extract tests:
-  `crates/semantic-graph-extract/src/tests/document_symbol_pipeline.rs:1-280`,
-  `crates/semantic-graph-extract/src/tests/document_symbols_paths.rs:1-36`,
-  and
-  `crates/semantic-graph-extract/src/tests/rust_document_symbol_mapper.rs:1-33`.
+  `crates/semantic-graph-extract/src/tests/document_symbol_pipeline.rs`,
+  `crates/semantic-graph-extract/src/tests/document_symbols_paths.rs`,
+  `crates/semantic-graph-extract/src/tests/reference_pipeline.rs`, and
+  `crates/semantic-graph-extract/src/tests/rust_document_symbol_mapper.rs`.
 - Visualizer backend tests:
   `crates/semantic-graph-visualizer-server/src/tests/projection.rs:24-207`.
 - Useful validation commands are listed in `README.md:313-320`.
@@ -822,7 +877,8 @@ model.
 - Extraction run status is explicit.
 - Provider-neutral extraction structs keep language-specific mapping out of
   the store.
-- Rust project loading is in-process and tested through workspace smoke routes.
+- Rust project loading and references are in-process and tested through
+  workspace smoke routes.
 - The visualizer backend is read-only and bounded.
 - The UI separates DTOs, diagram models, and inspector state.
 - The codebase uses typed error enums with location capture.
@@ -831,25 +887,27 @@ model.
 ## Design Risks
 
 - Document-symbol identity is range-sensitive and will churn under edits.
-- Route freshness is file-level/run-level, not per semantic capability.
-- `valid_to_run_id` exists but stale-row closing is not implemented.
+- Route freshness and stale closing exist for document symbols and references,
+  but future routes still need explicit ownership policy.
 - `node_search` exists but is not populated or queried by current search.
-- `context` exists but production extraction writes `None`.
+- `context` exists and references use `symbol`, but containment still writes
+  `None`.
 - C# language modelling exists only as enum/provider names and schema values,
   not as an implemented route.
 - Tree-sitter dependencies are present but not part of current extraction.
 - File/package/crate concepts are under-modelled: files are nodes, but crates,
   packages, targets, modules, and workspaces are not yet durable graph nodes.
 - The visualizer projection is deterministic but not graph-layout aware.
-- Relation styling anticipates `calls` and `references`, but production data
-  currently contains only containment relations.
+- Relation styling handles `references`, and production data now contains
+  reference edges. Calls are still styling/demo-only.
 
 ## Recommended Next Semantic Slice
 
-The next modelling slice should add one semantic relation family end to end,
-not several partial families. The best candidate is Rust references or calls,
-because the store and UI already support edge details, evidence, confidence,
-and directed projection.
+The next modelling slice should add one additional semantic relation family end
+to end, not several partial families. After VS-10, the best candidate is Rust
+calls, because the store, route freshness, reference persistence, visualizer
+details, evidence, confidence, and directed projection paths are all now proven
+with references.
 
 A durable slice should include:
 
@@ -857,28 +915,14 @@ A durable slice should include:
 - provider mapping: raw provider payload to provider-neutral facts;
 - identity policy: stable symbol keys that do not depend only on source range;
 - persistence: canonical edges plus source evidence;
-- stale handling: close rows absent from a later route run;
+- stale handling: close rows absent from a later successful route run;
 - tests: mapper fixture, persistence fixture, smoke count, query/detail test;
 - UI: relation filter or visual distinction only after the data exists.
 
-For route freshness, add a table conceptually shaped like:
-
-```text
-source_file_route_status(
-  file_id,
-  route,
-  provider,
-  provider_version,
-  content_hash,
-  last_started_run_id,
-  last_complete_run_id,
-  last_status,
-  diagnostics_json
-)
-```
-
-This would prevent document-symbol freshness from being confused with
-reference, call, implementation, type, or semantic-token freshness.
+For route freshness, continue using the implemented
+`extraction_route_status` and `route_observations` pattern. That prevents
+document-symbol freshness from being confused with reference, call,
+implementation, type, or semantic-token freshness.
 
 ## Open Questions
 
@@ -894,6 +938,7 @@ reference, call, implementation, type, or semantic-token freshness.
   in sync with node upserts?
 - Should graph layouts be persisted in SQLite or treated as client-local
   presentation state?
-- How should route-specific stale-row closing interact with failed runs?
+- How should future route-specific stale-row closing define ownership when a
+  route observes facts that depend on multiple provider capabilities?
 - Which relation families should be available before centrality/community
   analysis is considered meaningful?

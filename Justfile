@@ -92,3 +92,12 @@ rust-workspace-extract-smoke:
       --db .local/rust-workspace-extract.db \
       --workspace-root .
     cargo run -p {{package}} -- stats --db .local/rust-workspace-extract.db
+
+# Exercise workspace-scoped rust-analyzer reference extraction.
+rust-workspace-references-smoke:
+    mkdir -p {{local_dir}}
+    rm -f .local/rust-workspace-references.db
+    cargo run -p {{extract_package}} -- rust-workspace-references \
+      --db .local/rust-workspace-references.db \
+      --workspace-root .
+    cargo run -p {{package}} -- stats --db .local/rust-workspace-references.db

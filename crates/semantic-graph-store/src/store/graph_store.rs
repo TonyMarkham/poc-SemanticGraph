@@ -1,6 +1,8 @@
 use crate::{
-    DemoSeedSummary, EdgeEvidenceInput, EdgeInput, FileInput, GraphStoreError, GraphStoreResult,
-    GraphStoreStats, NodeInput, OccurrenceInput, TextRange,
+    CloseStaleRouteInput, DemoSeedSummary, EdgeEvidenceInput, EdgeInput, FileInput,
+    GraphStoreError, GraphStoreResult, GraphStoreStats, NodeInput, OccurrenceInput,
+    RouteObservationInput, RouteStatusCompleteInput, RouteStatusFailInput, RouteStatusStartInput,
+    TextRange,
     ids::{edge_id, node_id},
 };
 
@@ -366,6 +368,296 @@ impl GraphStore {
         Ok(result.last_insert_rowid())
     }
 
+    pub async fn start_route_status(
+        &self,
+        input: RouteStatusStartInput<'_>,
+    ) -> GraphStoreResult<i64> {
+        let diagnostics_json = input.diagnostics_json.to_string();
+
+        sqlx::query(
+            r#"
+            INSERT INTO extraction_route_status (
+              workspace_id,
+              route,
+              scope,
+              scope_key,
+              file_id,
+              provider,
+              provider_version,
+              content_hash,
+              last_started_run_id,
+              last_status,
+              diagnostics_json,
+              updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(workspace_id, route, scope, scope_key, provider) DO UPDATE SET
+              file_id = excluded.file_id,
+              provider_version = excluded.provider_version,
+              content_hash = excluded.content_hash,
+              last_started_run_id = excluded.last_started_run_id,
+              last_status = 'running',
+              diagnostics_json = excluded.diagnostics_json,
+              updated_at = CURRENT_TIMESTAMP
+            "#,
+        )
+        .bind(input.workspace_id)
+        .bind(input.route)
+        .bind(input.scope)
+        .bind(input.scope_key)
+        .bind(input.file_id)
+        .bind(input.provider)
+        .bind(input.provider_version)
+        .bind(input.content_hash)
+        .bind(input.run_id)
+        .bind(diagnostics_json)
+        .execute(&self.pool)
+        .await
+        .map_err(GraphStoreError::database)?;
+
+        let id = self
+            .route_status_id(
+                input.workspace_id,
+                input.route,
+                input.scope,
+                input.scope_key,
+                input.provider,
+            )
+            .await?;
+
+        Ok(id)
+    }
+
+    pub async fn complete_route_status(
+        &self,
+        input: RouteStatusCompleteInput<'_>,
+    ) -> GraphStoreResult<()> {
+        let diagnostics_json = input.diagnostics_json.to_string();
+
+        sqlx::query(
+            r#"
+            UPDATE extraction_route_status
+            SET provider_version = ?,
+                content_hash = ?,
+                last_complete_run_id = ?,
+                last_status = 'complete',
+                diagnostics_json = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE workspace_id = ?
+              AND route = ?
+              AND scope = ?
+              AND scope_key = ?
+              AND provider = ?
+            "#,
+        )
+        .bind(input.provider_version)
+        .bind(input.content_hash)
+        .bind(input.run_id)
+        .bind(diagnostics_json)
+        .bind(input.workspace_id)
+        .bind(input.route)
+        .bind(input.scope)
+        .bind(input.scope_key)
+        .bind(input.provider)
+        .execute(&self.pool)
+        .await
+        .map_err(GraphStoreError::database)?;
+
+        Ok(())
+    }
+
+    pub async fn fail_route_status(&self, input: RouteStatusFailInput<'_>) -> GraphStoreResult<()> {
+        let diagnostics_json = input.diagnostics_json.to_string();
+
+        sqlx::query(
+            r#"
+            UPDATE extraction_route_status
+            SET last_status = 'failed',
+                diagnostics_json = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE workspace_id = ?
+              AND route = ?
+              AND scope = ?
+              AND scope_key = ?
+              AND provider = ?
+              AND last_started_run_id = ?
+            "#,
+        )
+        .bind(diagnostics_json)
+        .bind(input.workspace_id)
+        .bind(input.route)
+        .bind(input.scope)
+        .bind(input.scope_key)
+        .bind(input.provider)
+        .bind(input.run_id)
+        .execute(&self.pool)
+        .await
+        .map_err(GraphStoreError::database)?;
+
+        Ok(())
+    }
+
+    pub async fn record_route_observation(
+        &self,
+        input: RouteObservationInput<'_>,
+    ) -> GraphStoreResult<()> {
+        let properties_json = input.properties_json.to_string();
+
+        sqlx::query(
+            r#"
+            INSERT INTO route_observations (
+              workspace_id,
+              run_id,
+              route,
+              scope,
+              scope_key,
+              provider,
+              entity_kind,
+              entity_id,
+              source_file_id,
+              properties_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(
+              run_id,
+              route,
+              scope,
+              scope_key,
+              provider,
+              entity_kind,
+              entity_id,
+              source_file_id
+            ) DO UPDATE SET
+              properties_json = excluded.properties_json
+            "#,
+        )
+        .bind(input.workspace_id)
+        .bind(input.run_id)
+        .bind(input.route)
+        .bind(input.scope)
+        .bind(input.scope_key)
+        .bind(input.provider)
+        .bind(input.entity_kind)
+        .bind(input.entity_id)
+        .bind(input.source_file_id)
+        .bind(properties_json)
+        .execute(&self.pool)
+        .await
+        .map_err(GraphStoreError::database)?;
+
+        Ok(())
+    }
+
+    pub async fn close_stale_nodes_for_route(
+        &self,
+        input: CloseStaleRouteInput<'_>,
+    ) -> GraphStoreResult<u64> {
+        if !self.route_completed_for_run(&input).await? {
+            return Ok(0);
+        }
+
+        let result = sqlx::query(
+            r#"
+            UPDATE nodes
+            SET valid_to_run_id = ?
+            WHERE workspace_id = ?
+              AND valid_to_run_id IS NULL
+              AND id IN (
+                SELECT DISTINCT previous.entity_id
+                FROM route_observations previous
+                WHERE previous.workspace_id = ?
+                  AND previous.route = ?
+                  AND previous.scope = ?
+                  AND previous.scope_key = ?
+                  AND previous.provider = ?
+                  AND previous.entity_kind = 'node'
+                  AND previous.run_id <> ?
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM route_observations current
+                    WHERE current.workspace_id = previous.workspace_id
+                      AND current.route = previous.route
+                      AND current.scope = previous.scope
+                      AND current.scope_key = previous.scope_key
+                      AND current.provider = previous.provider
+                      AND current.entity_kind = previous.entity_kind
+                      AND current.entity_id = previous.entity_id
+                      AND current.run_id = ?
+                  )
+              )
+            "#,
+        )
+        .bind(input.run_id)
+        .bind(input.workspace_id)
+        .bind(input.workspace_id)
+        .bind(input.route)
+        .bind(input.scope)
+        .bind(input.scope_key)
+        .bind(input.provider)
+        .bind(input.run_id)
+        .bind(input.run_id)
+        .execute(&self.pool)
+        .await
+        .map_err(GraphStoreError::database)?;
+
+        Ok(result.rows_affected())
+    }
+
+    pub async fn close_stale_edges_for_route(
+        &self,
+        input: CloseStaleRouteInput<'_>,
+    ) -> GraphStoreResult<u64> {
+        if !self.route_completed_for_run(&input).await? {
+            return Ok(0);
+        }
+
+        let result = sqlx::query(
+            r#"
+            UPDATE edges
+            SET valid_to_run_id = ?
+            WHERE workspace_id = ?
+              AND valid_to_run_id IS NULL
+              AND id IN (
+                SELECT DISTINCT previous.entity_id
+                FROM route_observations previous
+                WHERE previous.workspace_id = ?
+                  AND previous.route = ?
+                  AND previous.scope = ?
+                  AND previous.scope_key = ?
+                  AND previous.provider = ?
+                  AND previous.entity_kind = 'edge'
+                  AND previous.run_id <> ?
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM route_observations current
+                    WHERE current.workspace_id = previous.workspace_id
+                      AND current.route = previous.route
+                      AND current.scope = previous.scope
+                      AND current.scope_key = previous.scope_key
+                      AND current.provider = previous.provider
+                      AND current.entity_kind = previous.entity_kind
+                      AND current.entity_id = previous.entity_id
+                      AND current.run_id = ?
+                  )
+              )
+            "#,
+        )
+        .bind(input.run_id)
+        .bind(input.workspace_id)
+        .bind(input.workspace_id)
+        .bind(input.route)
+        .bind(input.scope)
+        .bind(input.scope_key)
+        .bind(input.provider)
+        .bind(input.run_id)
+        .bind(input.run_id)
+        .execute(&self.pool)
+        .await
+        .map_err(GraphStoreError::database)?;
+
+        Ok(result.rows_affected())
+    }
+
     pub async fn demo_seed(&self, root_uri: &str) -> GraphStoreResult<DemoSeedSummary> {
         let workspace_id = self.create_workspace(root_uri, "rust").await?;
         let run_id = self
@@ -525,5 +817,64 @@ impl GraphStore {
                 .await
                 .map_err(GraphStoreError::database)?,
         })
+    }
+
+    async fn route_status_id(
+        &self,
+        workspace_id: i64,
+        route: &str,
+        scope: &str,
+        scope_key: &str,
+        provider: &str,
+    ) -> GraphStoreResult<i64> {
+        sqlx::query_scalar(
+            r#"
+            SELECT id
+            FROM extraction_route_status
+            WHERE workspace_id = ?
+              AND route = ?
+              AND scope = ?
+              AND scope_key = ?
+              AND provider = ?
+            "#,
+        )
+        .bind(workspace_id)
+        .bind(route)
+        .bind(scope)
+        .bind(scope_key)
+        .bind(provider)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(GraphStoreError::database)
+    }
+
+    async fn route_completed_for_run(
+        &self,
+        input: &CloseStaleRouteInput<'_>,
+    ) -> GraphStoreResult<bool> {
+        let count: i64 = sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*)
+            FROM extraction_route_status
+            WHERE workspace_id = ?
+              AND route = ?
+              AND scope = ?
+              AND scope_key = ?
+              AND provider = ?
+              AND last_complete_run_id = ?
+              AND last_status = 'complete'
+            "#,
+        )
+        .bind(input.workspace_id)
+        .bind(input.route)
+        .bind(input.scope)
+        .bind(input.scope_key)
+        .bind(input.provider)
+        .bind(input.run_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(GraphStoreError::database)?;
+
+        Ok(count > 0)
     }
 }
