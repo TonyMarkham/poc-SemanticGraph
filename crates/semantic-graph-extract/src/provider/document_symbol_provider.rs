@@ -1,7 +1,9 @@
-use std::future::Future;
+use crate::{
+    ExtractError,
+    model::{DocumentSymbolExtraction, DocumentSymbolRequest, GraphLanguage, ProviderId},
+};
 
-use crate::error::ExtractError;
-use crate::model::{DocumentSymbolExtraction, DocumentSymbolRequest, GraphLanguage, ProviderId};
+use std::future::Future;
 
 pub trait DocumentSymbolProvider {
     fn provider_id(&self) -> ProviderId;

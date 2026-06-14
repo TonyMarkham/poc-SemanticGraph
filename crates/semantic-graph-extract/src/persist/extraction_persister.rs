@@ -1,14 +1,16 @@
-use std::collections::HashMap;
+use crate::{
+    ExtractError, ExtractResult,
+    document_symbols::paths::basename_from_relative_path,
+    model::{DocumentSymbolBatchExtraction, DocumentSymbolExtraction},
+    persist::PersistenceSummary,
+};
 
 use semantic_graph_store::{
     EdgeEvidenceInput, EdgeInput, FileInput, GraphStore, NodeInput, OccurrenceInput,
 };
-use serde_json::{Value, json};
 
-use crate::document_symbols::paths::basename_from_relative_path;
-use crate::error::{ExtractError, Result};
-use crate::model::{DocumentSymbolBatchExtraction, DocumentSymbolExtraction};
-use crate::persist::PersistenceSummary;
+use serde_json::{Value, json};
+use std::collections::HashMap;
 
 pub struct ExtractionPersister;
 
@@ -18,13 +20,14 @@ impl ExtractionPersister {
         store: &GraphStore,
         workspace_root_uri: &str,
         extraction: &DocumentSymbolExtraction,
-    ) -> Result<PersistenceSummary> {
+    ) -> ExtractResult<PersistenceSummary> {
         let workspace_id = store
             .create_workspace(
                 workspace_root_uri,
                 extraction.source_file.language.workspace_kind(),
             )
-            .await?;
+            .await
+            .map_err(ExtractError::storage)?;
         let run_id = store
             .start_run(
                 workspace_id,
@@ -32,7 +35,8 @@ impl ExtractionPersister {
                 extraction.provider_version.as_deref(),
                 None,
             )
-            .await?;
+            .await
+            .map_err(ExtractError::storage)?;
 
         let result = self
             .persist_after_run_started(store, workspace_id, run_id, extraction)
@@ -40,13 +44,16 @@ impl ExtractionPersister {
 
         match result {
             Ok(summary) => {
-                store.finish_run(run_id, "complete").await?;
+                store
+                    .finish_run(run_id, "complete")
+                    .await
+                    .map_err(ExtractError::storage)?;
                 Ok(summary)
             }
             Err(error) => {
                 let finish_result = store.finish_run(run_id, "failed").await;
                 if let Err(finish_error) = finish_result {
-                    return Err(ExtractError::Storage(finish_error));
+                    return Err(ExtractError::storage(finish_error));
                 }
                 Err(error)
             }
@@ -58,7 +65,7 @@ impl ExtractionPersister {
         store: &GraphStore,
         workspace_root_uri: &str,
         extraction: &DocumentSymbolBatchExtraction,
-    ) -> Result<PersistenceSummary> {
+    ) -> ExtractResult<PersistenceSummary> {
         let first_extraction = extraction.extractions.first().ok_or_else(|| {
             ExtractError::response_shape(
                 extraction.provider.as_str(),
@@ -71,7 +78,8 @@ impl ExtractionPersister {
                 workspace_root_uri,
                 first_extraction.source_file.language.workspace_kind(),
             )
-            .await?;
+            .await
+            .map_err(ExtractError::storage)?;
         let run_id = store
             .start_run(
                 workspace_id,
@@ -79,7 +87,8 @@ impl ExtractionPersister {
                 extraction.provider_version.as_deref(),
                 None,
             )
-            .await?;
+            .await
+            .map_err(ExtractError::storage)?;
 
         let result = self
             .persist_batch_after_run_started(store, workspace_id, run_id, extraction)
@@ -87,13 +96,16 @@ impl ExtractionPersister {
 
         match result {
             Ok(summary) => {
-                store.finish_run(run_id, "complete").await?;
+                store
+                    .finish_run(run_id, "complete")
+                    .await
+                    .map_err(ExtractError::storage)?;
                 Ok(summary)
             }
             Err(error) => {
                 let finish_result = store.finish_run(run_id, "failed").await;
                 if let Err(finish_error) = finish_result {
-                    return Err(ExtractError::Storage(finish_error));
+                    return Err(ExtractError::storage(finish_error));
                 }
                 Err(error)
             }
@@ -106,7 +118,7 @@ impl ExtractionPersister {
         workspace_id: i64,
         run_id: i64,
         extraction: &DocumentSymbolBatchExtraction,
-    ) -> Result<PersistenceSummary> {
+    ) -> ExtractResult<PersistenceSummary> {
         let mut summary = PersistenceSummary {
             workspace_id,
             run_id,
@@ -137,7 +149,7 @@ impl ExtractionPersister {
         workspace_id: i64,
         run_id: i64,
         extraction: &DocumentSymbolExtraction,
-    ) -> Result<PersistenceSummary> {
+    ) -> ExtractResult<PersistenceSummary> {
         let file_id = store
             .upsert_file(FileInput {
                 workspace_id,
@@ -152,7 +164,8 @@ impl ExtractionPersister {
                     "raw_metadata": extraction.raw_metadata,
                 }),
             })
-            .await?;
+            .await
+            .map_err(ExtractError::storage)?;
 
         let mut node_ids = HashMap::new();
         let file_node_id = self
@@ -197,7 +210,8 @@ impl ExtractionPersister {
                     properties_json: symbol_properties_json(symbol),
                     run_id: Some(run_id),
                 })
-                .await?;
+                .await
+                .map_err(ExtractError::storage)?;
 
             store
                 .insert_occurrence(OccurrenceInput {
@@ -209,7 +223,8 @@ impl ExtractionPersister {
                     enclosing_node_id: container_node_id.as_deref(),
                     raw_json: Some(symbol.raw_json.clone()),
                 })
-                .await?;
+                .await
+                .map_err(ExtractError::storage)?;
 
             node_ids.insert(symbol.symbol_key.clone(), node_id);
         }
@@ -258,7 +273,8 @@ impl ExtractionPersister {
                     }),
                     run_id: Some(run_id),
                 })
-                .await?;
+                .await
+                .map_err(ExtractError::storage)?;
 
             store
                 .insert_edge_evidence(EdgeEvidenceInput {
@@ -270,7 +286,8 @@ impl ExtractionPersister {
                     range: relation.range,
                     raw_json: Some(relation.raw_json.clone()),
                 })
-                .await?;
+                .await
+                .map_err(ExtractError::storage)?;
         }
 
         Ok(PersistenceSummary {
@@ -291,7 +308,7 @@ impl ExtractionPersister {
         run_id: i64,
         file_id: i64,
         extraction: &DocumentSymbolExtraction,
-    ) -> Result<String> {
+    ) -> ExtractResult<String> {
         let file_name = basename_from_relative_path(&extraction.source_file.relative_path);
 
         store
@@ -315,7 +332,7 @@ impl ExtractionPersister {
                 run_id: Some(run_id),
             })
             .await
-            .map_err(ExtractError::Storage)
+            .map_err(ExtractError::storage)
     }
 }
 

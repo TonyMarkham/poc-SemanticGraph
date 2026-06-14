@@ -5,5 +5,9 @@ pub mod model;
 pub mod persist;
 pub mod provider;
 pub mod providers;
+#[cfg(test)]
+mod tests;
 
-pub use error::{ExtractError, Result};
+// ---------------------------------------------------------------------------------------------- //
+
+pub use error::{ExtractError, ExtractResult};

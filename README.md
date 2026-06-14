@@ -3,9 +3,9 @@
 SemanticGraph is a proof of concept for extracting code facts into a durable
 SQLite graph.
 
-Right now, the useful path is Rust document-symbol extraction through
-`rust-analyzer`. The extractor supports single-file, crate-scoped, and
-workspace-scoped routes.
+Right now, the useful path is Rust document-symbol extraction through the
+checked-in `rust-analyzer` libraries. The extractor supports single-file,
+crate-scoped, and workspace-scoped routes.
 
 ## Extract One Rust File
 
@@ -26,13 +26,14 @@ cargo run -p semantic-graph-extract -- rust-document-symbols \
 This creates or updates `.local/rust-extract-wip.db`.
 
 You do not need to initialize the database first. The extractor opens the
-SQLite database, runs migrations, starts `rust-analyzer`, extracts symbols for
-the requested file, and writes the graph rows.
+SQLite database, runs migrations, loads the pinned `rust-analyzer` libraries
+in-process through `rust-analyzer-lib`, extracts symbols for the requested
+file, and writes the graph rows.
 
 Example successful output:
 
 ```text
-workspace=1 run=1 files=1 nodes=5 edges=4 occurrences=4 evidence=4
+workspace=1 run=1 files=1 nodes=4 edges=3 occurrences=3 evidence=3
 ```
 
 ## Inspect The Result
@@ -50,10 +51,10 @@ Expected shape after extracting `crates/wip/src/lib.rs`:
 workspaces=1
 extraction_runs=1
 files=1
-nodes=5
-edges=4
-occurrences=4
-edge_evidence=4
+nodes=4
+edges=3
+occurrences=3
+edge_evidence=3
 ```
 
 ## Extract A Different File
@@ -83,14 +84,14 @@ cargo run -p semantic-graph-extract -- rust-crate-document-symbols \
   --package-path crates/wip
 ```
 
-The crate route uses `rust-analyzer lsif` for discovery, filters Rust document
-vertices under `--package-path`, then extracts `textDocument/documentSymbol`
-for each discovered file in one extraction run.
+The crate route loads the workspace through `rust-analyzer-lib`, discovers Rust
+source files for the package path, then extracts hierarchical document-symbol
+data for each discovered file in one extraction run.
 
 Example successful output for `crates/wip`:
 
 ```text
-workspace=1 run=1 files=3 nodes=56 edges=53 occurrences=53 evidence=53
+workspace=1 run=1 files=4 nodes=57 edges=53 occurrences=53 evidence=53
 ```
 
 Inspect the result:
@@ -105,8 +106,8 @@ Expected shape:
 ```text
 workspaces=1
 extraction_runs=1
-files=3
-nodes=56
+files=4
+nodes=57
 edges=53
 occurrences=53
 edge_evidence=53
@@ -123,14 +124,15 @@ cargo run -p semantic-graph-extract -- rust-workspace-document-symbols \
   --workspace-root .
 ```
 
-The workspace route uses the same LSIF-backed discovery path, but treats the
-workspace root as the extraction boundary. In this repo, that excludes
-`submodules/` because those crates are not part of the root Cargo workspace.
+The workspace route uses the same `rust-analyzer-lib` source discovery path, but
+treats the workspace root as the extraction boundary. In this repo, that
+excludes `submodules/` because those crates are not part of the root Cargo
+workspace.
 
-Example successful output for this repo:
+Example successful output for the current repo workspace:
 
 ```text
-workspace=1 run=1 files=38 nodes=478 edges=440 occurrences=440 evidence=440
+workspace=1 run=1 files=83 nodes=676 edges=593 occurrences=593 evidence=593
 ```
 
 Inspect the result:
@@ -145,11 +147,11 @@ Expected shape:
 ```text
 workspaces=1
 extraction_runs=1
-files=38
-nodes=478
-edges=440
-occurrences=440
-edge_evidence=440
+files=83
+nodes=676
+edges=593
+occurrences=593
+edge_evidence=593
 ```
 
 ## Start Fresh
@@ -173,20 +175,45 @@ The `.local/` directory is for local smoke-test output.
 
 ## Smoke Test
 
-If `rust-analyzer` is installed on `PATH`, run:
+Run:
 
 ```sh
 just rust-extract-smoke
 ```
 
 That recipe extracts `crates/wip/src/lib.rs` into
-`.local/rust-extract-wip.db` and then prints store stats.
+`.local/rust-extract-wip.db` through the in-process `rust-analyzer-lib` route
+and then prints store stats.
 
 Crate and workspace smoke routes:
 
 ```sh
 just rust-crate-extract-smoke
 just rust-workspace-extract-smoke
+```
+
+The smoke-test crate also prints a route-level report:
+
+```sh
+SQLX_OFFLINE=true cargo run -p semantic-graph-smoke-tests
+```
+
+That report exercises the `rust-analyzer-lib` facade, the extractor crate route,
+and the extractor workspace route. Current headline counts are:
+
+```text
+crate.persistence.files=4
+crate.persistence.nodes=57
+crate.persistence.edges=53
+workspace.discovery.count=83
+workspace.discovery.submodule_files=0
+workspace.batch.files=83
+workspace.batch.symbols=593
+workspace.persistence.files=83
+workspace.persistence.nodes=676
+workspace.persistence.edges=593
+workspace.persistence.occurrences=593
+workspace.persistence.evidence=593
 ```
 
 ## Storage CLI
@@ -218,13 +245,15 @@ cargo run -p semantic-graph-store -- stats \
 
 ## Confidence Check
 
-Run the repo confidence path:
+Run the focused store/extract confidence path:
 
 ```sh
 just confidence
 ```
 
-This does not require a live `rust-analyzer`; extractor tests use fixtures.
+This does not require a live `rust-analyzer` binary; extractor tests use
+fixtures and the checked-in `rust-analyzer` libraries. It does not run the
+smoke-test crate or the workspace extraction smoke route.
 
 Useful focused checks:
 
@@ -232,19 +261,24 @@ Useful focused checks:
 SQLX_OFFLINE=true cargo check -p semantic-graph-extract
 SQLX_OFFLINE=true cargo test -p semantic-graph-extract
 SQLX_OFFLINE=true cargo clippy -p semantic-graph-extract --all-targets -- -D warnings
+SQLX_OFFLINE=true cargo test -p semantic-graph-smoke-tests
+SQLX_OFFLINE=true cargo run -p semantic-graph-smoke-tests
 ```
 
 ## What Exists
 
 - `crates/semantic-graph-store`: SQLite graph store and stats/demo CLI.
 - `crates/semantic-graph-extract`: Rust document-symbol extractor.
+- `crates/rust-analyzer-lib`: in-process facade over the pinned
+  `rust-analyzer` submodule crates.
+- `crates/semantic-graph-smoke-tests`: route smoke-test/report surface.
 - `crates/wip`: small Rust crate used as the local extraction target.
 
 The extractor currently writes:
 
 - one `files` row for each extracted source file;
 - one file node per extracted source file;
-- symbol nodes from `textDocument/documentSymbol`;
+- symbol nodes from hierarchical Rust document-symbol data;
 - `definition` occurrences for symbols;
 - `contains` edges from file to top-level symbols and parent symbols to nested
   symbols;
@@ -253,8 +287,6 @@ The extractor currently writes:
 ## Not Yet Implemented
 
 - First-class persisted crate/package rows.
-- A rust-analyzer library facade for discovery; crate/workspace discovery
-  currently depends on `rust-analyzer lsif`.
 - Calls, references, definitions, implementations, or type hierarchy.
 - C# extraction.
 - CSV snapshots.
@@ -263,8 +295,9 @@ The extractor currently writes:
 
 ## Notes
 
-- `rust-analyzer` must be installed for live extraction commands and smoke
-  recipes.
+- Rust extraction uses the checked-in `rust-analyzer` submodule crates through
+  `rust-analyzer-lib`; the `rust-analyzer` binary is not required for live
+  extraction commands or smoke recipes.
 - `lsp-types` is pinned to match
   `submodules/rust-analyzer/crates/rust-analyzer/Cargo.toml`.
 - Submodules are local research inputs and should be treated as read-only unless

@@ -1,68 +1,87 @@
-use std::fs;
-use std::process::Command;
+use crate::{
+    ExtractError, ExtractResult,
+    document_symbols::paths::{
+        validate_document_symbol_batch_request, validate_document_symbol_request,
+    },
+    model::{
+        DocumentSymbolBatchExtraction, DocumentSymbolBatchRequest, DocumentSymbolExtraction,
+        DocumentSymbolRequest, GraphLanguage, ProviderId,
+    },
+    provider::DocumentSymbolProvider,
+    providers::rust_analyzer::RustDocumentSymbolMapper,
+};
 
 use lsp_types::DocumentSymbolResponse;
-use serde_json::{Value, json};
-
-use crate::document_symbols::paths::{
-    file_uri, validate_document_symbol_batch_request, validate_document_symbol_request,
-};
-use crate::error::{ExtractError, Result};
-use crate::lsp_stdio::LspStdioClient;
-use crate::model::{
-    DocumentSymbolBatchExtraction, DocumentSymbolBatchRequest, DocumentSymbolExtraction,
-    DocumentSymbolRequest, GraphLanguage, ProviderId,
-};
-use crate::provider::DocumentSymbolProvider;
-use crate::providers::rust_analyzer::RustDocumentSymbolMapper;
-use crate::providers::rust_analyzer::rust_lsif_discovery::discover_rust_source_files_with_lsif;
-
-const DEFAULT_TIMEOUT_MS: u64 = 30_000;
+use serde_json::json;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RustAnalyzerProvider {
-    binary: String,
-    timeout_ms: u64,
-}
+pub struct RustAnalyzerProvider;
 
 impl RustAnalyzerProvider {
     pub fn new() -> Self {
-        Self {
-            binary: "rust-analyzer".to_string(),
-            timeout_ms: DEFAULT_TIMEOUT_MS,
-        }
+        Self
     }
 
-    pub fn with_binary(binary: impl Into<String>) -> Self {
-        Self {
-            binary: binary.into(),
-            timeout_ms: DEFAULT_TIMEOUT_MS,
-        }
+    pub fn with_binary(_binary: impl Into<String>) -> Self {
+        Self
     }
 
     pub async fn extract_document_symbol_batch(
         &self,
         request: DocumentSymbolBatchRequest,
-    ) -> Result<DocumentSymbolBatchExtraction> {
+    ) -> ExtractResult<DocumentSymbolBatchExtraction> {
         self.run_batch(request).await
     }
 
     pub fn discover_rust_source_files(
         &self,
-        workspace_root: &std::path::Path,
-        package_path: &std::path::Path,
-    ) -> Result<Vec<std::path::PathBuf>> {
-        discover_rust_source_files_with_lsif(&self.binary, workspace_root, package_path)
+        workspace_root: &Path,
+        package_path: &Path,
+    ) -> ExtractResult<Vec<PathBuf>> {
+        let request = validate_document_symbol_batch_request(DocumentSymbolBatchRequest {
+            workspace_root: workspace_root.to_path_buf(),
+            package_path: package_path.to_path_buf(),
+            file_paths: Vec::new(),
+        })?;
+        let model = rust_analyzer_lib::load_package(&request.workspace_root, &request.package_path)
+            .map_err(|source| facade_error("rust-analyzer-lib load_package", source))?;
+        let files = rust_analyzer_lib::package_source_files(&model, &request.package_path);
+        if files.is_empty() {
+            return Err(ExtractError::response_shape(
+                self.provider_id().as_str(),
+                "rust-analyzer-lib package_source_files",
+                "rust-analyzer-lib returned no Rust source files under the package path",
+            ));
+        }
+
+        Ok(files)
     }
 
     pub fn discover_rust_workspace_source_files(
         &self,
-        workspace_root: &std::path::Path,
-    ) -> Result<Vec<std::path::PathBuf>> {
-        discover_rust_source_files_with_lsif(&self.binary, workspace_root, workspace_root)
+        workspace_root: &Path,
+    ) -> ExtractResult<Vec<PathBuf>> {
+        let request = validate_document_symbol_batch_request(DocumentSymbolBatchRequest {
+            workspace_root: workspace_root.to_path_buf(),
+            package_path: workspace_root.to_path_buf(),
+            file_paths: Vec::new(),
+        })?;
+        let model = rust_analyzer_lib::load_workspace(&request.workspace_root)
+            .map_err(|source| facade_error("rust-analyzer-lib load_workspace", source))?;
+        let files = rust_analyzer_lib::workspace_source_files(&model);
+        if files.is_empty() {
+            return Err(ExtractError::response_shape(
+                self.provider_id().as_str(),
+                "rust-analyzer-lib workspace_source_files",
+                "rust-analyzer-lib returned no Rust workspace source files",
+            ));
+        }
+
+        Ok(files)
     }
 
-    async fn run(&self, request: DocumentSymbolRequest) -> Result<DocumentSymbolExtraction> {
+    async fn run(&self, request: DocumentSymbolRequest) -> ExtractResult<DocumentSymbolExtraction> {
         let request = validate_document_symbol_request(request)?;
         let mut batch = self
             .run_batch(DocumentSymbolBatchRequest {
@@ -84,115 +103,45 @@ impl RustAnalyzerProvider {
     async fn run_batch(
         &self,
         request: DocumentSymbolBatchRequest,
-    ) -> Result<DocumentSymbolBatchExtraction> {
+    ) -> ExtractResult<DocumentSymbolBatchExtraction> {
         let request = validate_document_symbol_batch_request(request)?;
-        let workspace_uri = file_uri(&request.workspace_root)?;
-        let fallback_version = discover_binary_version(&self.binary);
-        let mut client = LspStdioClient::spawn(&self.binary, self.provider_id())?;
+        let provider_version = rust_analyzer_lib::provider_version();
+        let document_symbols = rust_analyzer_lib::document_symbols_for_files(
+            &request.workspace_root,
+            &request.file_paths,
+        )
+        .map_err(|source| facade_error("rust-analyzer-lib document_symbols_for_files", source))?;
+        let mut extractions = Vec::with_capacity(document_symbols.len());
 
-        let extraction_result = async {
-            let initialize_result = client
-                .request(
-                    "initialize",
-                    initialize_params(&workspace_uri),
-                    self.timeout_ms,
-                )
-                .await?;
-            let provider_version =
-                server_info_version(&initialize_result).or_else(|| fallback_version.clone());
-
-            client
-                .notify("initialized", Some(json!({})), self.timeout_ms)
-                .await?;
-            let mut extractions = Vec::with_capacity(request.file_paths.len());
-
-            for file_path in &request.file_paths {
-                let source_uri = file_uri(file_path)?;
-                let source_text = fs::read_to_string(file_path).map_err(|source| {
-                    ExtractError::io(
-                        "read source file for textDocument/didOpen",
-                        Some(file_path.clone()),
-                        source,
-                    )
-                })?;
-
-                client
-                    .notify(
-                        "textDocument/didOpen",
-                        Some(json!({
-                            "textDocument": {
-                                "uri": source_uri.clone(),
-                                "languageId": "rust",
-                                "version": 1,
-                                "text": source_text
-                            }
-                        })),
-                        self.timeout_ms,
-                    )
-                    .await?;
-                let document_symbol_result = client
-                    .request(
-                        "textDocument/documentSymbol",
-                        json!({
-                            "textDocument": {
-                                "uri": source_uri
-                            }
-                        }),
-                        self.timeout_ms,
-                    )
-                    .await?;
-                let response: Option<DocumentSymbolResponse> =
-                    serde_json::from_value(document_symbol_result.clone()).map_err(|source| {
-                        ExtractError::json("parse documentSymbol response", source)
-                    })?;
-                let response = response.ok_or_else(|| {
-                    ExtractError::response_shape(
-                        self.provider_id().as_str(),
-                        "textDocument/documentSymbol",
-                        "rust-analyzer returned null for document symbols",
-                    )
-                })?;
-                let extraction = RustDocumentSymbolMapper::map_response(
-                    DocumentSymbolRequest {
-                        workspace_root: request.workspace_root.clone(),
-                        package_path: request.package_path.clone(),
-                        file_path: file_path.clone(),
-                    },
-                    response,
-                    provider_version.clone(),
-                    json!({
-                        "initialize": initialize_result.clone(),
-                        "document_symbol": document_symbol_result
-                    }),
-                )?;
-
-                extractions.push(extraction);
-            }
-
-            Ok(DocumentSymbolBatchExtraction {
-                provider: self.provider_id(),
-                provider_version,
-                extractions,
-                raw_metadata: json!({
-                    "initialize": initialize_result,
-                    "file_count": request.file_paths.len(),
+        for (file_path, symbols) in document_symbols {
+            let response = DocumentSymbolResponse::Nested(symbols.clone());
+            let extraction = RustDocumentSymbolMapper::map_response(
+                DocumentSymbolRequest {
+                    workspace_root: request.workspace_root.clone(),
+                    package_path: request.package_path.clone(),
+                    file_path: file_path.clone(),
+                },
+                response,
+                provider_version.clone(),
+                json!({
+                    "facade": "rust-analyzer-lib",
+                    "lsp_method": "textDocument/documentSymbol",
+                    "document_symbol": symbols
                 }),
-            })
-        }
-        .await;
+            )?;
 
-        let shutdown_result = client.shutdown(self.timeout_ms).await;
-
-        match extraction_result {
-            Ok(extraction) => {
-                shutdown_result?;
-                Ok(extraction)
-            }
-            Err(error) => {
-                let _cleanup_result = shutdown_result;
-                Err(error)
-            }
+            extractions.push(extraction);
         }
+
+        Ok(DocumentSymbolBatchExtraction {
+            provider: self.provider_id(),
+            provider_version,
+            extractions,
+            raw_metadata: json!({
+                "facade": "rust-analyzer-lib",
+                "file_count": request.file_paths.len(),
+            }),
+        })
     }
 }
 
@@ -214,60 +163,14 @@ impl DocumentSymbolProvider for RustAnalyzerProvider {
     async fn extract_document_symbols(
         &self,
         request: DocumentSymbolRequest,
-    ) -> Result<DocumentSymbolExtraction> {
+    ) -> ExtractResult<DocumentSymbolExtraction> {
         self.run(request).await
     }
 }
 
-fn initialize_params(workspace_uri: &str) -> Value {
-    json!({
-        "processId": std::process::id(),
-        "rootUri": workspace_uri,
-        "capabilities": {
-            "textDocument": {
-                "documentSymbol": {
-                    "hierarchicalDocumentSymbolSupport": true,
-                    "symbolKind": {
-                        "valueSet": [
-                            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
-                            14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
-                            25, 26
-                        ]
-                    }
-                }
-            },
-            "workspace": {
-                "workspaceFolders": true
-            }
-        },
-        "workspaceFolders": [
-            {
-                "uri": workspace_uri,
-                "name": "workspace"
-            }
-        ]
-    })
-}
-
-fn server_info_version(initialize_result: &Value) -> Option<String> {
-    initialize_result
-        .get("serverInfo")
-        .and_then(|server_info| server_info.get("version"))
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned)
-}
-
-fn discover_binary_version(binary: &str) -> Option<String> {
-    let output = Command::new(binary).arg("--version").output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
-
-    let value = String::from_utf8(output.stdout).ok()?;
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
+fn facade_error(
+    context: &'static str,
+    source: rust_analyzer_lib::RustAnalyzerLibError,
+) -> ExtractError {
+    ExtractError::rust_analyzer_lib(context, source)
 }

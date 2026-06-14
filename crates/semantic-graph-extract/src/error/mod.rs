@@ -1,3 +1,9 @@
-mod extract_error;
+#![allow(clippy::module_inception)]
 
-pub use extract_error::{ExtractError, Result};
+mod error;
+mod result;
+
+// ---------------------------------------------------------------------------------------------- //
+
+pub use error::ExtractError;
+pub use result::ExtractResult;

@@ -1,7 +1,7 @@
-use std::path::PathBuf;
+use semantic_graph_store::{GraphStore, GraphStoreResult};
 
 use clap::{Parser, Subcommand};
-use semantic_graph_store::{GraphStore, Result};
+use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
 #[command(about = "Semantic graph storage prototype")]
@@ -36,7 +36,7 @@ async fn main() {
     }
 }
 
-async fn run() -> Result<()> {
+async fn run() -> GraphStoreResult<()> {
     let cli = Cli::parse();
 
     match cli.command {

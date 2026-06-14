@@ -1,7 +1,8 @@
-use semantic_graph_store::TextRange;
-use serde_json::Value;
-
 use crate::model::ProviderId;
+
+use semantic_graph_store::TextRange;
+
+use serde_json::Value;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExtractedRelation {

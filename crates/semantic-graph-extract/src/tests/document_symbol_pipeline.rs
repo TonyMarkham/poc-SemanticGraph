@@ -5,16 +5,14 @@ use std::io;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use lsp_types::DocumentSymbolResponse;
-use semantic_graph_extract::document_symbols::paths::{
-    file_uri, validate_document_symbol_batch_request,
-};
-use semantic_graph_extract::error::ExtractError;
-use semantic_graph_extract::model::{
+use crate::document_symbols::paths::{file_uri, validate_document_symbol_batch_request};
+use crate::error::ExtractError;
+use crate::model::{
     DocumentSymbolBatchExtraction, DocumentSymbolBatchRequest, DocumentSymbolRequest, ProviderId,
 };
-use semantic_graph_extract::persist::ExtractionPersister;
-use semantic_graph_extract::providers::rust_analyzer::RustDocumentSymbolMapper;
+use crate::persist::ExtractionPersister;
+use crate::providers::rust_analyzer::RustDocumentSymbolMapper;
+use lsp_types::DocumentSymbolResponse;
 use semantic_graph_store::{GraphStore, GraphStoreStats};
 use serde_json::json;
 use sqlx::SqlitePool;

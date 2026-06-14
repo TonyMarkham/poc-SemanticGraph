@@ -8,6 +8,8 @@ mod graph_language;
 mod provider_id;
 mod source_file;
 
+// ---------------------------------------------------------------------------------------------- //
+
 pub use document_symbol_batch_extraction::DocumentSymbolBatchExtraction;
 pub use document_symbol_batch_request::DocumentSymbolBatchRequest;
 pub use document_symbol_extraction::DocumentSymbolExtraction;

@@ -1,15 +1,12 @@
-use std::process::Stdio;
-use std::time::Duration;
+use crate::{ExtractError, ExtractResult, model::ProviderId};
 
 use serde_json::{Value, json};
-use tokio::io::{
-    AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader,
+use std::{process::Stdio, time::Duration};
+use tokio::{
+    io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader},
+    process::{Child, ChildStdin, ChildStdout, Command},
+    time,
 };
-use tokio::process::{Child, ChildStdin, ChildStdout, Command};
-use tokio::time;
-
-use crate::error::{ExtractError, Result};
-use crate::model::ProviderId;
 
 pub struct LspStdioClient {
     provider: ProviderId,
@@ -21,7 +18,7 @@ pub struct LspStdioClient {
 }
 
 impl LspStdioClient {
-    pub fn spawn(process_name: &str, provider: ProviderId) -> Result<Self> {
+    pub fn spawn(process_name: &str, provider: ProviderId) -> ExtractResult<Self> {
         let mut command = Command::new(process_name);
         command
             .stdin(Stdio::piped())
@@ -61,7 +58,12 @@ impl LspStdioClient {
         })
     }
 
-    pub async fn request(&mut self, method: &str, params: Value, timeout_ms: u64) -> Result<Value> {
+    pub async fn request(
+        &mut self,
+        method: &str,
+        params: Value,
+        timeout_ms: u64,
+    ) -> ExtractResult<Value> {
         let request_id = self.allocate_request_id(method)?;
         let message = json!({
             "jsonrpc": "2.0",
@@ -94,7 +96,7 @@ impl LspStdioClient {
         method: &str,
         params: Option<Value>,
         timeout_ms: u64,
-    ) -> Result<()> {
+    ) -> ExtractResult<()> {
         let mut message = json!({
             "jsonrpc": "2.0",
             "method": method,
@@ -115,7 +117,7 @@ impl LspStdioClient {
         }
     }
 
-    pub async fn shutdown(mut self, timeout_ms: u64) -> Result<()> {
+    pub async fn shutdown(mut self, timeout_ms: u64) -> ExtractResult<()> {
         if let Err(error) = self.request("shutdown", Value::Null, timeout_ms).await {
             let _kill_result = self.kill().await;
             return Err(error);
@@ -129,7 +131,11 @@ impl LspStdioClient {
         self.wait_for_exit(timeout_ms).await
     }
 
-    async fn read_response(&mut self, method: &str, expected_request_id: i64) -> Result<Value> {
+    async fn read_response(
+        &mut self,
+        method: &str,
+        expected_request_id: i64,
+    ) -> ExtractResult<Value> {
         loop {
             let value = read_framed_json(&mut self.stdout).await?;
 
@@ -177,11 +183,11 @@ impl LspStdioClient {
         }
     }
 
-    async fn write_json(&mut self, value: &Value) -> Result<()> {
+    async fn write_json(&mut self, value: &Value) -> ExtractResult<()> {
         write_json_message(&mut self.stdin, value).await
     }
 
-    fn allocate_request_id(&mut self, method: &str) -> Result<i64> {
+    fn allocate_request_id(&mut self, method: &str) -> ExtractResult<i64> {
         let request_id = self.next_request_id;
         self.next_request_id = self.next_request_id.checked_add(1).ok_or_else(|| {
             ExtractError::protocol(
@@ -195,7 +201,7 @@ impl LspStdioClient {
         Ok(request_id)
     }
 
-    async fn wait_for_exit(&mut self, timeout_ms: u64) -> Result<()> {
+    async fn wait_for_exit(&mut self, timeout_ms: u64) -> ExtractResult<()> {
         match time::timeout(Duration::from_millis(timeout_ms), self.child.wait()).await {
             Ok(Ok(status)) if status.success() => Ok(()),
             Ok(Ok(status)) => Err(ExtractError::process(
@@ -221,7 +227,7 @@ impl LspStdioClient {
         }
     }
 
-    async fn kill(&mut self) -> Result<()> {
+    async fn kill(&mut self) -> ExtractResult<()> {
         self.child.kill().await.map_err(|source| {
             ExtractError::io(
                 format!("kill language server {}", self.process_name),
@@ -232,7 +238,7 @@ impl LspStdioClient {
     }
 }
 
-pub async fn read_framed_json<R>(reader: &mut R) -> Result<Value>
+pub async fn read_framed_json<R>(reader: &mut R) -> ExtractResult<Value>
 where
     R: AsyncBufRead + Unpin,
 {
@@ -246,7 +252,7 @@ where
     serde_json::from_slice(&body).map_err(|source| ExtractError::json("parse LSP message", source))
 }
 
-async fn read_headers<R>(reader: &mut R) -> Result<usize>
+async fn read_headers<R>(reader: &mut R) -> ExtractResult<usize>
 where
     R: AsyncBufRead + Unpin,
 {
@@ -306,7 +312,7 @@ where
     })
 }
 
-async fn write_json_message<W>(writer: &mut W, value: &Value) -> Result<()>
+async fn write_json_message<W>(writer: &mut W, value: &Value) -> ExtractResult<()>
 where
     W: AsyncWrite + Unpin,
 {
@@ -326,74 +332,4 @@ where
         .flush()
         .await
         .map_err(|source| ExtractError::io("flush LSP message", None, source))
-}
-
-#[cfg(test)]
-mod tests {
-    use std::error::Error;
-
-    use tokio::io::{AsyncWriteExt, BufReader, duplex};
-
-    use super::*;
-
-    #[tokio::test]
-    async fn framing_parser_reads_one_valid_response() -> std::result::Result<(), Box<dyn Error>> {
-        let value =
-            read_one(b"Content-Length: 38\r\n\r\n{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":null}")
-                .await?;
-
-        assert_eq!(value["id"], 1);
-        assert!(value.get("result").is_some());
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn framing_parser_allows_notification_before_response()
-    -> std::result::Result<(), Box<dyn Error>> {
-        let input = concat!(
-            "Content-Length: 46\r\n\r\n",
-            "{\"jsonrpc\":\"2.0\",\"method\":\"window/logMessage\"}",
-            "Content-Length: 36\r\n\r\n",
-            "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":[]}"
-        );
-        let (mut writer, reader) = duplex(512);
-        writer.write_all(input.as_bytes()).await?;
-        drop(writer);
-
-        let mut reader = BufReader::new(reader);
-        let notification = read_framed_json(&mut reader).await?;
-        let response = read_framed_json(&mut reader).await?;
-
-        assert_eq!(notification["method"], "window/logMessage");
-        assert_eq!(response["id"], 2);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn framing_parser_rejects_malformed_headers() -> std::result::Result<(), Box<dyn Error>> {
-        let result = read_one(b"Content-Length nope\r\n\r\n{}").await;
-
-        assert!(matches!(result, Err(ExtractError::JsonRpcProtocol { .. })));
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn framing_parser_rejects_malformed_json() -> std::result::Result<(), Box<dyn Error>> {
-        let result = read_one(b"Content-Length: 1\r\n\r\n{").await;
-
-        assert!(matches!(result, Err(ExtractError::Json { .. })));
-        Ok(())
-    }
-
-    async fn read_one(bytes: &[u8]) -> Result<Value> {
-        let (mut writer, reader) = duplex(512);
-        writer
-            .write_all(bytes)
-            .await
-            .map_err(|source| ExtractError::io("write test fixture", None, source))?;
-        drop(writer);
-
-        let mut reader = BufReader::new(reader);
-        read_framed_json(&mut reader).await
-    }
 }

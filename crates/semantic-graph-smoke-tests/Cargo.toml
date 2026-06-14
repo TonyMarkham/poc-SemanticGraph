@@ -1,0 +1,15 @@
+[package]
+name = "semantic-graph-smoke-tests"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+lsp-types              = { workspace = true }
+tokio                  = { workspace = true }
+
+rust-analyzer-lib      = { workspace = true }
+semantic-graph-extract = { workspace = true }
+semantic-graph-store   = { workspace = true }
+
+[lints]
+workspace = true

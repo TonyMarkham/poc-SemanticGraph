@@ -11,7 +11,7 @@ use crate::document_symbols::paths::{
     content_hash, file_symbol_key, file_uri, validate_document_symbol_request,
     workspace_relative_path,
 };
-use crate::error::{ExtractError, Result};
+use crate::error::{ExtractError, ExtractResult};
 use crate::model::{
     DocumentSymbolExtraction, DocumentSymbolRequest, ExtractedRelation, ExtractedSymbol,
     GraphLanguage, ProviderId, SourceFile,
@@ -25,7 +25,7 @@ impl RustDocumentSymbolMapper {
         response: DocumentSymbolResponse,
         provider_version: Option<String>,
         raw_metadata: Value,
-    ) -> Result<DocumentSymbolExtraction> {
+    ) -> ExtractResult<DocumentSymbolExtraction> {
         match response {
             DocumentSymbolResponse::Nested(symbols) => {
                 Self::map_nested_symbols(request, &symbols, provider_version, raw_metadata)
@@ -43,7 +43,7 @@ impl RustDocumentSymbolMapper {
         symbols: &[DocumentSymbol],
         provider_version: Option<String>,
         raw_metadata: Value,
-    ) -> Result<DocumentSymbolExtraction> {
+    ) -> ExtractResult<DocumentSymbolExtraction> {
         let request = validate_document_symbol_request(request)?;
         let file_contents = fs::read_to_string(&request.file_path).map_err(|source| {
             ExtractError::io(
@@ -83,7 +83,7 @@ impl RustDocumentSymbolMapper {
         parent_symbol_key: Option<&str>,
         parent_path: &[String],
         extraction: &mut DocumentSymbolExtraction,
-    ) -> Result<()> {
+    ) -> ExtractResult<()> {
         let kind = normalize_symbol_kind(symbol.kind).to_string();
         let selection_range = text_range_from_lsp(symbol.selection_range);
         let symbol_key = build_symbol_key(
@@ -140,49 +140,6 @@ impl RustDocumentSymbolMapper {
             }
         }
 
-        Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::env;
-    use std::error::Error;
-
-    use crate::model::DocumentSymbolRequest;
-
-    use super::*;
-
-    #[test]
-    fn rejects_flat_symbol_information_response() -> std::result::Result<(), Box<dyn Error>> {
-        let value = serde_json::json!([
-            {
-                "name": "flat",
-                "kind": 12,
-                "location": {
-                    "uri": "file:///tmp/lib.rs",
-                    "range": {
-                        "start": { "line": 0, "character": 0 },
-                        "end": { "line": 0, "character": 4 }
-                    }
-                }
-            }
-        ]);
-        let response: DocumentSymbolResponse = serde_json::from_value(value)?;
-        let cwd = env::current_dir()?;
-
-        let result = RustDocumentSymbolMapper::map_response(
-            DocumentSymbolRequest {
-                workspace_root: cwd.clone(),
-                package_path: cwd.join("crates/wip"),
-                file_path: cwd.join("crates/wip/src/lib.rs"),
-            },
-            response,
-            None,
-            json!({}),
-        );
-
-        assert!(matches!(result, Err(ExtractError::ResponseShape { .. })));
         Ok(())
     }
 }

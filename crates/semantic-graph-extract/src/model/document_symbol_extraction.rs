@@ -1,6 +1,6 @@
-use serde_json::Value;
-
 use crate::model::{ExtractedRelation, ExtractedSymbol, ProviderId, SourceFile};
+
+use serde_json::Value;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct DocumentSymbolExtraction {
