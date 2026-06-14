@@ -7,7 +7,7 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::document_symbols::paths::file_uri;
-use crate::model::ReferenceBatchRequest;
+use crate::model::CallBatchRequest;
 use crate::persist::ExtractionPersister;
 use crate::providers::rust_analyzer::RustAnalyzerProvider;
 
@@ -18,45 +18,36 @@ use tokio::runtime::Builder;
 static RUST_ANALYZER_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
-fn extracts_rust_references_from_wip() -> std::result::Result<(), Box<dyn Error>> {
+fn extracts_rust_calls_from_wip() -> std::result::Result<(), Box<dyn Error>> {
     run_with_rust_analyzer(async {
         let repo_root = repo_root()?;
         let provider = RustAnalyzerProvider::new();
-        let request = reference_request(&provider, &repo_root)?;
+        let request = call_request(&provider, &repo_root)?;
 
-        let extraction = provider.extract_rust_references(request).await?;
+        let extraction = provider.extract_rust_calls(request).await?;
 
-        assert!(extraction.summary.targets_queried > 0);
-        assert!(extraction.summary.reference_edges > 0);
-        assert!(extraction.summary.reference_occurrences > 0);
-        assert!(
-            extraction
-                .references
-                .iter()
-                .any(
-                    |reference| reference.occurrences.iter().any(|occurrence| occurrence
-                        .file_relative_path
-                        == "crates/wip/src/tests/mod.rs"
-                        && occurrence
-                            .enclosing_symbol_key
-                            .as_deref()
-                            .unwrap_or_default()
-                            .contains("processor_tracks_active_widgets"))
-                )
-        );
+        assert!(extraction.summary.callable_nodes > 0);
+        assert!(extraction.summary.call_edges > 0);
+        assert!(extraction.summary.call_occurrences > 0);
+        assert!(extraction.calls.iter().any(|call| {
+            call.occurrences.iter().any(|occurrence| {
+                occurrence.file_relative_path == "crates/wip/src/pipeline.rs"
+                    && occurrence.enclosing_symbol_key.contains("ingest")
+            })
+        }));
 
         Ok(())
     })
 }
 
 #[test]
-fn persists_reference_edges_occurrences_and_evidence() -> std::result::Result<(), Box<dyn Error>> {
+fn persists_call_edges_occurrences_and_evidence() -> std::result::Result<(), Box<dyn Error>> {
     run_with_rust_analyzer(async {
         let repo_root = repo_root()?;
         let provider = RustAnalyzerProvider::new();
-        let request = reference_request(&provider, &repo_root)?;
+        let request = call_request(&provider, &repo_root)?;
         let workspace_root_uri = file_uri(&request.workspace_root)?;
-        let extraction = provider.extract_rust_references(request).await?;
+        let extraction = provider.extract_rust_calls(request).await?;
         let db_path = temp_db_path()?;
         let store = GraphStore::connect(&db_path).await?;
         store.migrate().await?;
@@ -69,62 +60,62 @@ fn persists_reference_edges_occurrences_and_evidence() -> std::result::Result<()
             .await?;
 
         let summary = ExtractionPersister
-            .persist_reference_batch(&store, &workspace_root_uri, &extraction)
+            .persist_call_batch(&store, &workspace_root_uri, &extraction)
             .await?;
 
         assert_eq!(summary.files, 0);
-        assert_eq!(summary.reference_edges, extraction.references.len());
+        assert_eq!(summary.call_edges, extraction.calls.len());
         assert_eq!(
-            summary.reference_occurrences,
-            extraction.summary.reference_occurrences
+            summary.call_occurrences,
+            extraction.summary.call_occurrences
         );
         assert_eq!(summary.routes_complete, 1);
 
         let pool = sqlite_pool(&db_path).await?;
-        let reference_edges: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM edges WHERE relation = 'references'")
+        let call_edges: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM edges WHERE relation = 'calls'")
                 .fetch_one(&pool)
                 .await?;
-        let reference_occurrences: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM occurrences WHERE role = 'reference'")
+        let call_occurrences: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM occurrences WHERE role = 'call'")
                 .fetch_one(&pool)
                 .await?;
-        let reference_evidence: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM edge_evidence WHERE lsp_method = 'textDocument/references'",
+        let call_evidence: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM edge_evidence WHERE lsp_method = 'callHierarchy/outgoingCalls'",
         )
         .fetch_one(&pool)
         .await?;
-        let reference_observations: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM route_observations WHERE route = 'rust.references'",
+        let call_observations: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM route_observations WHERE route = 'rust.calls'",
         )
         .fetch_one(&pool)
         .await?;
 
-        assert_eq!(reference_edges, i64::try_from(extraction.references.len())?);
+        assert_eq!(call_edges, i64::try_from(extraction.calls.len())?);
         assert_eq!(
-            reference_occurrences,
-            i64::try_from(extraction.summary.reference_occurrences)?
+            call_occurrences,
+            i64::try_from(extraction.summary.call_occurrences)?
         );
         assert_eq!(
-            reference_evidence,
-            i64::try_from(extraction.summary.reference_occurrences)?
+            call_evidence,
+            i64::try_from(extraction.summary.call_occurrences)?
         );
-        assert!(reference_observations > 0);
+        assert!(call_observations > 0);
 
         Ok(())
     })
 }
 
 #[test]
-fn later_successful_reference_run_closes_unobserved_reference_edges()
+fn later_successful_call_run_closes_unobserved_call_edges()
 -> std::result::Result<(), Box<dyn Error>> {
     run_with_rust_analyzer(async {
         let repo_root = repo_root()?;
         let provider = RustAnalyzerProvider::new();
-        let request = reference_request(&provider, &repo_root)?;
+        let request = call_request(&provider, &repo_root)?;
         let workspace_root_uri = file_uri(&request.workspace_root)?;
-        let extraction = provider.extract_rust_references(request).await?;
-        assert!(!extraction.references.is_empty());
+        let extraction = provider.extract_rust_calls(request).await?;
+        assert!(!extraction.calls.is_empty());
 
         let db_path = temp_db_path()?;
         let store = GraphStore::connect(&db_path).await?;
@@ -137,40 +128,37 @@ fn later_successful_reference_run_closes_unobserved_reference_edges()
             )
             .await?;
         ExtractionPersister
-            .persist_reference_batch(&store, &workspace_root_uri, &extraction)
+            .persist_call_batch(&store, &workspace_root_uri, &extraction)
             .await?;
 
         let mut second_extraction = extraction.clone();
-        second_extraction.references.clear();
-        second_extraction.summary.reference_edges = 0;
-        second_extraction.summary.reference_occurrences = 0;
+        second_extraction.calls.clear();
+        second_extraction.summary.call_edges = 0;
+        second_extraction.summary.call_occurrences = 0;
         ExtractionPersister
-            .persist_reference_batch(&store, &workspace_root_uri, &second_extraction)
+            .persist_call_batch(&store, &workspace_root_uri, &second_extraction)
             .await?;
 
         let pool = sqlite_pool(&db_path).await?;
-        let stale_reference_edges: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM edges WHERE relation = 'references' AND valid_to_run_id IS NOT NULL",
-    )
-    .fetch_one(&pool)
-    .await?;
+        let stale_call_edges: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM edges WHERE relation = 'calls' AND valid_to_run_id IS NOT NULL",
+        )
+        .fetch_one(&pool)
+        .await?;
 
-        assert_eq!(
-            stale_reference_edges,
-            i64::try_from(extraction.references.len())?
-        );
+        assert_eq!(stale_call_edges, i64::try_from(extraction.calls.len())?);
 
         Ok(())
     })
 }
 
-fn reference_request(
+fn call_request(
     provider: &RustAnalyzerProvider,
     repo_root: &Path,
-) -> std::result::Result<ReferenceBatchRequest, Box<dyn Error>> {
+) -> std::result::Result<CallBatchRequest, Box<dyn Error>> {
     let package_path = repo_root.join("crates/wip");
     let file_paths = provider.discover_rust_source_files(repo_root, &package_path)?;
-    Ok(ReferenceBatchRequest {
+    Ok(CallBatchRequest {
         workspace_root: repo_root.to_path_buf(),
         package_path,
         file_paths,
@@ -192,7 +180,7 @@ fn repo_root() -> std::result::Result<PathBuf, Box<dyn Error>> {
 fn temp_db_path() -> std::result::Result<PathBuf, Box<dyn Error>> {
     let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
     Ok(env::temp_dir().join(format!(
-        "poc-semanticgraph-reference-extract-{}-{stamp}.db",
+        "poc-semanticgraph-call-extract-{}-{stamp}.db",
         std::process::id()
     )))
 }

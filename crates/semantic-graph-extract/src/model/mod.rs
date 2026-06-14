@@ -1,7 +1,12 @@
+mod call_batch_extraction;
+mod call_batch_request;
+mod call_occurrence;
+mod call_route_summary;
 mod document_symbol_batch_extraction;
 mod document_symbol_batch_request;
 mod document_symbol_extraction;
 mod document_symbol_request;
+mod extracted_call;
 mod extracted_reference;
 mod extracted_relation;
 mod extracted_symbol;
@@ -17,10 +22,15 @@ mod source_file;
 
 // ---------------------------------------------------------------------------------------------- //
 
+pub use call_batch_extraction::CallBatchExtraction;
+pub use call_batch_request::CallBatchRequest;
+pub use call_occurrence::CallOccurrence;
+pub use call_route_summary::CallRouteSummary;
 pub use document_symbol_batch_extraction::DocumentSymbolBatchExtraction;
 pub use document_symbol_batch_request::DocumentSymbolBatchRequest;
 pub use document_symbol_extraction::DocumentSymbolExtraction;
 pub use document_symbol_request::DocumentSymbolRequest;
+pub use extracted_call::ExtractedCall;
 pub use extracted_reference::ExtractedReference;
 pub use extracted_relation::ExtractedRelation;
 pub use extracted_symbol::ExtractedSymbol;

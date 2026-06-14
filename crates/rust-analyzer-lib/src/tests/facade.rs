@@ -4,8 +4,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use crate::{
-    ResolvedReferenceTarget, document_symbols_for_file, load_workspace, package_source_files,
-    provider_version, references_for_symbols, workspace_source_files,
+    ResolvedCallTarget, ResolvedReferenceTarget, document_symbols_for_file, load_workspace,
+    outgoing_calls_for_symbols, package_source_files, provider_version, references_for_symbols,
+    workspace_source_files,
 };
 use lsp_types::DocumentSymbol;
 
@@ -108,6 +109,38 @@ fn extracts_references_for_wip_symbol() -> Result<(), Box<dyn Error>> {
     assert!(!references[0].references.iter().any(|location| {
         location.file_path == target_file_path && location.range == target_symbol.selection_range
     }));
+
+    Ok(())
+}
+
+#[test]
+fn extracts_outgoing_calls_for_wip_callable() -> Result<(), Box<dyn Error>> {
+    let _guard = workspace_load_guard()?;
+    let repo_root = repo_root()?;
+    let target_file_path = repo_root.join("crates/wip/src/pipeline.rs");
+    let symbols = document_symbols_for_file(&repo_root, &target_file_path)?;
+    let target_symbol = find_symbol(&symbols, "ingest")
+        .ok_or_else(|| io::Error::other("WidgetProcessor::ingest symbol was not found"))?;
+
+    let call_sets = outgoing_calls_for_symbols(
+        &repo_root,
+        &[ResolvedCallTarget {
+            file_path: target_file_path.clone(),
+            selection_range: target_symbol.selection_range,
+            name: target_symbol.name.clone(),
+        }],
+    )?;
+
+    assert_eq!(call_sets.len(), 1);
+    assert!(
+        call_sets[0]
+            .outgoing_calls
+            .iter()
+            .any(|call| call.target_name == "upsert"
+                && relative_path(&repo_root, &call.target_file_path).as_deref()
+                    == Some("crates/wip/src/pipeline.rs")
+                && !call.callsite_ranges.is_empty())
+    );
 
     Ok(())
 }

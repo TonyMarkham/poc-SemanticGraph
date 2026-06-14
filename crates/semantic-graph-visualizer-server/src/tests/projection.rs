@@ -17,8 +17,11 @@ use std::{
     error::Error,
     io,
     path::PathBuf,
+    sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
+
+static TEMP_DATABASE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[tokio::test]
 async fn projection_includes_selected_symbols_files_and_edges() -> Result<(), Box<dyn Error>> {
@@ -64,6 +67,20 @@ async fn projection_includes_reference_edges_when_endpoints_are_selected()
 }
 
 #[tokio::test]
+async fn projection_includes_call_edges_when_endpoints_are_selected() -> Result<(), Box<dyn Error>>
+{
+    let database_path = seeded_database_path().await?;
+
+    let service = GraphQueryService::new(database_path.clone());
+    let projection = service.projection(3).await?;
+
+    assert!(projection.edges.iter().any(|edge| edge.relation == "calls"));
+
+    std::fs::remove_file(database_path)?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn node_details_returns_metadata_occurrences_and_counts() -> Result<(), Box<dyn Error>> {
     let database_path = seeded_database_path().await?;
 
@@ -78,8 +95,8 @@ async fn node_details_returns_metadata_occurrences_and_counts() -> Result<(), Bo
     assert_eq!(Some("module-root"), details.container_node_id.as_deref());
     assert_eq!(Some("crate"), details.container_display_label.as_deref());
     assert_eq!(2, details.incoming_edge_count);
-    assert_eq!(2, details.outgoing_edge_count);
-    assert_eq!(3, details.relations.len());
+    assert_eq!(3, details.outgoing_edge_count);
+    assert_eq!(4, details.relations.len());
     assert!(
         details
             .relations
@@ -102,6 +119,14 @@ async fn node_details_returns_metadata_occurrences_and_counts() -> Result<(), Bo
             .iter()
             .any(|relation| relation.direction == "outgoing"
                 && relation.relation == "references"
+                && relation.edge_count == 1)
+    );
+    assert!(
+        details
+            .relations
+            .iter()
+            .any(|relation| relation.direction == "outgoing"
+                && relation.relation == "calls"
                 && relation.edge_count == 1)
     );
     assert_eq!(1, details.occurrences.len());
@@ -132,6 +157,35 @@ async fn edge_details_returns_reference_context_weight_and_evidence() -> Result<
     assert_eq!("rust-analyzer", details.evidence[0].provider);
     assert_eq!(
         Some("textDocument/references"),
+        details.evidence[0].lsp_method.as_deref()
+    );
+    assert_eq!(
+        Some("src/lib.rs"),
+        details.evidence[0].source_file_path.as_deref()
+    );
+
+    std::fs::remove_file(database_path)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn edge_details_returns_call_context_weight_and_evidence() -> Result<(), Box<dyn Error>> {
+    let database_path = seeded_database_path().await?;
+
+    let service = GraphQueryService::new(database_path.clone());
+    let details = service.edge_details("edge-run-helper-call").await?;
+
+    assert_eq!("edge-run-helper-call", details.edge_id);
+    assert_eq!("calls", details.relation);
+    assert_eq!(Some("direct"), details.context.as_deref());
+    assert_eq!("EXTRACTED", details.confidence);
+    assert_eq!(2.0, details.weight);
+    assert_eq!("symbol-run", details.source.node_id);
+    assert_eq!("symbol-helper", details.target.node_id);
+    assert_eq!(1, details.evidence.len());
+    assert_eq!("rust-analyzer", details.evidence[0].provider);
+    assert_eq!(
+        Some("callHierarchy/outgoingCalls"),
         details.evidence[0].lsp_method.as_deref()
     );
     assert_eq!(
@@ -607,6 +661,21 @@ async fn seed_fixture_database(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             1,
             1,
             NULL
+          ),
+          (
+            'edge-run-helper-call',
+            1,
+            'symbol-run',
+            'symbol-helper',
+            'calls',
+            'direct',
+            'EXTRACTED',
+            1.0,
+            2.0,
+            '{"source_resolution":"symbol"}',
+            1,
+            1,
+            NULL
           );
 
         INSERT INTO occurrences (
@@ -648,6 +717,19 @@ async fn seed_fixture_database(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             14,
             'symbol-run',
             '{"source":"reference-occurrence"}'
+          ),
+          (
+            3,
+            'symbol-helper',
+            1,
+            1,
+            'call',
+            11,
+            8,
+            11,
+            14,
+            'symbol-run',
+            '{"source":"call-occurrence"}'
           );
 
         INSERT INTO edge_evidence (
@@ -689,6 +771,19 @@ async fn seed_fixture_database(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             11,
             14,
             '{"source":"reference-evidence"}'
+          ),
+          (
+            3,
+            'edge-run-helper-call',
+            1,
+            'rust-analyzer',
+            'callHierarchy/outgoingCalls',
+            1,
+            11,
+            8,
+            11,
+            14,
+            '{"source":"call-evidence"}'
           );
         "#,
     )
@@ -700,5 +795,9 @@ async fn seed_fixture_database(pool: &SqlitePool) -> Result<(), sqlx::Error> {
 
 fn temp_database_path() -> Result<PathBuf, Box<dyn Error>> {
     let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-    Ok(std::env::temp_dir().join(format!("semantic-graph-visualizer-server-{timestamp}.db")))
+    let index = TEMP_DATABASE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    Ok(std::env::temp_dir().join(format!(
+        "semantic-graph-visualizer-server-{}-{timestamp}-{index}.db",
+        std::process::id()
+    )))
 }

@@ -12,6 +12,10 @@ impl RouteName {
         value: "rust.references",
     };
 
+    pub const RUST_CALLS: Self = Self {
+        value: "rust.calls",
+    };
+
     pub fn as_str(self) -> &'static str {
         self.value
     }

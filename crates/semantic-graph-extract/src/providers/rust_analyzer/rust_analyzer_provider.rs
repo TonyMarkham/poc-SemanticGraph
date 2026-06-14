@@ -5,9 +5,10 @@ use crate::{
         validate_document_symbol_batch_request, validate_document_symbol_request,
     },
     model::{
+        CallBatchExtraction, CallBatchRequest, CallOccurrence, CallRouteSummary,
         DocumentSymbolBatchExtraction, DocumentSymbolBatchRequest, DocumentSymbolExtraction,
-        DocumentSymbolRequest, ExtractedReference, ExtractedSymbol, GraphLanguage, ProviderId,
-        ReferenceBatchExtraction, ReferenceBatchRequest, ReferenceOccurrence,
+        DocumentSymbolRequest, ExtractedCall, ExtractedReference, ExtractedSymbol, GraphLanguage,
+        ProviderId, ReferenceBatchExtraction, ReferenceBatchRequest, ReferenceOccurrence,
         ReferenceRouteSummary, RouteName, SourceFile,
     },
     provider::DocumentSymbolProvider,
@@ -45,6 +46,13 @@ impl RustAnalyzerProvider {
         request: ReferenceBatchRequest,
     ) -> ExtractResult<ReferenceBatchExtraction> {
         self.run_references(request).await
+    }
+
+    pub async fn extract_rust_calls(
+        &self,
+        request: CallBatchRequest,
+    ) -> ExtractResult<CallBatchExtraction> {
+        self.run_calls(request).await
     }
 
     pub fn discover_rust_source_files(
@@ -179,8 +187,7 @@ impl RustAnalyzerProvider {
         )
         .map_err(|source| facade_error("rust-analyzer-lib references_for_symbols", source))?;
         let workspace_fingerprint = workspace_fingerprint(&document_symbols);
-        let mut symbol_index =
-            SymbolIndex::new(&document_request.workspace_root, &document_symbols)?;
+        let symbol_index = SymbolIndex::new(&document_request.workspace_root, &document_symbols)?;
         let mut grouped_references = BTreeMap::new();
         let mut skipped_external = 0;
         let mut file_fallbacks = 0;
@@ -310,6 +317,166 @@ impl RustAnalyzerProvider {
             }),
         })
     }
+
+    async fn run_calls(&self, request: CallBatchRequest) -> ExtractResult<CallBatchExtraction> {
+        let document_request =
+            validate_document_symbol_batch_request(DocumentSymbolBatchRequest {
+                workspace_root: request.workspace_root,
+                package_path: request.package_path,
+                file_paths: request.file_paths,
+            })?;
+        let document_symbols = self.run_batch(document_request.clone()).await?;
+        let callable_contexts = callable_target_contexts(&document_request, &document_symbols)?;
+        let call_targets = callable_contexts
+            .iter()
+            .map(|context| context.target.clone())
+            .collect::<Vec<_>>();
+        let call_sets = rust_analyzer_lib::outgoing_calls_for_symbols(
+            &document_request.workspace_root,
+            &call_targets,
+        )
+        .map_err(|source| facade_error("rust-analyzer-lib outgoing_calls_for_symbols", source))?;
+        let workspace_fingerprint = workspace_fingerprint(&document_symbols);
+        let symbol_index = SymbolIndex::new(&document_request.workspace_root, &document_symbols)?;
+        let caller_by_range = callable_contexts
+            .into_iter()
+            .map(|context| {
+                (
+                    target_key(&context.target.file_path, context.target.selection_range),
+                    context,
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        let mut grouped_calls = BTreeMap::new();
+        let mut skipped_external_targets = 0;
+        let mut skipped_unresolved_targets = 0;
+        let mut skipped_non_callable_prepare_items = 0;
+
+        for call_set in call_sets {
+            skipped_non_callable_prepare_items += call_set.skipped_non_callable_prepare_items;
+            let Some(caller_context) = caller_by_range.get(&target_key(
+                &call_set.caller_file_path,
+                call_set.caller_selection_range,
+            )) else {
+                return Err(ExtractError::response_shape(
+                    self.provider_id().as_str(),
+                    "callHierarchy/outgoingCalls",
+                    "rust-analyzer-lib returned a call set for an unknown caller",
+                ));
+            };
+            let Some(caller_file_context) = symbol_index.file_context(&call_set.caller_file_path)
+            else {
+                return Err(ExtractError::response_shape(
+                    self.provider_id().as_str(),
+                    "callHierarchy/outgoingCalls",
+                    "call caller file was not in the current document-symbol batch",
+                ));
+            };
+
+            for outgoing_call in call_set.outgoing_calls {
+                if !outgoing_call
+                    .target_file_path
+                    .starts_with(&document_request.workspace_root)
+                {
+                    skipped_external_targets += 1;
+                    continue;
+                }
+
+                let target_range = text_range_from_lsp(outgoing_call.target_range);
+                let target_selection_range =
+                    text_range_from_lsp(outgoing_call.target_selection_range);
+                let Some(mapped_target) = symbol_index.call_target_mapping(
+                    &outgoing_call.target_file_path,
+                    &outgoing_call.target_name,
+                    &outgoing_call.target_kind,
+                    target_range,
+                    target_selection_range,
+                ) else {
+                    skipped_unresolved_targets += 1;
+                    continue;
+                };
+
+                let group_key = (
+                    caller_context.symbol.symbol_key.clone(),
+                    mapped_target.symbol.symbol_key.clone(),
+                    "direct".to_string(),
+                );
+                let group = grouped_calls.entry(group_key).or_insert_with(|| CallGroup {
+                    caller_symbol_key: caller_context.symbol.symbol_key.clone(),
+                    callee_symbol_key: mapped_target.symbol.symbol_key.clone(),
+                    context: "direct".to_string(),
+                    occurrences: Vec::new(),
+                });
+
+                for callsite_range in outgoing_call.callsite_ranges {
+                    let occurrence_range = text_range_from_lsp(callsite_range);
+                    group.occurrences.push(CallOccurrence {
+                        file_uri: caller_file_context.source_file.uri.clone(),
+                        file_relative_path: caller_file_context.source_file.relative_path.clone(),
+                        file_symbol_key: caller_file_context.source_file.file_symbol_key.clone(),
+                        range: occurrence_range,
+                        enclosing_symbol_key: caller_context.symbol.symbol_key.clone(),
+                        raw_json: json!({
+                            "lsp_method": "callHierarchy/outgoingCalls",
+                            "route": RouteName::RUST_CALLS.as_str(),
+                            "caller_name": caller_context.symbol.name,
+                            "caller_symbol_key": caller_context.symbol.symbol_key,
+                            "callee_name": mapped_target.symbol.name,
+                            "callee_symbol_key": mapped_target.symbol.symbol_key,
+                            "provider_target": {
+                                "file_path": outgoing_call.target_file_path,
+                                "name": outgoing_call.target_name,
+                                "kind": outgoing_call.target_kind,
+                                "range": outgoing_call.target_range,
+                                "selection_range": outgoing_call.target_selection_range,
+                            },
+                            "from_range": callsite_range,
+                            "target_resolution_mode": mapped_target.resolution_mode,
+                        }),
+                    });
+                }
+            }
+        }
+
+        let calls = grouped_calls
+            .into_values()
+            .map(|group| ExtractedCall {
+                provider: self.provider_id(),
+                caller_symbol_key: group.caller_symbol_key,
+                callee_symbol_key: group.callee_symbol_key,
+                context: group.context,
+                confidence: "EXTRACTED".to_string(),
+                confidence_score: 1.0,
+                occurrences: group.occurrences,
+                raw_json: json!({
+                    "lsp_method": "callHierarchy/outgoingCalls",
+                    "route": RouteName::RUST_CALLS.as_str(),
+                }),
+            })
+            .collect::<Vec<_>>();
+        let call_occurrences = calls.iter().map(|call| call.occurrences.len()).sum();
+        let summary = CallRouteSummary {
+            callable_nodes: call_targets.len(),
+            call_edges: calls.len(),
+            call_occurrences,
+            skipped_external_targets,
+            skipped_unresolved_targets,
+            skipped_non_callable_prepare_items,
+        };
+
+        Ok(CallBatchExtraction {
+            provider: self.provider_id(),
+            provider_version: document_symbols.provider_version.clone(),
+            workspace_fingerprint,
+            document_symbols,
+            calls,
+            summary,
+            raw_metadata: json!({
+                "facade": "rust-analyzer-lib",
+                "lsp_method": "callHierarchy/outgoingCalls",
+            }),
+        })
+    }
 }
 
 impl Default for RustAnalyzerProvider {
@@ -356,6 +523,26 @@ struct ReferenceGroup {
     confidence: String,
     confidence_score: f64,
     occurrences: Vec<ReferenceOccurrence>,
+}
+
+#[derive(Debug, Clone)]
+struct CallableTargetContext {
+    target: rust_analyzer_lib::ResolvedCallTarget,
+    symbol: ExtractedSymbol,
+}
+
+#[derive(Debug)]
+struct CallGroup {
+    caller_symbol_key: String,
+    callee_symbol_key: String,
+    context: String,
+    occurrences: Vec<CallOccurrence>,
+}
+
+#[derive(Debug, Clone)]
+struct MappedCallTarget {
+    symbol: ExtractedSymbol,
+    resolution_mode: &'static str,
 }
 
 #[derive(Debug)]
@@ -408,8 +595,54 @@ impl SymbolIndex {
         Ok(Self { files_by_path })
     }
 
-    fn file_context(&mut self, file_path: &Path) -> Option<&FileSymbolContext> {
+    fn file_context(&self, file_path: &Path) -> Option<&FileSymbolContext> {
         self.files_by_path.get(file_path)
+    }
+
+    fn call_target_mapping(
+        &self,
+        file_path: &Path,
+        target_name: &str,
+        target_kind: &str,
+        target_range: semantic_graph_store::TextRange,
+        target_selection_range: semantic_graph_store::TextRange,
+    ) -> Option<MappedCallTarget> {
+        let file_context = self.file_context(file_path)?;
+
+        if let Some(symbol) = file_context
+            .symbols
+            .iter()
+            .find(|symbol| symbol.selection_range == target_selection_range)
+        {
+            return Some(MappedCallTarget {
+                symbol: symbol.clone(),
+                resolution_mode: "exact_selection_range",
+            });
+        }
+
+        if let Some(symbol) = file_context
+            .symbols
+            .iter()
+            .filter(|symbol| symbol.name == target_name)
+            .filter(|symbol| contains_range(symbol.range, target_range))
+            .min_by_key(|symbol| range_size(symbol.range))
+        {
+            return Some(MappedCallTarget {
+                symbol: symbol.clone(),
+                resolution_mode: "containing_name_range",
+            });
+        }
+
+        file_context
+            .symbols
+            .iter()
+            .filter(|symbol| symbol.name == target_name)
+            .filter(|symbol| call_kind_matches(&symbol.kind, target_kind))
+            .min_by_key(|symbol| range_distance(symbol.selection_range, target_selection_range))
+            .map(|symbol| MappedCallTarget {
+                symbol: symbol.clone(),
+                resolution_mode: "nearest_name_kind_range",
+            })
     }
 }
 
@@ -442,6 +675,47 @@ fn reference_target_contexts(
 
             targets.push(ReferenceTargetContext {
                 target: rust_analyzer_lib::ResolvedReferenceTarget {
+                    file_path: file_path.clone(),
+                    selection_range: lsp_range_from_text_range(symbol.selection_range)?,
+                    name: symbol.name.clone(),
+                },
+                symbol: symbol.clone(),
+            });
+        }
+    }
+
+    Ok(targets)
+}
+
+fn callable_target_contexts(
+    request: &DocumentSymbolBatchRequest,
+    extraction: &DocumentSymbolBatchExtraction,
+) -> ExtractResult<Vec<CallableTargetContext>> {
+    let mut targets = Vec::new();
+    for file_extraction in &extraction.extractions {
+        let file_path = request
+            .workspace_root
+            .join(&file_extraction.source_file.relative_path)
+            .canonicalize()
+            .map_err(|source| {
+                ExtractError::io(
+                    "canonicalize call target source file",
+                    Some(
+                        request
+                            .workspace_root
+                            .join(&file_extraction.source_file.relative_path),
+                    ),
+                    source,
+                )
+            })?;
+
+        for symbol in &file_extraction.symbols {
+            if !is_callable_symbol_kind(&symbol.kind) {
+                continue;
+            }
+
+            targets.push(CallableTargetContext {
+                target: rust_analyzer_lib::ResolvedCallTarget {
                     file_path: file_path.clone(),
                     selection_range: lsp_range_from_text_range(symbol.selection_range)?,
                     name: symbol.name.clone(),
@@ -497,6 +771,18 @@ fn is_reference_target_kind(kind: &str) -> bool {
     )
 }
 
+fn is_callable_symbol_kind(kind: &str) -> bool {
+    matches!(kind, "function" | "method" | "constructor")
+}
+
+fn call_kind_matches(symbol_kind: &str, target_kind: &str) -> bool {
+    symbol_kind == target_kind
+        || matches!(
+            (symbol_kind, target_kind),
+            ("method", "function") | ("function", "method")
+        )
+}
+
 fn target_key(file_path: &Path, range: Range) -> String {
     format!(
         "{}:{}:{}-{}:{}",
@@ -506,6 +792,16 @@ fn target_key(file_path: &Path, range: Range) -> String {
         range.end.line,
         range.end.character
     )
+}
+
+fn range_distance(
+    left: semantic_graph_store::TextRange,
+    right: semantic_graph_store::TextRange,
+) -> i64 {
+    (left.start_line - right.start_line).abs() * 1_000_000
+        + (left.start_col - right.start_col).abs()
+        + (left.end_line - right.end_line).abs() * 1_000_000
+        + (left.end_col - right.end_col).abs()
 }
 
 fn contains_range(

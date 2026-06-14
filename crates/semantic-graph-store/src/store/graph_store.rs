@@ -68,6 +68,33 @@ impl GraphStore {
         Ok(id)
     }
 
+    pub async fn workspace_id(&self, root_uri: &str) -> GraphStoreResult<Option<i64>> {
+        sqlx::query_scalar("SELECT id FROM workspaces WHERE root_uri = ?")
+            .bind(root_uri)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(GraphStoreError::database)
+    }
+
+    pub async fn file_id(&self, workspace_id: i64, uri: &str) -> GraphStoreResult<Option<i64>> {
+        sqlx::query_scalar("SELECT id FROM files WHERE workspace_id = ? AND uri = ?")
+            .bind(workspace_id)
+            .bind(uri)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(GraphStoreError::database)
+    }
+
+    pub async fn node_exists(&self, node_id: &str) -> GraphStoreResult<bool> {
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM nodes WHERE id = ?")
+            .bind(node_id)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(GraphStoreError::database)?;
+
+        Ok(count > 0)
+    }
+
     pub async fn start_run(
         &self,
         workspace_id: i64,

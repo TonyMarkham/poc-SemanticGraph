@@ -1,5 +1,5 @@
 use crate::{
-    VisualizerServerError,
+    VisualizerServerError, VisualizerServerResult,
     dto::{
         GraphEdgeDetailsParamsDto, GraphNodeDetailsParamsDto, GraphProjectionParamsDto,
         GraphSearchNodesParamsDto, JsonRpcErrorDto, JsonRpcRequestDto, JsonRpcResponseDto,
@@ -60,16 +60,10 @@ async fn handle_graph_projection(
     request: JsonRpcRequestDto,
 ) -> JsonRpcResponseDto {
     let id = request.id.clone();
-    let params_value = request.params.unwrap_or_else(|| json!({}));
-    let params = match serde_json::from_value::<GraphProjectionParamsDto>(params_value) {
+    let params = match deserialize_params::<GraphProjectionParamsDto>(request.params) {
         Ok(value) => value,
-        Err(source) => {
-            return error_response(
-                id,
-                INVALID_PARAMS,
-                "invalid params",
-                Some(json!({ "detail": source.to_string() })),
-            );
+        Err(error) => {
+            return error_from_server_error(id, error);
         }
     };
 
@@ -88,10 +82,10 @@ async fn handle_graph_node_details(
     request: JsonRpcRequestDto,
 ) -> JsonRpcResponseDto {
     let id = request.id.clone();
-    let params = match deserialize_params::<GraphNodeDetailsParamsDto>(id.clone(), request.params) {
+    let params = match deserialize_params::<GraphNodeDetailsParamsDto>(request.params) {
         Ok(value) => value,
-        Err(response) => {
-            return response;
+        Err(error) => {
+            return error_from_server_error(id, error);
         }
     };
 
@@ -110,10 +104,10 @@ async fn handle_graph_edge_details(
     request: JsonRpcRequestDto,
 ) -> JsonRpcResponseDto {
     let id = request.id.clone();
-    let params = match deserialize_params::<GraphEdgeDetailsParamsDto>(id.clone(), request.params) {
+    let params = match deserialize_params::<GraphEdgeDetailsParamsDto>(request.params) {
         Ok(value) => value,
-        Err(response) => {
-            return response;
+        Err(error) => {
+            return error_from_server_error(id, error);
         }
     };
 
@@ -132,10 +126,10 @@ async fn handle_graph_search_nodes(
     request: JsonRpcRequestDto,
 ) -> JsonRpcResponseDto {
     let id = request.id.clone();
-    let params = match deserialize_params::<GraphSearchNodesParamsDto>(id.clone(), request.params) {
+    let params = match deserialize_params::<GraphSearchNodesParamsDto>(request.params) {
         Ok(value) => value,
-        Err(response) => {
-            return response;
+        Err(error) => {
+            return error_from_server_error(id, error);
         }
     };
 
@@ -156,26 +150,17 @@ async fn handle_graph_search_nodes(
     result_response(id, state.query_service().search_nodes(&query, limit).await)
 }
 
-fn deserialize_params<T>(id: Option<Value>, params: Option<Value>) -> Result<T, JsonRpcResponseDto>
+fn deserialize_params<T>(params: Option<Value>) -> VisualizerServerResult<T>
 where
     T: serde::de::DeserializeOwned,
 {
     let params_value = params.unwrap_or_else(|| json!({}));
 
-    serde_json::from_value::<T>(params_value).map_err(|source| {
-        error_response(
-            id,
-            INVALID_PARAMS,
-            "invalid params",
-            Some(json!({ "detail": source.to_string() })),
-        )
-    })
+    serde_json::from_value::<T>(params_value)
+        .map_err(|source| VisualizerServerError::invalid_params(source.to_string()))
 }
 
-fn result_response<T>(
-    id: Option<Value>,
-    result: Result<T, VisualizerServerError>,
-) -> JsonRpcResponseDto
+fn result_response<T>(id: Option<Value>, result: VisualizerServerResult<T>) -> JsonRpcResponseDto
 where
     T: serde::Serialize,
 {

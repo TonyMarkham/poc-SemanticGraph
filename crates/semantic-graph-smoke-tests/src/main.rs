@@ -5,7 +5,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use lsp_types::DocumentSymbol;
 use semantic_graph_extract::document_symbols::paths::file_uri;
-use semantic_graph_extract::model::{DocumentSymbolBatchRequest, ReferenceBatchRequest};
+use semantic_graph_extract::model::{
+    CallBatchRequest, DocumentSymbolBatchRequest, ReferenceBatchRequest,
+};
 use semantic_graph_extract::persist::ExtractionPersister;
 use semantic_graph_extract::providers::rust_analyzer::RustAnalyzerProvider;
 use semantic_graph_store::GraphStore;
@@ -211,7 +213,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
         .extract_rust_references(ReferenceBatchRequest {
             workspace_root: workspace_root.clone(),
             package_path: workspace_root.clone(),
-            file_paths: workspace_files,
+            file_paths: workspace_files.clone(),
         })
         .await?;
     println!(
@@ -250,6 +252,13 @@ async fn run() -> Result<(), Box<dyn Error>> {
     let reference_db_path = temp_db_path("workspace-references")?;
     let reference_store = GraphStore::connect(&reference_db_path).await?;
     reference_store.migrate().await?;
+    let reference_base_summary = ExtractionPersister
+        .persist_document_symbol_batch(
+            &reference_store,
+            &workspace_root_uri,
+            &reference_extraction.document_symbols,
+        )
+        .await?;
     let reference_summary = ExtractionPersister
         .persist_reference_batch(&reference_store, &workspace_root_uri, &reference_extraction)
         .await?;
@@ -258,43 +267,71 @@ async fn run() -> Result<(), Box<dyn Error>> {
         reference_db_path.display()
     );
     println!(
-        "workspace.references.persistence.files={}",
+        "workspace.references.base.files={}",
+        reference_base_summary.files
+    );
+    println!(
+        "workspace.references.base.nodes={}",
+        reference_base_summary.nodes
+    );
+    println!(
+        "workspace.references.base.contains_edges={}",
+        reference_base_summary.edges
+    );
+    println!(
+        "workspace.references.base.occurrences={}",
+        reference_base_summary.occurrences
+    );
+    println!(
+        "workspace.references.base.evidence={}",
+        reference_base_summary.evidence
+    );
+    println!(
+        "workspace.references.route.files={}",
         reference_summary.files
     );
     println!(
-        "workspace.references.persistence.nodes={}",
+        "workspace.references.route.nodes={}",
         reference_summary.nodes
     );
     println!(
-        "workspace.references.persistence.contains_edges={}",
+        "workspace.references.route.contains_edges={}",
         reference_summary
             .edges
             .saturating_sub(reference_summary.reference_edges)
     );
     println!(
-        "workspace.references.persistence.references_edges={}",
+        "workspace.references.route.references_edges={}",
         reference_summary.reference_edges
     );
     println!(
-        "workspace.references.persistence.reference_occurrences={}",
+        "workspace.references.route.reference_occurrences={}",
         reference_summary.reference_occurrences
     );
     println!(
-        "workspace.references.persistence.evidence={}",
+        "workspace.references.route.evidence={}",
         reference_summary.evidence
     );
     println!(
-        "workspace.references.persistence.routes_complete={}",
+        "workspace.references.route.routes_complete={}",
         reference_summary.routes_complete
     );
     println!(
-        "workspace.references.persistence.stale_nodes_closed={}",
+        "workspace.references.route.stale_nodes_closed={}",
         reference_summary.stale_nodes_closed
     );
     println!(
-        "workspace.references.persistence.stale_edges_closed={}",
+        "workspace.references.route.stale_edges_closed={}",
         reference_summary.stale_edges_closed
     );
+    ensure(
+        reference_base_summary.files == workspace_file_count,
+        "reference base persistence wrote every discovered source file",
+    )?;
+    ensure(
+        reference_summary.files == 0,
+        "reference route persistence did not rewrite document-symbol files",
+    )?;
     ensure(
         reference_summary.reference_edges == reference_extraction.summary.reference_edges,
         "reference persistence wrote every reference edge",
@@ -305,8 +342,127 @@ async fn run() -> Result<(), Box<dyn Error>> {
         "reference persistence wrote every reference occurrence",
     )?;
     ensure(
-        reference_summary.routes_complete == reference_summary.files + 1,
-        "reference persistence completed document-symbol and reference routes",
+        reference_summary.routes_complete == 1,
+        "reference persistence completed only the reference route",
+    )?;
+
+    let call_extraction = provider
+        .extract_rust_calls(CallBatchRequest {
+            workspace_root: workspace_root.clone(),
+            package_path: workspace_root.clone(),
+            file_paths: workspace_files,
+        })
+        .await?;
+    println!(
+        "workspace.calls.callable_nodes={}",
+        call_extraction.summary.callable_nodes
+    );
+    println!(
+        "workspace.calls.edges={}",
+        call_extraction.summary.call_edges
+    );
+    println!(
+        "workspace.calls.occurrences={}",
+        call_extraction.summary.call_occurrences
+    );
+    println!(
+        "workspace.calls.skipped_external_targets={}",
+        call_extraction.summary.skipped_external_targets
+    );
+    println!(
+        "workspace.calls.skipped_unresolved_targets={}",
+        call_extraction.summary.skipped_unresolved_targets
+    );
+    ensure(
+        call_extraction.summary.callable_nodes > 0,
+        "workspace calls queried at least one callable",
+    )?;
+    ensure(
+        call_extraction.summary.call_edges > 0,
+        "workspace calls produced canonical edges",
+    )?;
+    ensure(
+        call_extraction.summary.call_occurrences > 0,
+        "workspace calls produced occurrences",
+    )?;
+
+    let call_db_path = temp_db_path("workspace-calls")?;
+    let call_store = GraphStore::connect(&call_db_path).await?;
+    call_store.migrate().await?;
+    let call_base_summary = ExtractionPersister
+        .persist_document_symbol_batch(
+            &call_store,
+            &workspace_root_uri,
+            &call_extraction.document_symbols,
+        )
+        .await?;
+    let call_summary = ExtractionPersister
+        .persist_call_batch(&call_store, &workspace_root_uri, &call_extraction)
+        .await?;
+    println!("workspace.calls.persistence.db={}", call_db_path.display());
+    println!("workspace.calls.base.files={}", call_base_summary.files);
+    println!("workspace.calls.base.nodes={}", call_base_summary.nodes);
+    println!(
+        "workspace.calls.base.contains_edges={}",
+        call_base_summary.edges
+    );
+    println!(
+        "workspace.calls.base.occurrences={}",
+        call_base_summary.occurrences
+    );
+    println!(
+        "workspace.calls.base.evidence={}",
+        call_base_summary.evidence
+    );
+    println!("workspace.calls.route.files={}", call_summary.files);
+    println!("workspace.calls.route.nodes={}", call_summary.nodes);
+    println!(
+        "workspace.calls.route.contains_edges={}",
+        call_summary
+            .edges
+            .saturating_sub(call_summary.reference_edges)
+            .saturating_sub(call_summary.call_edges)
+    );
+    println!(
+        "workspace.calls.route.calls_edges={}",
+        call_summary.call_edges
+    );
+    println!(
+        "workspace.calls.route.call_occurrences={}",
+        call_summary.call_occurrences
+    );
+    println!("workspace.calls.route.evidence={}", call_summary.evidence);
+    println!(
+        "workspace.calls.route.routes_complete={}",
+        call_summary.routes_complete
+    );
+    println!(
+        "workspace.calls.route.stale_nodes_closed={}",
+        call_summary.stale_nodes_closed
+    );
+    println!(
+        "workspace.calls.route.stale_edges_closed={}",
+        call_summary.stale_edges_closed
+    );
+    ensure(
+        call_base_summary.files == workspace_file_count,
+        "call base persistence wrote every discovered source file",
+    )?;
+    ensure(
+        call_summary.files == 0,
+        "call route persistence did not rewrite document-symbol files",
+    )?;
+    ensure(
+        call_summary.call_edges == call_extraction.summary.call_edges,
+        "call persistence wrote every call edge",
+    )?;
+    ensure(
+        call_summary.call_occurrences == call_extraction.summary.call_occurrences,
+        "call persistence wrote every call occurrence",
+    )?;
+    ensure(
+        call_summary.routes_complete == 1,
+        "call persistence completed only the calls route",
     )?;
 
     println!("PASS semantic-graph rust route smoke");

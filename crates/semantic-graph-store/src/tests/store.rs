@@ -1,6 +1,6 @@
 use std::env;
 use std::error::Error;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::{
@@ -14,6 +14,7 @@ use sqlx::SqlitePool;
 const PROVIDER: &str = "rust-analyzer";
 const ROUTE_DOCUMENT_SYMBOLS: &str = "rust.document_symbols";
 const ROUTE_REFERENCES: &str = "rust.references";
+const ROUTE_CALLS: &str = "rust.calls";
 const SCOPE_FILE: &str = "file";
 const SCOPE_WORKSPACE: &str = "workspace";
 
@@ -659,6 +660,106 @@ async fn failed_route_does_not_close_stale_edges() -> std::result::Result<(), Bo
 }
 
 #[tokio::test]
+async fn call_route_closes_stale_edges() -> std::result::Result<(), Box<dyn Error>> {
+    let (store, path) = migrated_store_with_path().await?;
+    let workspace_id = store.create_workspace("file:///demo", "rust").await?;
+    let first_run_id = store.start_run(workspace_id, PROVIDER, None, None).await?;
+    let file_id = insert_file(&store, workspace_id, first_run_id, "src/lib.rs").await?;
+    let scope_key = "file:///demo";
+    let caller_id = insert_node(&store, workspace_id, first_run_id, file_id, "caller").await?;
+    let current_callee_id = insert_node(
+        &store,
+        workspace_id,
+        first_run_id,
+        file_id,
+        "current-callee",
+    )
+    .await?;
+    let stale_callee_id =
+        insert_node(&store, workspace_id, first_run_id, file_id, "stale-callee").await?;
+    let current_edge_id = insert_edge(
+        &store,
+        workspace_id,
+        first_run_id,
+        &caller_id,
+        &current_callee_id,
+        "calls",
+    )
+    .await?;
+    let stale_edge_id = insert_edge(
+        &store,
+        workspace_id,
+        first_run_id,
+        &caller_id,
+        &stale_callee_id,
+        "calls",
+    )
+    .await?;
+
+    complete_call_route(&store, workspace_id, first_run_id, scope_key).await?;
+    record_call_observation(
+        &store,
+        workspace_id,
+        first_run_id,
+        scope_key,
+        file_id,
+        &current_edge_id,
+    )
+    .await?;
+    record_call_observation(
+        &store,
+        workspace_id,
+        first_run_id,
+        scope_key,
+        file_id,
+        &stale_edge_id,
+    )
+    .await?;
+
+    let second_run_id = store.start_run(workspace_id, PROVIDER, None, None).await?;
+    insert_edge(
+        &store,
+        workspace_id,
+        second_run_id,
+        &caller_id,
+        &current_callee_id,
+        "calls",
+    )
+    .await?;
+    complete_call_route(&store, workspace_id, second_run_id, scope_key).await?;
+    record_call_observation(
+        &store,
+        workspace_id,
+        second_run_id,
+        scope_key,
+        file_id,
+        &current_edge_id,
+    )
+    .await?;
+
+    let closed = store
+        .close_stale_edges_for_route(CloseStaleRouteInput {
+            workspace_id,
+            run_id: second_run_id,
+            route: ROUTE_CALLS,
+            scope: SCOPE_WORKSPACE,
+            scope_key,
+            provider: PROVIDER,
+        })
+        .await?;
+
+    assert_eq!(closed, 1);
+    let pool = sqlite_pool(&path).await?;
+    assert_eq!(edge_valid_to(&pool, &current_edge_id).await?, None);
+    assert_eq!(
+        edge_valid_to(&pool, &stale_edge_id).await?,
+        Some(second_run_id)
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn upsert_reopens_reobserved_stale_node() -> std::result::Result<(), Box<dyn Error>> {
     let (store, path) = migrated_store_with_path().await?;
     let workspace_id = store.create_workspace("file:///demo", "rust").await?;
@@ -711,7 +812,123 @@ async fn upsert_reopens_reobserved_stale_node() -> std::result::Result<(), Box<d
     Ok(())
 }
 
-async fn sqlite_pool(path: &PathBuf) -> std::result::Result<SqlitePool, Box<dyn Error>> {
+#[tokio::test]
+async fn upsert_reopens_reobserved_stale_call_edge() -> std::result::Result<(), Box<dyn Error>> {
+    let (store, path) = migrated_store_with_path().await?;
+    let workspace_id = store.create_workspace("file:///demo", "rust").await?;
+    let first_run_id = store.start_run(workspace_id, PROVIDER, None, None).await?;
+    let file_id = insert_file(&store, workspace_id, first_run_id, "src/lib.rs").await?;
+    let scope_key = "file:///demo";
+    let caller_id = insert_node(&store, workspace_id, first_run_id, file_id, "caller").await?;
+    let callee_id = insert_node(&store, workspace_id, first_run_id, file_id, "callee").await?;
+    let edge_id = insert_edge(
+        &store,
+        workspace_id,
+        first_run_id,
+        &caller_id,
+        &callee_id,
+        "calls",
+    )
+    .await?;
+
+    complete_call_route(&store, workspace_id, first_run_id, scope_key).await?;
+    record_call_observation(
+        &store,
+        workspace_id,
+        first_run_id,
+        scope_key,
+        file_id,
+        &edge_id,
+    )
+    .await?;
+
+    let second_run_id = store.start_run(workspace_id, PROVIDER, None, None).await?;
+    complete_call_route(&store, workspace_id, second_run_id, scope_key).await?;
+    let closed = store
+        .close_stale_edges_for_route(CloseStaleRouteInput {
+            workspace_id,
+            run_id: second_run_id,
+            route: ROUTE_CALLS,
+            scope: SCOPE_WORKSPACE,
+            scope_key,
+            provider: PROVIDER,
+        })
+        .await?;
+    assert_eq!(closed, 1);
+
+    let third_run_id = store.start_run(workspace_id, PROVIDER, None, None).await?;
+    insert_edge(
+        &store,
+        workspace_id,
+        third_run_id,
+        &caller_id,
+        &callee_id,
+        "calls",
+    )
+    .await?;
+    complete_call_route(&store, workspace_id, third_run_id, scope_key).await?;
+    record_call_observation(
+        &store,
+        workspace_id,
+        third_run_id,
+        scope_key,
+        file_id,
+        &edge_id,
+    )
+    .await?;
+
+    let pool = sqlite_pool(&path).await?;
+    assert_eq!(edge_valid_to(&pool, &edge_id).await?, None);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn upsert_edge_updates_call_weight() -> std::result::Result<(), Box<dyn Error>> {
+    let (store, path) = migrated_store_with_path().await?;
+    let workspace_id = store.create_workspace("file:///demo", "rust").await?;
+    let first_run_id = store.start_run(workspace_id, PROVIDER, None, None).await?;
+    let file_id = insert_file(&store, workspace_id, first_run_id, "src/lib.rs").await?;
+    let caller_id = insert_node(&store, workspace_id, first_run_id, file_id, "caller").await?;
+    let callee_id = insert_node(&store, workspace_id, first_run_id, file_id, "callee").await?;
+    let edge_id = store
+        .upsert_edge(EdgeInput {
+            workspace_id,
+            src_node_id: &caller_id,
+            dst_node_id: &callee_id,
+            relation: "calls",
+            context: Some("direct"),
+            confidence: "EXTRACTED",
+            confidence_score: 1.0,
+            weight: 2.0,
+            properties_json: json!({}),
+            run_id: Some(first_run_id),
+        })
+        .await?;
+
+    let second_run_id = store.start_run(workspace_id, PROVIDER, None, None).await?;
+    store
+        .upsert_edge(EdgeInput {
+            workspace_id,
+            src_node_id: &caller_id,
+            dst_node_id: &callee_id,
+            relation: "calls",
+            context: Some("direct"),
+            confidence: "EXTRACTED",
+            confidence_score: 1.0,
+            weight: 1.0,
+            properties_json: json!({}),
+            run_id: Some(second_run_id),
+        })
+        .await?;
+
+    let pool = sqlite_pool(&path).await?;
+    assert_eq!(edge_weight(&pool, &edge_id).await?, 1.0);
+
+    Ok(())
+}
+
+async fn sqlite_pool(path: &Path) -> std::result::Result<SqlitePool, Box<dyn Error>> {
     Ok(SqlitePool::connect(&format!("sqlite://{}", path.display())).await?)
 }
 
@@ -859,6 +1076,42 @@ async fn complete_workspace_route(
     Ok(())
 }
 
+async fn complete_call_route(
+    store: &GraphStore,
+    workspace_id: i64,
+    run_id: i64,
+    scope_key: &str,
+) -> std::result::Result<(), Box<dyn Error>> {
+    store
+        .start_route_status(RouteStatusStartInput {
+            workspace_id,
+            route: ROUTE_CALLS,
+            scope: SCOPE_WORKSPACE,
+            scope_key,
+            file_id: None,
+            provider: PROVIDER,
+            provider_version: None,
+            content_hash: Some("fixture-hash"),
+            run_id,
+            diagnostics_json: json!({}),
+        })
+        .await?;
+    store
+        .complete_route_status(RouteStatusCompleteInput {
+            workspace_id,
+            route: ROUTE_CALLS,
+            scope: SCOPE_WORKSPACE,
+            scope_key,
+            provider: PROVIDER,
+            provider_version: None,
+            content_hash: Some("fixture-hash"),
+            run_id,
+            diagnostics_json: json!({}),
+        })
+        .await?;
+    Ok(())
+}
+
 async fn record_node_observation(
     store: &GraphStore,
     workspace_id: i64,
@@ -934,6 +1187,31 @@ async fn record_reference_observation(
     Ok(())
 }
 
+async fn record_call_observation(
+    store: &GraphStore,
+    workspace_id: i64,
+    run_id: i64,
+    scope_key: &str,
+    file_id: i64,
+    edge_id: &str,
+) -> std::result::Result<(), Box<dyn Error>> {
+    store
+        .record_route_observation(RouteObservationInput {
+            workspace_id,
+            run_id,
+            route: ROUTE_CALLS,
+            scope: SCOPE_WORKSPACE,
+            scope_key,
+            provider: PROVIDER,
+            entity_kind: "edge",
+            entity_id: edge_id,
+            source_file_id: Some(file_id),
+            properties_json: json!({}),
+        })
+        .await?;
+    Ok(())
+}
+
 async fn node_valid_to(
     pool: &SqlitePool,
     node_id: &str,
@@ -956,6 +1234,13 @@ async fn edge_valid_to(
             .fetch_one(pool)
             .await?,
     )
+}
+
+async fn edge_weight(pool: &SqlitePool, edge_id: &str) -> std::result::Result<f64, Box<dyn Error>> {
+    Ok(sqlx::query_scalar("SELECT weight FROM edges WHERE id = ?")
+        .bind(edge_id)
+        .fetch_one(pool)
+        .await?)
 }
 
 fn range(start_line: i64, start_col: i64, end_line: i64, end_col: i64) -> TextRange {
