@@ -1,0 +1,130 @@
+@page "/"
+
+<PageTitle>Semantic Graph Visualizer</PageTitle>
+
+<RadzenLayout class="visualizer-shell">
+    <RadzenHeader class="visualizer-header">
+        <div class="visualizer-toolbar">
+            <div class="toolbar-title">
+                <h1>Semantic Graph Visualizer</h1>
+                <span title="@DatabasePathText">@DatabasePathText</span>
+            </div>
+            <div class="toolbar-stats">
+                <span class="stat-label">Nodes</span>
+                <RadzenBadge BadgeStyle="BadgeStyle.Info" Text="@NodeCountText" />
+                <span class="stat-label">Edges</span>
+                <RadzenBadge BadgeStyle="BadgeStyle.Success" Text="@EdgeCountText" />
+                <RadzenButton Icon="refresh"
+                              Text="Refresh"
+                              ButtonStyle="ButtonStyle.Primary"
+                              Size="ButtonSize.Small"
+                              Disabled="@IsLoading"
+                              Click="@ReloadAsync" />
+            </div>
+        </div>
+    </RadzenHeader>
+
+    <RadzenBody class="visualizer-body">
+        <main class="visualizer-main">
+            <section class="diagram-panel">
+                @if (Diagram is not null)
+                {
+                    <CascadingValue Value="Diagram">
+                        <DiagramCanvas>
+                            <Widgets>
+                                <SelectionBoxWidget />
+                            </Widgets>
+                        </DiagramCanvas>
+                    </CascadingValue>
+                }
+
+                @if (IsLoading)
+                {
+                    <div class="state-overlay">
+                        <RadzenProgressBarCircular Mode="ProgressBarMode.Indeterminate"
+                                                   Size="ProgressBarCircularSize.Medium" />
+                        <span>Loading projection</span>
+                    </div>
+                }
+                else if (ErrorMessage is not null)
+                {
+                    <div class="state-overlay error-state">
+                        <strong>Projection failed</strong>
+                        <span>@ErrorMessage</span>
+                    </div>
+                }
+                else if (IsEmpty)
+                {
+                    <div class="state-overlay">
+                        <strong>No graph rows</strong>
+                    </div>
+                }
+            </section>
+
+            <aside class="inspector-panel">
+                <RadzenTabs>
+                    <Tabs>
+                        <RadzenTabsItem Text="Summary">
+                            <dl class="summary-grid">
+                                <dt>Limit</dt>
+                                <dd>@ProjectionLimit</dd>
+                                <dt>Database</dt>
+                                <dd>@DatabasePathText</dd>
+                                <dt>Relation</dt>
+                                <dd>@RelationSummaryText</dd>
+                            </dl>
+                        </RadzenTabsItem>
+                        <RadzenTabsItem Text="Inspector">
+                            @if (SelectedNode is not null)
+                            {
+                                <div class="inspector-content">
+                                    <div class="inspector-title">
+                                        <span>@SelectedNode.View.Kind</span>
+                                        <strong>@SelectedNode.View.DisplayLabel</strong>
+                                    </div>
+                                    <dl class="inspector-grid">
+                                        <dt>Kind</dt>
+                                        <dd>@SelectedNode.View.Kind</dd>
+                                        <dt>Language</dt>
+                                        <dd>@SelectedNode.View.Language</dd>
+                                        <dt>Qualified</dt>
+                                        <dd>@SelectedNode.View.QualifiedName</dd>
+                                        <dt>File</dt>
+                                        <dd>@SelectedNode.View.SourceFilePath</dd>
+                                        <dt>ID</dt>
+                                        <dd>@SelectedNode.Id</dd>
+                                    </dl>
+                                </div>
+                            }
+                            else if (SelectedEdge is not null)
+                            {
+                                <div class="inspector-content">
+                                    <div class="inspector-title">
+                                        <span>@SelectedEdge.Edge.Relation</span>
+                                        <strong>@SelectedEdge.Edge.Id</strong>
+                                    </div>
+                                    <dl class="inspector-grid">
+                                        <dt>Relation</dt>
+                                        <dd>@SelectedEdge.Edge.Relation</dd>
+                                        <dt>Confidence</dt>
+                                        <dd>@SelectedEdge.Edge.Confidence</dd>
+                                        <dt>Score</dt>
+                                        <dd>@SelectedEdge.Edge.ConfidenceScore</dd>
+                                        <dt>Source</dt>
+                                        <dd>@SelectedEdge.Edge.SourceNodeId</dd>
+                                        <dt>Target</dt>
+                                        <dd>@SelectedEdge.Edge.TargetNodeId</dd>
+                                    </dl>
+                                </div>
+                            }
+                            else
+                            {
+                                <div class="empty-inspector">No selection</div>
+                            }
+                        </RadzenTabsItem>
+                    </Tabs>
+                </RadzenTabs>
+            </aside>
+        </main>
+    </RadzenBody>
+</RadzenLayout>

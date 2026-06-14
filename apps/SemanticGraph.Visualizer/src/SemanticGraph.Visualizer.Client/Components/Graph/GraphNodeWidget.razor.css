@@ -1,0 +1,74 @@
+.semantic-node {
+    position: relative;
+    display: grid;
+    align-content: center;
+    width: 220px;
+    height: 56px;
+    padding: 0.45rem 0.7rem;
+    border: 1px solid #cfd6e2;
+    border-radius: 6px;
+    background: #ffffff;
+    box-shadow: 0 1px 3px rgba(16, 24, 40, 0.08);
+    color: #1f2937;
+    cursor: default;
+}
+
+.file-node {
+    border-color: #8bb7a2;
+    background: #f1f8f4;
+}
+
+.symbol-node {
+    border-left: 4px solid #5279b8;
+}
+
+.relation-module,
+.relation-object,
+.relation-struct,
+.relation-enum,
+.relation-interface {
+    border-left-color: #7b61b3;
+}
+
+.relation-function,
+.relation-method {
+    border-left-color: #d16d32;
+}
+
+.relation-field,
+.relation-constant,
+.relation-enum-member {
+    border-left-color: #3c9c7b;
+}
+
+.node-kind {
+    color: #667085;
+    font-size: 0.66rem;
+    font-weight: 700;
+    line-height: 1;
+    text-transform: uppercase;
+}
+
+.node-label {
+    overflow: hidden;
+    margin-top: 0.16rem;
+    font-size: 0.86rem;
+    font-weight: 700;
+    line-height: 1.15;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.node-path {
+    overflow: hidden;
+    margin-top: 0.1rem;
+    color: #667085;
+    font-size: 0.66rem;
+    line-height: 1.1;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.semantic-node :deep(.semantic-port) {
+    opacity: 0;
+}

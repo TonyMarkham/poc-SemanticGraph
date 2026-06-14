@@ -1,5 +1,7 @@
 # Build Artifacts
 target/
+bin/
+obj/
 
 # Local generated state
 .local/
@@ -8,3 +10,4 @@ target/
 
 # IDE
 .idea/
+.zed/

@@ -1,0 +1,23 @@
+@using Blazor.Diagrams.Components.Renderers
+
+<div class="@CssClass" title="@Node.View.Tooltip">
+    <div class="node-kind">@Node.View.Kind</div>
+    <div class="node-label">@Node.View.DisplayLabel</div>
+    @if (!string.IsNullOrWhiteSpace(Node.View.SourceFilePath))
+    {
+        <div class="node-path">@Node.View.SourceFilePath</div>
+    }
+    @foreach (var port in Node.Ports)
+    {
+        <PortRenderer @key="port" Port="port" Class="semantic-port" />
+    }
+</div>
+
+@code {
+    [Parameter]
+    public SemanticGraphNodeModel Node { get; set; } = null!;
+
+    private string CssClass => Node.View.IsFile
+        ? "semantic-node file-node"
+        : $"semantic-node symbol-node relation-{Node.View.KindCssClass}";
+}

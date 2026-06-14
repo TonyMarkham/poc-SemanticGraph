@@ -5,7 +5,8 @@ SQLite graph.
 
 Right now, the useful path is Rust document-symbol extraction through the
 checked-in `rust-analyzer` libraries. The extractor supports single-file,
-crate-scoped, and workspace-scoped routes.
+crate-scoped, and workspace-scoped routes. A first read-only visualizer slice is
+available through a Rust JSON-RPC backend and a Blazor WebAssembly client.
 
 ## Extract One Rust File
 
@@ -132,7 +133,7 @@ workspace.
 Example successful output for the current repo workspace:
 
 ```text
-workspace=1 run=1 files=83 nodes=676 edges=593 occurrences=593 evidence=593
+workspace=1 run=1 files=111 nodes=862 edges=751 occurrences=751 evidence=751
 ```
 
 Inspect the result:
@@ -147,12 +148,58 @@ Expected shape:
 ```text
 workspaces=1
 extraction_runs=1
-files=83
-nodes=676
-edges=593
-occurrences=593
-edge_evidence=593
+files=111
+nodes=862
+edges=751
+occurrences=751
+edge_evidence=751
 ```
+
+## Visualize A Rust Workspace
+
+The visualizer reads an existing SQLite graph and renders a bounded read-only
+projection. The Rust backend defaults to `.local/rust-workspace-extract-new.db`,
+which is the local fixture path used by the first UI slice.
+
+Create or refresh that fixture from the current workspace:
+
+```sh
+rm -f .local/rust-workspace-extract-new.db
+cargo run -p semantic-graph-extract -- rust-workspace-document-symbols \
+  --db .local/rust-workspace-extract-new.db \
+  --workspace-root .
+```
+
+Start the local JSON-RPC backend:
+
+```sh
+cargo run -p semantic-graph-visualizer-server -- \
+  --database-path .local/rust-workspace-extract-new.db \
+  --bind 127.0.0.1:5179
+```
+
+It serves `graph.projection` over JSON-RPC 2.0 at
+`http://127.0.0.1:5179/rpc`. The default projection limit is 150 non-file
+symbols plus their file nodes and any selected edges.
+
+Optional backend smoke request:
+
+```sh
+curl -sS -X POST http://127.0.0.1:5179/rpc \
+  -H 'content-type: application/json' \
+  --data '{"jsonrpc":"2.0","id":1,"method":"graph.projection","params":{"limit":150}}'
+```
+
+In another terminal, start the Blazor WebAssembly client:
+
+```sh
+ASPNETCORE_URLS=http://127.0.0.1:5180 \
+  dotnet run --project apps/SemanticGraph.Visualizer/src/SemanticGraph.Visualizer.Client/SemanticGraph.Visualizer.Client.csproj \
+  --no-launch-profile
+```
+
+Open `http://127.0.0.1:5180`. The client reads the backend base URL from
+`apps/SemanticGraph.Visualizer/src/SemanticGraph.Visualizer.Client/wwwroot/appsettings.json`.
 
 ## Start Fresh
 
@@ -205,15 +252,15 @@ and the extractor workspace route. Current headline counts are:
 crate.persistence.files=4
 crate.persistence.nodes=57
 crate.persistence.edges=53
-workspace.discovery.count=83
+workspace.discovery.count=111
 workspace.discovery.submodule_files=0
-workspace.batch.files=83
-workspace.batch.symbols=593
-workspace.persistence.files=83
-workspace.persistence.nodes=676
-workspace.persistence.edges=593
-workspace.persistence.occurrences=593
-workspace.persistence.evidence=593
+workspace.batch.files=111
+workspace.batch.symbols=751
+workspace.persistence.files=111
+workspace.persistence.nodes=862
+workspace.persistence.edges=751
+workspace.persistence.occurrences=751
+workspace.persistence.evidence=751
 ```
 
 ## Storage CLI
@@ -263,16 +310,23 @@ SQLX_OFFLINE=true cargo test -p semantic-graph-extract
 SQLX_OFFLINE=true cargo clippy -p semantic-graph-extract --all-targets -- -D warnings
 SQLX_OFFLINE=true cargo test -p semantic-graph-smoke-tests
 SQLX_OFFLINE=true cargo run -p semantic-graph-smoke-tests
+cargo check -p semantic-graph-visualizer-server
+cargo test -p semantic-graph-visualizer-server
+dotnet build SemanticGraph.Visualizer.slnx
 ```
 
 ## What Exists
 
 - `crates/semantic-graph-store`: SQLite graph store and stats/demo CLI.
 - `crates/semantic-graph-extract`: Rust document-symbol extractor.
+- `crates/semantic-graph-visualizer-server`: local JSON-RPC projection backend
+  for the visualizer.
 - `crates/rust-analyzer-lib`: in-process facade over the pinned
   `rust-analyzer` submodule crates.
 - `crates/semantic-graph-smoke-tests`: route smoke-test/report surface.
 - `crates/wip`: small Rust crate used as the local extraction target.
+- `apps/SemanticGraph.Visualizer`: Blazor WebAssembly, Radzen, and
+  Blazor.Diagrams client for the first read-only graph viewport.
 
 The extractor currently writes:
 
@@ -291,13 +345,15 @@ The extractor currently writes:
 - C# extraction.
 - CSV snapshots.
 - Stale-row handling.
-- Graph visualization UI.
+- Full graph exploration UI beyond the first bounded read-only projection.
 
 ## Notes
 
 - Rust extraction uses the checked-in `rust-analyzer` submodule crates through
   `rust-analyzer-lib`; the `rust-analyzer` binary is not required for live
   extraction commands or smoke recipes.
+- The visualizer client uses Blazor.Diagrams and Radzen, with app behavior in
+  Blazor/C# and no app-owned JavaScript.
 - `lsp-types` is pinned to match
   `submodules/rust-analyzer/crates/rust-analyzer/Cargo.toml`.
 - Submodules are local research inputs and should be treated as read-only unless

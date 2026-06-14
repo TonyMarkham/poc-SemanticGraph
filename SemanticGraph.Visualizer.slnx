@@ -1,0 +1,7 @@
+<Solution>
+  <Folder Name="/apps/" />
+  <Folder Name="/apps/SemanticGraph.Visualizer/" />
+  <Folder Name="/apps/SemanticGraph.Visualizer/src/">
+    <Project Path="apps/SemanticGraph.Visualizer/src/SemanticGraph.Visualizer.Client/SemanticGraph.Visualizer.Client.csproj" />
+  </Folder>
+</Solution>

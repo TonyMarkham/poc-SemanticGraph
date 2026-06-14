@@ -18,10 +18,11 @@ Rust / C# workspace
   -> local graph visualization UI
 ```
 
-The project is currently design/prototype-first. The active Rust implementation
-surface includes the extractor, store, checked-in `rust-analyzer` facade, and
-smoke-test crates. `crates/wip` is the small local extraction target, while the
-submodules are the main local research corpus.
+The project is currently design/prototype-first. The active implementation
+surface includes the Rust extractor, SQLite store, checked-in `rust-analyzer`
+facade, smoke-test crates, Rust visualizer JSON-RPC backend, and Blazor
+WebAssembly visualizer client. `crates/wip` is the small local extraction target,
+while the submodules are the main local research corpus.
 
 ## Current Decisions
 
@@ -61,8 +62,14 @@ Visualization:
 - Blazor.Diagrams owns the graph viewport.
 - Radzen owns inspector/data-heavy UI: grids, forms, filters, tabs, split
   panes, and evidence tables.
-- Tauri is the preferred host candidate when a Rust backend is useful, but the
-  Tauri/Blazor bridge still needs a spike.
+- The current implemented visualization slice is browser-hosted Blazor
+  WebAssembly in `apps/SemanticGraph.Visualizer`, backed by
+  `crates/semantic-graph-visualizer-server`.
+- The visualizer backend serves JSON-RPC 2.0 on `POST /rpc`; the current method
+  is `graph.projection`.
+- Tauri is still the preferred desktop host candidate when a Rust backend is
+  useful, but the current slice does not use Tauri and the Tauri/Blazor bridge
+  still needs a spike.
 - Do not write application-specific JavaScript for the initial UI target.
   Framework/library JS interop is acceptable where Blazor, Blazor.Diagrams,
   Radzen, or Tauri already provide it.
@@ -141,6 +148,7 @@ Root docs:
 - `adr.md`: durable SQLite storage ADR.
 - `adr-graph-visualization.md`: visualization ADR.
 - `AGENTS.md`: this initializer.
+- `SemanticGraph.Visualizer.slnx`: solution for the Blazor visualizer client.
 
 Rust workspace:
 
@@ -150,7 +158,14 @@ Rust workspace:
 - `crates/semantic-graph-extract`: Rust document-symbol extractor CLI/library.
 - `crates/semantic-graph-smoke-tests`: route smoke-test/report surface.
 - `crates/semantic-graph-store`: SQLite graph store and stats/demo CLI.
+- `crates/semantic-graph-visualizer-server`: local JSON-RPC projection backend
+  for the visualizer.
 - `crates/wip`: small Rust crate used as the local extraction target.
+
+Applications:
+
+- `apps/SemanticGraph.Visualizer`: Blazor WebAssembly, Radzen, and
+  Blazor.Diagrams client for the read-only graph visualizer.
 
 ## Working Rules for Agents
 
@@ -175,6 +190,8 @@ Editing:
 - Prefer one Rust type per module file in project crates. Keep module files
   small and name files after the primary type they define, with `mod.rs` used to
   wire the module together.
+- Do not use `super` imports or glob imports in Rust project crates. Prefer
+  explicit `crate::...` and explicit item imports.
 
 Architecture:
 
@@ -193,6 +210,13 @@ Validation:
 - For Rust extraction route, `rust-analyzer-lib`, or smoke-test changes, also
   run the relevant smoke surface, usually
   `SQLX_OFFLINE=true cargo run -p semantic-graph-smoke-tests`.
+- For visualizer backend changes, run the most specific practical
+  `cargo check -p semantic-graph-visualizer-server` or
+  `cargo test -p semantic-graph-visualizer-server`.
+- For visualizer client changes, run
+  `dotnet build SemanticGraph.Visualizer.slnx`.
+- For visualizer behavior changes, smoke the local backend/client flow where
+  practical, including a `graph.projection` request to `POST /rpc`.
 - If smoke-report counts or documented route examples change, update
   `README.md` in the same change.
 - Do not present Rust work as complete while `cargo check` emits warnings.
@@ -209,6 +233,9 @@ git submodule status
 rg -n "rust-analyzer-lib|rust-workspace-document-symbols|document_symbol" crates
 rg -n "semantic-graph-smoke-tests|workspace.persistence|crate.persistence" README.md crates
 rg -n "anyhow|error-location|ExtractError|GraphStoreError|RustAnalyzerLibError" crates Cargo.toml
+rg -n "use super|::\\*|pub use .*::\\*" crates
+rg -n "semantic-graph-visualizer-server|graph.projection|POST /rpc" README.md crates
+rg -n "SemanticGraph.Visualizer|Blazor.Diagrams|Radzen|appsettings.json" README.md apps
 rg -n "callHierarchy|outgoingCalls|incomingCalls" submodules/csharp-language-server
 rg -n "call_hierarchy|outgoing|references|documentSymbol" submodules/rust-analyzer
 rg -n "FlowGraph|FlowState|hit_test_edges|viewport|culling" submodules/gpui-flow

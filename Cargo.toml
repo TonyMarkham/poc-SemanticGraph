@@ -4,6 +4,7 @@ members = [
     "crates/semantic-graph-extract",
     "crates/semantic-graph-smoke-tests",
     "crates/semantic-graph-store",
+    "crates/semantic-graph-visualizer-server",
     "crates/wip",
 ]
 resolver = "3"
@@ -14,6 +15,7 @@ version = "0.1.0"
 edition = "2024"
 
 [workspace.dependencies]
+axum                   = { version = "0.8.9" }
 clap                   = { version = "4.6.1", features = ["derive"] }
 error-location         = { version = "0.1.0" }
 hex                    = { version = "0.4.3" }
@@ -27,6 +29,7 @@ sha2                   = { version = "0.11.0" }
 sqlx                   = { version = "0.9.0", features = ["macros", "migrate", "runtime-tokio", "sqlite"] }
 thiserror              = { version = "2.0.18" }
 tokio                  = { version = "1.52.3", features = ["macros", "rt-multi-thread"] }
+tower-http             = { version = "0.6.11", features = ["cors"] }
 tree-sitter            = { version = "0.26.9" }
 tree-sitter-c-sharp    = { version = "0.23.5" }
 tree-sitter-css        = { version = "0.25.0" }
