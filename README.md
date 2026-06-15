@@ -11,6 +11,50 @@ routes. A read-only visualizer slice with projection, search, selection
 inspection, and evidence display is available through a Rust JSON-RPC backend
 and a Blazor WebAssembly client.
 
+## Configure The Local Database
+
+DB-backed commands can read a local config file instead of requiring `--db` on
+every invocation. The default discovered location is:
+
+```toml
+# .refactor-radar/config.toml
+[database]
+path = "content.db"
+```
+
+When the config file exists, `[database].path` is required. Relative database
+paths resolve relative to the directory containing the config file, so the
+example above points at `.refactor-radar/content.db` from the repo root. An
+absolute path is used as-is.
+
+Resolution precedence is:
+
+1. explicit CLI database path, such as `--db` or visualizer `--database-path`;
+2. `--config <path>`;
+3. discovered `.refactor-radar/config.toml`, searching upward from
+   `--workspace-root` when a command has one, otherwise from the current
+   directory;
+4. an existing command default, where one exists.
+
+Use `--db /tmp/scratch.db` for one-off extraction runs, benchmarks, or tests
+that should ignore the configured database.
+
+## Build The Release CLIs
+
+Build the Rust command-line tools before running extraction, storage, or
+visualizer backend examples:
+
+```sh
+cargo build --release \
+  -p semantic-graph-extract \
+  -p semantic-graph-store \
+  -p semantic-graph-visualizer-server
+```
+
+Run the resulting binaries directly. This keeps long-running workspace
+extraction easier to monitor and avoids the debug-profile overhead of
+`cargo run`.
+
 ## Extract One Rust File
 
 Use this when you want to add or refresh facts for a file in a database. If the
@@ -20,7 +64,7 @@ run.
 From the repo root:
 
 ```sh
-cargo run -p semantic-graph-extract -- rust-document-symbols \
+./target/release/semantic-graph-extract rust-document-symbols \
   --db .local/rust-extract-wip.db \
   --workspace-root . \
   --package-path crates/wip \
@@ -45,7 +89,7 @@ workspace=1 run=1 files=1 nodes=4 edges=3 occurrences=3 evidence=3
 Print row counts from the SQLite database:
 
 ```sh
-cargo run -p semantic-graph-store -- stats \
+./target/release/semantic-graph-store stats \
   --db .local/rust-extract-wip.db
 ```
 
@@ -66,7 +110,7 @@ edge_evidence=3
 Use the same command and change `--file`:
 
 ```sh
-cargo run -p semantic-graph-extract -- rust-document-symbols \
+./target/release/semantic-graph-extract rust-document-symbols \
   --db .local/rust-extract-wip.db \
   --workspace-root . \
   --package-path crates/wip \
@@ -82,7 +126,7 @@ Use this when you want to extract every Rust source file that `rust-analyzer`
 indexes for a package path:
 
 ```sh
-cargo run -p semantic-graph-extract -- rust-crate-document-symbols \
+./target/release/semantic-graph-extract rust-crate-document-symbols \
   --db .local/rust-crate-extract-wip.db \
   --workspace-root . \
   --package-path crates/wip
@@ -101,7 +145,7 @@ workspace=1 run=1 files=4 nodes=57 edges=53 occurrences=53 evidence=53
 Inspect the result:
 
 ```sh
-cargo run -p semantic-graph-store -- stats \
+./target/release/semantic-graph-store stats \
   --db .local/rust-crate-extract-wip.db
 ```
 
@@ -123,7 +167,7 @@ Use this when you want to extract every Rust source file that `rust-analyzer`
 indexes for the workspace rooted at `--workspace-root`:
 
 ```sh
-cargo run -p semantic-graph-extract -- rust-workspace-document-symbols \
+./target/release/semantic-graph-extract rust-workspace-document-symbols \
   --db .local/rust-workspace-extract.db \
   --workspace-root .
 ```
@@ -136,13 +180,13 @@ workspace.
 Example successful output for the current repo workspace:
 
 ```text
-workspace=1 run=1 files=157 nodes=1478 edges=1321 occurrences=1321 evidence=1321
+workspace=1 run=1 files=172 nodes=1611 edges=1439 occurrences=1439 evidence=1439
 ```
 
 Inspect the result:
 
 ```sh
-cargo run -p semantic-graph-store -- stats \
+./target/release/semantic-graph-store stats \
   --db .local/rust-workspace-extract.db
 ```
 
@@ -151,11 +195,11 @@ Expected shape:
 ```text
 workspaces=1
 extraction_runs=1
-files=157
-nodes=1478
-edges=1321
-occurrences=1321
-edge_evidence=1321
+files=172
+nodes=1611
+edges=1439
+occurrences=1439
+edge_evidence=1439
 ```
 
 ## Extract Rust Workspace References
@@ -164,13 +208,13 @@ Use this after `rust-workspace-document-symbols` when you want to add or
 refresh only Rust `references` edges in an existing workspace graph:
 
 ```sh
-cargo run -p semantic-graph-extract -- rust-workspace-document-symbols \
+./target/release/semantic-graph-extract rust-workspace-document-symbols \
   --db .local/rust-workspace-references.db \
   --workspace-root .
 ```
 
 ```sh
-cargo run -p semantic-graph-extract -- rust-workspace-references \
+./target/release/semantic-graph-extract rust-workspace-references \
   --db .local/rust-workspace-references.db \
   --workspace-root .
 ```
@@ -180,10 +224,10 @@ the target database. It queries `rust-analyzer` references for eligible
 workspace symbols, then stores directed `source --references--> target` edges
 with occurrence and edge evidence proof.
 
-Example successful output for the current repo workspace:
+Example successful output shape:
 
 ```text
-workspace=1 run=2 targets=1283 references_edges=2877 reference_occurrences=3517 evidence=3517 stale_edges_closed=0
+workspace=1 run=2 targets=<targets> references_edges=3135 reference_occurrences=3829 evidence=3829 stale_edges_closed=0
 ```
 
 Expected shape:
@@ -191,11 +235,11 @@ Expected shape:
 ```text
 workspaces=1
 extraction_runs=2
-files=157
-nodes=1478
-edges=4198
-occurrences=4838
-edge_evidence=4838
+files=172
+nodes=1611
+edges=4574
+occurrences=5268
+edge_evidence=5268
 ```
 
 ## Extract Rust Workspace Calls
@@ -204,13 +248,13 @@ Use this after `rust-workspace-document-symbols` when you want to add or
 refresh only Rust `calls` edges in an existing workspace graph:
 
 ```sh
-cargo run -p semantic-graph-extract -- rust-workspace-document-symbols \
+./target/release/semantic-graph-extract rust-workspace-document-symbols \
   --db .local/rust-workspace-calls.db \
   --workspace-root .
 ```
 
 ```sh
-cargo run -p semantic-graph-extract -- rust-workspace-calls \
+./target/release/semantic-graph-extract rust-workspace-calls \
   --db .local/rust-workspace-calls.db \
   --workspace-root .
 ```
@@ -221,10 +265,10 @@ workspace symbols, then stores directed `caller --calls--> callee` edges with
 call occurrence and edge evidence proof. External and unresolved targets are
 counted and skipped.
 
-Example successful output for the current repo workspace:
+Example successful output shape:
 
 ```text
-workspace=1 run=2 callable_nodes=381 calls_edges=229 call_occurrences=257 evidence=257 skipped_external_targets=92 skipped_unresolved_targets=14 stale_edges_closed=0
+workspace=1 run=2 callable_nodes=<callable_nodes> calls_edges=243 call_occurrences=278 evidence=278 skipped_external_targets=<skipped_external_targets> skipped_unresolved_targets=<skipped_unresolved_targets> stale_edges_closed=0
 ```
 
 Expected shape:
@@ -232,11 +276,11 @@ Expected shape:
 ```text
 workspaces=1
 extraction_runs=2
-files=157
-nodes=1478
-edges=1550
-occurrences=1578
-edge_evidence=1578
+files=172
+nodes=1611
+edges=1682
+occurrences=1717
+edge_evidence=1717
 ```
 
 ## Extract A Complete Rust Workspace
@@ -245,18 +289,25 @@ Use this when you want a fresh complete SQLite graph with document symbols,
 references, and calls in one CLI invocation:
 
 ```sh
-cargo run -p semantic-graph-extract -- rust-workspace-all \
-  --db .local/rust-workspace-extract.db \
+./target/release/semantic-graph-extract rust-workspace-all \
   --workspace-root .
 ```
 
 The all-in-one command persists the document-symbol graph first, then refreshes
 the references and calls routes in the same database.
 
+To override the configured path for a one-off run:
+
+```sh
+./target/release/semantic-graph-extract rust-workspace-all \
+  --db /tmp/rust-workspace-scratch.db \
+  --workspace-root .
+```
+
 Example successful output for the current repo workspace:
 
 ```text
-workspace=1 document_run=1 reference_run=2 call_run=3 files=157 nodes=1478 contains_edges=1321 references_edges=2877 reference_occurrences=3517 calls_edges=229 call_occurrences=257 evidence=5095 routes_complete=159 stale_nodes_closed=0 stale_edges_closed=0
+workspace=1 document_run=1 reference_run=2 call_run=3 files=172 nodes=1611 contains_edges=1439 references_edges=3135 reference_occurrences=3829 calls_edges=243 call_occurrences=278 evidence=5546 routes_complete=174 stale_nodes_closed=0 stale_edges_closed=0
 ```
 
 Expected shape:
@@ -264,34 +315,36 @@ Expected shape:
 ```text
 workspaces=1
 extraction_runs=3
-files=157
-nodes=1478
-edges=4427
-occurrences=5095
-edge_evidence=5095
+files=172
+nodes=1611
+edges=4817
+occurrences=5546
+edge_evidence=5546
 ```
 
 ## Visualize A Rust Workspace
 
 The visualizer reads an existing SQLite graph and renders a bounded read-only
-projection. The Rust backend defaults to `.local/rust-workspace-extract.db`,
-which is the local fixture path used by the UI slice.
+projection. The Rust backend resolves its database path from
+`--database-path`, then `SEMANTIC_GRAPH_DB_PATH`, then config discovery, then
+the legacy default `.local/rust-workspace-extract.db`.
 
 Create or refresh that fixture from the current workspace:
 
 ```sh
-cargo run -p semantic-graph-extract -- rust-workspace-all \
-  --db .local/rust-workspace-extract.db \
+./target/release/semantic-graph-extract rust-workspace-all \
   --workspace-root .
 ```
 
 Start the local JSON-RPC backend:
 
 ```sh
-cargo run -p semantic-graph-visualizer-server -- \
-  --database-path .local/rust-workspace-extract.db \
+./target/release/semantic-graph-visualizer-server \
   --bind 127.0.0.1:5179
 ```
+
+Pass `--database-path .local/rust-workspace-extract.db` when you want the
+backend to ignore config discovery for that run.
 
 It serves `graph.projection`, `graph.node_details`, `graph.edge_details`, and
 `graph.search_nodes` over JSON-RPC 2.0 at `http://127.0.0.1:5179/rpc`. The
@@ -330,7 +383,7 @@ Delete a disposable local DB and run extraction again:
 
 ```sh
 rm -f .local/rust-extract-wip.db
-cargo run -p semantic-graph-extract -- rust-document-symbols \
+./target/release/semantic-graph-extract rust-document-symbols \
   --db .local/rust-extract-wip.db \
   --workspace-root . \
   --package-path crates/wip \
@@ -364,61 +417,71 @@ just rust-workspace-all-smoke
 The smoke-test crate also prints a route-level report:
 
 ```sh
-SQLX_OFFLINE=true cargo run -p semantic-graph-smoke-tests
+cargo build --release -p semantic-graph-smoke-tests
+./target/release/semantic-graph-smoke-tests
 ```
 
 That report exercises the `rust-analyzer-lib` facade, the extractor crate route,
 the extractor workspace route, the workspace references route, and the
-workspace calls route. Current headline counts are:
+workspace calls route. The full-workspace references and calls unit tests are
+ignored by default because they are expensive semantic smoke tests; run them
+explicitly when you need route confidence:
+
+```sh
+SQLX_OFFLINE=true cargo test -p semantic-graph-smoke-tests -- --ignored
+```
+
+The report prints headline fields in this shape; exact counts depend on the
+current workspace contents:
 
 ```text
 crate.persistence.files=4
 crate.persistence.nodes=57
 crate.persistence.edges=53
-workspace.discovery.count=157
+workspace.discovery.count=<files>
 workspace.discovery.submodule_files=0
-workspace.batch.files=157
-workspace.batch.symbols=1321
-workspace.persistence.files=157
-workspace.persistence.nodes=1478
-workspace.persistence.edges=1321
-workspace.persistence.occurrences=1321
-workspace.persistence.evidence=1321
-workspace.references.targets=1283
-workspace.references.edges=2877
-workspace.references.occurrences=3517
-workspace.references.file_fallbacks=711
+workspace.batch.files=<files>
+workspace.batch.symbols=<contains_edges>
+workspace.persistence.files=<files>
+workspace.persistence.nodes=<nodes>
+workspace.persistence.edges=<contains_edges>
+workspace.persistence.occurrences=<contains_edges>
+workspace.persistence.evidence=<contains_edges>
+workspace.references.targets=<targets>
+workspace.references.edges=<references_edges>
+workspace.references.occurrences=<reference_occurrences>
+workspace.references.file_fallbacks=<file_fallbacks>
 workspace.references.skipped_external=0
-workspace.references.base.files=157
-workspace.references.base.nodes=1478
-workspace.references.base.contains_edges=1321
-workspace.references.base.occurrences=1321
-workspace.references.base.evidence=1321
+workspace.references.base.files=<files>
+workspace.references.base.nodes=<nodes>
+workspace.references.base.contains_edges=<contains_edges>
+workspace.references.base.occurrences=<contains_edges>
+workspace.references.base.evidence=<contains_edges>
 workspace.references.route.files=0
 workspace.references.route.nodes=0
 workspace.references.route.contains_edges=0
-workspace.references.route.references_edges=2877
-workspace.references.route.reference_occurrences=3517
-workspace.references.route.evidence=3517
+workspace.references.route.references_edges=<references_edges>
+workspace.references.route.reference_occurrences=<reference_occurrences>
+workspace.references.route.evidence=<reference_occurrences>
 workspace.references.route.routes_complete=1
 workspace.references.route.stale_nodes_closed=0
 workspace.references.route.stale_edges_closed=0
-workspace.calls.callable_nodes=381
-workspace.calls.edges=229
-workspace.calls.occurrences=257
-workspace.calls.skipped_external_targets=92
-workspace.calls.skipped_unresolved_targets=14
-workspace.calls.base.files=157
-workspace.calls.base.nodes=1478
-workspace.calls.base.contains_edges=1321
-workspace.calls.base.occurrences=1321
-workspace.calls.base.evidence=1321
+workspace.calls.callable_nodes=<callable_nodes>
+workspace.calls.edges=<calls_edges>
+workspace.calls.occurrences=<call_occurrences>
+workspace.calls.skipped_external_targets=<skipped_external_targets>
+workspace.calls.skipped_unresolved_targets=<skipped_unresolved_targets>
+workspace.calls.base.files=<files>
+workspace.calls.base.nodes=<nodes>
+workspace.calls.base.contains_edges=<contains_edges>
+workspace.calls.base.occurrences=<contains_edges>
+workspace.calls.base.evidence=<contains_edges>
 workspace.calls.route.files=0
 workspace.calls.route.nodes=0
 workspace.calls.route.contains_edges=0
-workspace.calls.route.calls_edges=229
-workspace.calls.route.call_occurrences=257
-workspace.calls.route.evidence=257
+workspace.calls.route.calls_edges=<calls_edges>
+workspace.calls.route.call_occurrences=<call_occurrences>
+workspace.calls.route.evidence=<call_occurrences>
 workspace.calls.route.routes_complete=1
 workspace.calls.route.stale_nodes_closed=0
 workspace.calls.route.stale_edges_closed=0
@@ -432,14 +495,14 @@ not required before extraction.
 Initialize an empty DB manually:
 
 ```sh
-cargo run -p semantic-graph-store -- init \
+./target/release/semantic-graph-store init \
   --db .local/demo.db
 ```
 
 Seed demo rows:
 
 ```sh
-cargo run -p semantic-graph-store -- demo-seed \
+./target/release/semantic-graph-store demo-seed \
   --db .local/demo.db \
   --root-uri file:///tmp/poc-semanticgraph
 ```
@@ -447,9 +510,11 @@ cargo run -p semantic-graph-store -- demo-seed \
 Print stats:
 
 ```sh
-cargo run -p semantic-graph-store -- stats \
-  --db .local/demo.db
+./target/release/semantic-graph-store stats
 ```
+
+Pass `--db .local/demo.db` to inspect a specific database instead of the
+configured one.
 
 ## Confidence Check
 
@@ -470,7 +535,8 @@ SQLX_OFFLINE=true cargo check -p semantic-graph-extract
 SQLX_OFFLINE=true cargo test -p semantic-graph-extract
 SQLX_OFFLINE=true cargo clippy -p semantic-graph-extract --all-targets -- -D warnings
 SQLX_OFFLINE=true cargo test -p semantic-graph-smoke-tests
-SQLX_OFFLINE=true cargo run -p semantic-graph-smoke-tests
+cargo build --release -p semantic-graph-smoke-tests
+./target/release/semantic-graph-smoke-tests
 cargo check -p semantic-graph-visualizer-server
 cargo test -p semantic-graph-visualizer-server
 dotnet build SemanticGraph.Visualizer.slnx

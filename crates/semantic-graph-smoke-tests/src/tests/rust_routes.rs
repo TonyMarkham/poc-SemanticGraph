@@ -170,6 +170,7 @@ fn workspace_route_persists_workspace_batch_without_binary() -> Result<(), Box<d
 }
 
 #[test]
+#[ignore = "full workspace rust-analyzer references smoke; run explicitly for route confidence"]
 fn workspace_route_persists_workspace_references_without_binary() -> Result<(), Box<dyn Error>> {
     let _guard = workspace_load_guard()?;
     let repo_root = repo_root()?;
@@ -222,6 +223,7 @@ fn workspace_route_persists_workspace_references_without_binary() -> Result<(), 
 }
 
 #[test]
+#[ignore = "full workspace rust-analyzer calls smoke; run explicitly for route confidence"]
 fn workspace_route_persists_workspace_calls_without_binary() -> Result<(), Box<dyn Error>> {
     let _guard = workspace_load_guard()?;
     let repo_root = repo_root()?;

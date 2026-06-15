@@ -1,6 +1,7 @@
 use crate::{VisualizerServerError, VisualizerServerResult, config::server_args::ServerArgs};
 
 use clap::Parser;
+use semantic_graph_config::{LoadOptions, resolve_database_path};
 use std::{
     env,
     net::SocketAddr,
@@ -21,10 +22,16 @@ pub struct ServerConfig {
 impl ServerConfig {
     pub fn from_env_and_args() -> VisualizerServerResult<Self> {
         let args = ServerArgs::parse();
-        let database_path = args
-            .database_path
-            .or_else(|| env::var_os(DATABASE_PATH_ENV).map(PathBuf::from))
-            .unwrap_or_else(|| PathBuf::from(DEFAULT_DATABASE_PATH));
+        let database_path = resolve_database_path(LoadOptions {
+            explicit_database_path: args
+                .database_path
+                .or_else(|| env::var_os(DATABASE_PATH_ENV).map(PathBuf::from)),
+            explicit_config_path: args.config,
+            discovery_start_dir: None,
+            default_database_path: Some(PathBuf::from(DEFAULT_DATABASE_PATH)),
+        })
+        .map_err(VisualizerServerError::config)?
+        .into_path();
 
         let bind = match args.bind {
             Some(value) => value,

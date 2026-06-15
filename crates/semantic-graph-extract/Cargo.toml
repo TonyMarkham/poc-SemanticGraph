@@ -4,20 +4,21 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-clap                 = { workspace = true }
-error-location       = { workspace = true }
-hex                  = { workspace = true }
-lsp-types            = { workspace = true }
-serde_json           = { workspace = true }
-sha2                 = { workspace = true }
-thiserror            = { workspace = true }
-tokio                = { workspace = true, features = ["io-util", "process", "time"] }
+clap                  = { workspace = true }
+error-location        = { workspace = true }
+hex                   = { workspace = true }
+lsp-types             = { workspace = true }
+serde_json            = { workspace = true }
+sha2                  = { workspace = true }
+thiserror             = { workspace = true }
+tokio                 = { workspace = true, features = ["io-util", "process", "time"] }
 
-rust-analyzer-lib    = { path = "../rust-analyzer-lib" }
-semantic-graph-store = { path = "../semantic-graph-store" }
+rust-analyzer-lib     = { workspace = true }
+semantic-graph-config = { workspace = true }
+semantic-graph-store  = { workspace = true }
 
 [dev-dependencies]
-sqlx = { workspace = true }
+sqlx                  = { workspace = true }
 
 [lints]
-workspace = true
+workspace             = true

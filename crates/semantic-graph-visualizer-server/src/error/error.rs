@@ -1,4 +1,5 @@
 use error_location::ErrorLocation;
+use semantic_graph_config::ConfigError;
 use std::panic::Location;
 use thiserror::Error;
 
@@ -46,6 +47,13 @@ pub enum VisualizerServerError {
     Json {
         #[source]
         source: serde_json::Error,
+        location: ErrorLocation,
+    },
+
+    #[error("configuration error at {location}")]
+    Config {
+        #[source]
+        source: Box<ConfigError>,
         location: ErrorLocation,
     },
 }
@@ -107,6 +115,14 @@ impl VisualizerServerError {
         }
     }
 
+    #[track_caller]
+    pub fn config(source: ConfigError) -> Self {
+        Self::Config {
+            source: Box::new(source),
+            location: ErrorLocation::from(Location::caller()),
+        }
+    }
+
     pub fn message(&self) -> &str {
         match self {
             Self::Database { .. } => "database error",
@@ -116,6 +132,7 @@ impl VisualizerServerError {
             | Self::InvalidRequest { message, .. }
             | Self::NotFound { message, .. } => message,
             Self::Json { .. } => "json error",
+            Self::Config { .. } => "configuration error",
         }
     }
 }

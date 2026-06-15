@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/rust-analyzer-lib",
+    "crates/semantic-graph-config",
     "crates/semantic-graph-extract",
     "crates/semantic-graph-smoke-tests",
     "crates/semantic-graph-store",
@@ -29,6 +30,7 @@ sha2                   = { version = "0.11.0" }
 sqlx                   = { version = "0.9.0", features = ["macros", "migrate", "runtime-tokio", "sqlite"] }
 thiserror              = { version = "2.0.18" }
 tokio                  = { version = "1.52.3", features = ["macros", "rt-multi-thread"] }
+toml                   = { version = "1.1.2" }
 tower-http             = { version = "0.6.11", features = ["cors"] }
 tree-sitter            = { version = "0.26.9" }
 tree-sitter-c-sharp    = { version = "0.23.5" }
@@ -37,6 +39,7 @@ tree-sitter-razor      = { version = "0.1.0" }
 tree-sitter-rust       = { version = "0.24.2" }
 
 rust-analyzer-lib      = { path = "crates/rust-analyzer-lib" }
+semantic-graph-config  = { path = "crates/semantic-graph-config" }
 semantic-graph-extract = { path = "crates/semantic-graph-extract" }
 semantic-graph-store   = { path = "crates/semantic-graph-store" }
 

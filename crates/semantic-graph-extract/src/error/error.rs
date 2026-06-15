@@ -1,4 +1,5 @@
 use error_location::ErrorLocation;
+use semantic_graph_config::ConfigError;
 use semantic_graph_store::GraphStoreError;
 use std::{io, panic::Location, path::PathBuf};
 use thiserror::Error;
@@ -86,6 +87,13 @@ pub enum ExtractError {
         context: String,
         #[source]
         source: Box<rust_analyzer_lib::RustAnalyzerLibError>,
+        location: ErrorLocation,
+    },
+
+    #[error("configuration error at {location}")]
+    Config {
+        #[source]
+        source: Box<ConfigError>,
         location: ErrorLocation,
     },
 }
@@ -204,6 +212,14 @@ impl ExtractError {
         }
     }
 
+    #[track_caller]
+    pub fn config(source: ConfigError) -> Self {
+        Self::Config {
+            source: Box::new(source),
+            location: ErrorLocation::from(Location::caller()),
+        }
+    }
+
     pub fn message(&self) -> &'static str {
         match self {
             Self::Storage { .. } => "storage error",
@@ -215,6 +231,7 @@ impl ExtractError {
             Self::Timeout { .. } => "timeout",
             Self::InvalidPath { .. } => "invalid input path",
             Self::RustAnalyzerLib { .. } => "rust-analyzer-lib error",
+            Self::Config { .. } => "configuration error",
         }
     }
 
@@ -228,7 +245,8 @@ impl ExtractError {
             | Self::Process { location, .. }
             | Self::Timeout { location, .. }
             | Self::InvalidPath { location, .. }
-            | Self::RustAnalyzerLib { location, .. } => *location,
+            | Self::RustAnalyzerLib { location, .. }
+            | Self::Config { location, .. } => *location,
         }
     }
 }

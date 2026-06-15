@@ -11,7 +11,7 @@ use sqlx::{
     Executor, SqlitePool,
     sqlite::{SqliteConnectOptions, SqlitePoolOptions},
 };
-use std::path::Path;
+use std::{fs, path::Path};
 
 #[derive(Debug, Clone)]
 pub struct GraphStore {
@@ -20,6 +20,9 @@ pub struct GraphStore {
 
 impl GraphStore {
     pub async fn connect(path: impl AsRef<Path>) -> GraphStoreResult<Self> {
+        let path = path.as_ref();
+        Self::create_database_parent(path)?;
+
         let options = SqliteConnectOptions::new()
             .filename(path)
             .create_if_missing(true)
@@ -31,6 +34,23 @@ impl GraphStore {
             .map_err(GraphStoreError::database)?;
 
         Ok(Self { pool })
+    }
+
+    fn create_database_parent(path: &Path) -> GraphStoreResult<()> {
+        let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        else {
+            return Ok(());
+        };
+
+        fs::create_dir_all(parent).map_err(|source| {
+            GraphStoreError::io(
+                "create database parent directory",
+                Some(parent.to_path_buf()),
+                source,
+            )
+        })
     }
 
     pub async fn migrate(&self) -> GraphStoreResult<()> {

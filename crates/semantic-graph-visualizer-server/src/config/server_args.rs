@@ -8,5 +8,8 @@ pub(crate) struct ServerArgs {
     pub(crate) database_path: Option<PathBuf>,
 
     #[arg(long)]
+    pub(crate) config: Option<PathBuf>,
+
+    #[arg(long)]
     pub(crate) bind: Option<SocketAddr>,
 }

@@ -1,0 +1,74 @@
+use error_location::ErrorLocation;
+use std::{io, panic::Location, path::PathBuf};
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum ConfigError {
+    #[error("io error during {context} path={path:?} at {location}")]
+    Io {
+        context: String,
+        path: Option<PathBuf>,
+        #[source]
+        source: io::Error,
+        location: ErrorLocation,
+    },
+
+    #[error("toml error config_path={config_path:?} at {location}")]
+    Toml {
+        config_path: PathBuf,
+        #[source]
+        source: Box<toml::de::Error>,
+        location: ErrorLocation,
+    },
+
+    #[error("missing database path config_path={config_path:?} at {location}")]
+    MissingDatabasePath {
+        config_path: Option<PathBuf>,
+        location: ErrorLocation,
+    },
+}
+
+impl ConfigError {
+    #[track_caller]
+    pub fn io(context: impl Into<String>, path: Option<PathBuf>, source: io::Error) -> Self {
+        Self::Io {
+            context: context.into(),
+            path,
+            source,
+            location: ErrorLocation::from(Location::caller()),
+        }
+    }
+
+    #[track_caller]
+    pub fn toml(config_path: impl Into<PathBuf>, source: toml::de::Error) -> Self {
+        Self::Toml {
+            config_path: config_path.into(),
+            source: Box::new(source),
+            location: ErrorLocation::from(Location::caller()),
+        }
+    }
+
+    #[track_caller]
+    pub fn missing_database_path(config_path: Option<PathBuf>) -> Self {
+        Self::MissingDatabasePath {
+            config_path,
+            location: ErrorLocation::from(Location::caller()),
+        }
+    }
+
+    pub fn message(&self) -> &'static str {
+        match self {
+            Self::Io { .. } => "io error",
+            Self::Toml { .. } => "toml error",
+            Self::MissingDatabasePath { .. } => "missing database path",
+        }
+    }
+
+    pub fn location(&self) -> ErrorLocation {
+        match self {
+            Self::Io { location, .. }
+            | Self::Toml { location, .. }
+            | Self::MissingDatabasePath { location, .. } => *location,
+        }
+    }
+}

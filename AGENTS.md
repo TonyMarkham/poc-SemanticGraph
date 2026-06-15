@@ -211,8 +211,14 @@ Validation:
 - For Rust changes, run the most specific practical `cargo check` or
   `cargo test` command for the changed crate or workspace area.
 - For Rust extraction route, `rust-analyzer-lib`, or smoke-test changes, also
-  run the relevant smoke surface, usually
-  `SQLX_OFFLINE=true cargo run -p semantic-graph-smoke-tests`.
+  run the relevant smoke surface with a release binary, usually
+  `cargo build --release -p semantic-graph-smoke-tests` followed by
+  `./target/release/semantic-graph-smoke-tests`.
+  `cargo test -p semantic-graph-smoke-tests` intentionally skips the expensive
+  full-workspace references and calls smoke tests by default; run them
+  explicitly with
+  `SQLX_OFFLINE=true cargo test -p semantic-graph-smoke-tests -- --ignored`
+  when route confidence requires it.
 - For visualizer backend changes, run the most specific practical
   `cargo check -p semantic-graph-visualizer-server` or
   `cargo test -p semantic-graph-visualizer-server`.

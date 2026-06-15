@@ -179,6 +179,7 @@ fn error_from_server_error(id: Option<Value>, error: VisualizerServerError) -> J
         VisualizerServerError::InvalidRequest { .. } => INVALID_REQUEST,
         VisualizerServerError::NotFound { .. } => NOT_FOUND,
         VisualizerServerError::Database { .. }
+        | VisualizerServerError::Config { .. }
         | VisualizerServerError::Io { .. }
         | VisualizerServerError::InvalidConfig { .. }
         | VisualizerServerError::Json { .. } => INTERNAL_ERROR,
