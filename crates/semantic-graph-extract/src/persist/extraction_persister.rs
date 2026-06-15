@@ -8,10 +8,10 @@ use crate::{
     persist::PersistenceSummary,
 };
 
-use semantic_graph_store::{
-    CloseStaleRouteInput, EdgeEvidenceInput, EdgeInput, FileInput, GraphStore, NodeInput,
-    OccurrenceInput, RouteObservationInput, RouteStatusCompleteInput, RouteStatusFailInput,
-    RouteStatusStartInput, node_id,
+use semantic_graph_db_manager::{
+    CloseStaleRouteInput, EdgeEvidenceInput, EdgeInput, FileInput, NodeInput, OccurrenceInput,
+    RouteObservationInput, RouteStatusCompleteInput, RouteStatusFailInput, RouteStatusStartInput,
+    WriteHandle, node_id,
 };
 
 use serde_json::{Value, json};
@@ -22,7 +22,7 @@ pub struct ExtractionPersister;
 impl ExtractionPersister {
     pub async fn persist_document_symbols(
         &self,
-        store: &GraphStore,
+        store: &WriteHandle,
         workspace_root_uri: &str,
         extraction: &DocumentSymbolExtraction,
     ) -> ExtractResult<PersistenceSummary> {
@@ -67,7 +67,7 @@ impl ExtractionPersister {
 
     pub async fn persist_document_symbol_batch(
         &self,
-        store: &GraphStore,
+        store: &WriteHandle,
         workspace_root_uri: &str,
         extraction: &DocumentSymbolBatchExtraction,
     ) -> ExtractResult<PersistenceSummary> {
@@ -119,7 +119,7 @@ impl ExtractionPersister {
 
     pub async fn persist_reference_batch_with_document_symbols(
         &self,
-        store: &GraphStore,
+        store: &WriteHandle,
         workspace_root_uri: &str,
         extraction: &ReferenceBatchExtraction,
     ) -> ExtractResult<PersistenceSummary> {
@@ -182,7 +182,7 @@ impl ExtractionPersister {
 
     pub async fn persist_reference_batch(
         &self,
-        store: &GraphStore,
+        store: &WriteHandle,
         workspace_root_uri: &str,
         extraction: &ReferenceBatchExtraction,
     ) -> ExtractResult<PersistenceSummary> {
@@ -246,7 +246,7 @@ impl ExtractionPersister {
 
     async fn persist_reference_batch_route_only_after_run_started(
         &self,
-        store: &GraphStore,
+        store: &WriteHandle,
         workspace_id: i64,
         run_id: i64,
         workspace_root_uri: &str,
@@ -353,7 +353,7 @@ impl ExtractionPersister {
 
     async fn persist_reference_batch_with_document_symbols_after_run_started(
         &self,
-        store: &GraphStore,
+        store: &WriteHandle,
         workspace_id: i64,
         run_id: i64,
         workspace_root_uri: &str,
@@ -465,7 +465,7 @@ impl ExtractionPersister {
 
     async fn persist_references_after_route_started(
         &self,
-        store: &GraphStore,
+        store: &WriteHandle,
         workspace_id: i64,
         run_id: i64,
         workspace_root_uri: &str,
@@ -590,7 +590,7 @@ impl ExtractionPersister {
 
     pub async fn persist_call_batch_with_document_symbols(
         &self,
-        store: &GraphStore,
+        store: &WriteHandle,
         workspace_root_uri: &str,
         extraction: &CallBatchExtraction,
     ) -> ExtractResult<PersistenceSummary> {
@@ -653,7 +653,7 @@ impl ExtractionPersister {
 
     pub async fn persist_call_batch(
         &self,
-        store: &GraphStore,
+        store: &WriteHandle,
         workspace_root_uri: &str,
         extraction: &CallBatchExtraction,
     ) -> ExtractResult<PersistenceSummary> {
@@ -717,7 +717,7 @@ impl ExtractionPersister {
 
     async fn persist_call_batch_route_only_after_run_started(
         &self,
-        store: &GraphStore,
+        store: &WriteHandle,
         workspace_id: i64,
         run_id: i64,
         workspace_root_uri: &str,
@@ -825,7 +825,7 @@ impl ExtractionPersister {
 
     async fn persist_call_batch_with_document_symbols_after_run_started(
         &self,
-        store: &GraphStore,
+        store: &WriteHandle,
         workspace_id: i64,
         run_id: i64,
         workspace_root_uri: &str,
@@ -938,7 +938,7 @@ impl ExtractionPersister {
 
     async fn persist_calls_after_route_started(
         &self,
-        store: &GraphStore,
+        store: &WriteHandle,
         workspace_id: i64,
         run_id: i64,
         workspace_root_uri: &str,
@@ -1060,7 +1060,7 @@ impl ExtractionPersister {
 
     async fn document_symbol_file_ids(
         &self,
-        store: &GraphStore,
+        store: &WriteHandle,
         workspace_id: i64,
         run_id: i64,
         extraction: &DocumentSymbolBatchExtraction,
@@ -1091,7 +1091,7 @@ impl ExtractionPersister {
 
     async fn existing_workspace_id(
         &self,
-        store: &GraphStore,
+        store: &WriteHandle,
         workspace_root_uri: &str,
         provider: &str,
         method: &str,
@@ -1113,7 +1113,7 @@ impl ExtractionPersister {
 
     async fn existing_document_symbol_file_ids(
         &self,
-        store: &GraphStore,
+        store: &WriteHandle,
         workspace_id: i64,
         provider: &str,
         method: &str,
@@ -1143,7 +1143,7 @@ impl ExtractionPersister {
 
     async fn validate_reference_nodes(
         &self,
-        store: &GraphStore,
+        store: &WriteHandle,
         workspace_id: i64,
         extraction: &ReferenceBatchExtraction,
     ) -> ExtractResult<()> {
@@ -1171,7 +1171,7 @@ impl ExtractionPersister {
 
     async fn validate_call_nodes(
         &self,
-        store: &GraphStore,
+        store: &WriteHandle,
         workspace_id: i64,
         extraction: &CallBatchExtraction,
     ) -> ExtractResult<()> {
@@ -1199,7 +1199,7 @@ impl ExtractionPersister {
 
     async fn require_node(
         &self,
-        store: &GraphStore,
+        store: &WriteHandle,
         workspace_id: i64,
         provider: &str,
         method: &str,
@@ -1225,7 +1225,7 @@ impl ExtractionPersister {
 
     async fn persist_batch_after_run_started(
         &self,
-        store: &GraphStore,
+        store: &WriteHandle,
         workspace_id: i64,
         run_id: i64,
         extraction: &DocumentSymbolBatchExtraction,
@@ -1270,7 +1270,7 @@ impl ExtractionPersister {
 
     async fn persist_after_run_started(
         &self,
-        store: &GraphStore,
+        store: &WriteHandle,
         workspace_id: i64,
         run_id: i64,
         extraction: &DocumentSymbolExtraction,
@@ -1386,7 +1386,7 @@ impl ExtractionPersister {
 
     async fn persist_file_after_route_started(
         &self,
-        store: &GraphStore,
+        store: &WriteHandle,
         workspace_id: i64,
         run_id: i64,
         file_id: i64,
@@ -1564,7 +1564,7 @@ impl ExtractionPersister {
 
     async fn upsert_file_node(
         &self,
-        store: &GraphStore,
+        store: &WriteHandle,
         workspace_id: i64,
         run_id: i64,
         file_id: i64,
@@ -1598,7 +1598,7 @@ impl ExtractionPersister {
 
     async fn record_document_symbol_node_observation(
         &self,
-        store: &GraphStore,
+        store: &WriteHandle,
         workspace_id: i64,
         run_id: i64,
         file_id: i64,
@@ -1626,7 +1626,7 @@ impl ExtractionPersister {
 
     async fn record_document_symbol_edge_observation(
         &self,
-        store: &GraphStore,
+        store: &WriteHandle,
         workspace_id: i64,
         run_id: i64,
         file_id: i64,

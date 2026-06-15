@@ -8,11 +8,11 @@ use crate::{
 };
 
 use axum::{Json, body::Bytes, extract::State};
-use serde_json::{Value, json};
-use sqlx::{
-    SqlitePool,
-    sqlite::{SqliteConnectOptions, SqlitePoolOptions},
+use semantic_graph_db_manager::{
+    EdgeEvidenceInput, EdgeInput, FileInput, NodeInput, OccurrenceInput, TextRange, WriteManager,
+    edge_id, node_id,
 };
+use serde_json::{Value, json};
 use std::{
     error::Error,
     io,
@@ -83,16 +83,20 @@ async fn projection_includes_call_edges_when_endpoints_are_selected() -> Result<
 #[tokio::test]
 async fn node_details_returns_metadata_occurrences_and_counts() -> Result<(), Box<dyn Error>> {
     let database_path = seeded_database_path().await?;
+    let ids = FixtureIds::new();
 
     let service = GraphQueryService::new(database_path.clone());
-    let details = service.node_details("symbol-run").await?;
+    let details = service.node_details(&ids.symbol_run).await?;
 
-    assert_eq!("symbol-run", details.node_id);
+    assert_eq!(ids.symbol_run, details.node_id);
     assert_eq!("function", details.kind);
     assert_eq!("run", details.display_label);
     assert_eq!(Some("crate::run"), details.qualified_name.as_deref());
     assert_eq!(Some("src/lib.rs"), details.source_file_path.as_deref());
-    assert_eq!(Some("module-root"), details.container_node_id.as_deref());
+    assert_eq!(
+        Some(ids.module_root.as_str()),
+        details.container_node_id.as_deref()
+    );
     assert_eq!(Some("crate"), details.container_display_label.as_deref());
     assert_eq!(2, details.incoming_edge_count);
     assert_eq!(3, details.outgoing_edge_count);
@@ -142,17 +146,18 @@ async fn node_details_returns_metadata_occurrences_and_counts() -> Result<(), Bo
 async fn edge_details_returns_reference_context_weight_and_evidence() -> Result<(), Box<dyn Error>>
 {
     let database_path = seeded_database_path().await?;
+    let ids = FixtureIds::new();
 
     let service = GraphQueryService::new(database_path.clone());
-    let details = service.edge_details("edge-run-helper-reference").await?;
+    let details = service.edge_details(&ids.edge_run_helper_reference).await?;
 
-    assert_eq!("edge-run-helper-reference", details.edge_id);
+    assert_eq!(ids.edge_run_helper_reference, details.edge_id);
     assert_eq!("references", details.relation);
     assert_eq!(Some("symbol"), details.context.as_deref());
     assert_eq!("EXTRACTED", details.confidence);
     assert_eq!(2.0, details.weight);
-    assert_eq!("symbol-run", details.source.node_id);
-    assert_eq!("symbol-helper", details.target.node_id);
+    assert_eq!(ids.symbol_run, details.source.node_id);
+    assert_eq!(ids.symbol_helper, details.target.node_id);
     assert_eq!(1, details.evidence.len());
     assert_eq!("rust-analyzer", details.evidence[0].provider);
     assert_eq!(
@@ -171,17 +176,18 @@ async fn edge_details_returns_reference_context_weight_and_evidence() -> Result<
 #[tokio::test]
 async fn edge_details_returns_call_context_weight_and_evidence() -> Result<(), Box<dyn Error>> {
     let database_path = seeded_database_path().await?;
+    let ids = FixtureIds::new();
 
     let service = GraphQueryService::new(database_path.clone());
-    let details = service.edge_details("edge-run-helper-call").await?;
+    let details = service.edge_details(&ids.edge_run_helper_call).await?;
 
-    assert_eq!("edge-run-helper-call", details.edge_id);
+    assert_eq!(ids.edge_run_helper_call, details.edge_id);
     assert_eq!("calls", details.relation);
     assert_eq!(Some("direct"), details.context.as_deref());
     assert_eq!("EXTRACTED", details.confidence);
     assert_eq!(2.0, details.weight);
-    assert_eq!("symbol-run", details.source.node_id);
-    assert_eq!("symbol-helper", details.target.node_id);
+    assert_eq!(ids.symbol_run, details.source.node_id);
+    assert_eq!(ids.symbol_helper, details.target.node_id);
     assert_eq!(1, details.evidence.len());
     assert_eq!("rust-analyzer", details.evidence[0].provider);
     assert_eq!(
@@ -200,16 +206,17 @@ async fn edge_details_returns_call_context_weight_and_evidence() -> Result<(), B
 #[tokio::test]
 async fn edge_details_returns_endpoints_and_evidence() -> Result<(), Box<dyn Error>> {
     let database_path = seeded_database_path().await?;
+    let ids = FixtureIds::new();
 
     let service = GraphQueryService::new(database_path.clone());
-    let details = service.edge_details("edge-file-run").await?;
+    let details = service.edge_details(&ids.edge_file_run).await?;
 
-    assert_eq!("edge-file-run", details.edge_id);
+    assert_eq!(ids.edge_file_run, details.edge_id);
     assert_eq!("contains", details.relation);
     assert_eq!("EXTRACTED", details.confidence);
-    assert_eq!("file-src-lib", details.source.node_id);
+    assert_eq!(ids.file_src_lib, details.source.node_id);
     assert_eq!("lib.rs", details.source.display_label);
-    assert_eq!("symbol-run", details.target.node_id);
+    assert_eq!(ids.symbol_run, details.target.node_id);
     assert_eq!("run", details.target.display_label);
     assert_eq!(1, details.evidence.len());
     assert_eq!("rust-analyzer", details.evidence[0].provider);
@@ -233,6 +240,7 @@ async fn edge_details_returns_endpoints_and_evidence() -> Result<(), Box<dyn Err
 #[tokio::test]
 async fn search_nodes_finds_name_qualified_name_and_file_path() -> Result<(), Box<dyn Error>> {
     let database_path = seeded_database_path().await?;
+    let ids = FixtureIds::new();
 
     let service = GraphQueryService::new(database_path.clone());
 
@@ -241,7 +249,7 @@ async fn search_nodes_finds_name_qualified_name_and_file_path() -> Result<(), Bo
         by_name
             .results
             .iter()
-            .any(|result| result.node_id == "symbol-run")
+            .any(|result| result.node_id == ids.symbol_run)
     );
 
     let by_qualified_name = service.search_nodes("crate::run", 25).await?;
@@ -249,7 +257,7 @@ async fn search_nodes_finds_name_qualified_name_and_file_path() -> Result<(), Bo
         by_qualified_name
             .results
             .iter()
-            .any(|result| result.node_id == "symbol-run")
+            .any(|result| result.node_id == ids.symbol_run)
     );
 
     let by_file_path = service.search_nodes("z.rs", 25).await?;
@@ -257,7 +265,7 @@ async fn search_nodes_finds_name_qualified_name_and_file_path() -> Result<(), Bo
         by_file_path
             .results
             .iter()
-            .any(|result| result.node_id == "symbol-helper")
+            .any(|result| result.node_id == ids.symbol_helper)
     );
 
     let limited = service.search_nodes("r", 1).await?;
@@ -273,6 +281,7 @@ async fn search_nodes_finds_name_qualified_name_and_file_path() -> Result<(), Bo
 #[tokio::test]
 async fn rpc_invalid_params_and_missing_ids_return_json_rpc_errors() -> Result<(), Box<dyn Error>> {
     let database_path = seeded_database_path().await?;
+    let ids = FixtureIds::new();
     let state = AppState::new(database_path.clone());
 
     let blank_node_id = rpc_request(
@@ -357,12 +366,12 @@ async fn rpc_invalid_params_and_missing_ids_return_json_rpc_errors() -> Result<(
             "jsonrpc": "2.0",
             "id": 8,
             "method": "graph.node_details",
-            "params": { "nodeId": "symbol-run" }
+            "params": { "nodeId": ids.symbol_run.as_str() }
         }),
     )
     .await?;
     let node_details: GraphNodeDetailsDto = result_value(node_details)?;
-    assert_eq!("symbol-run", node_details.node_id);
+    assert_eq!(ids.symbol_run, node_details.node_id);
 
     let edge_details = rpc_request(
         state.clone(),
@@ -370,12 +379,12 @@ async fn rpc_invalid_params_and_missing_ids_return_json_rpc_errors() -> Result<(
             "jsonrpc": "2.0",
             "id": 9,
             "method": "graph.edge_details",
-            "params": { "edgeId": "edge-file-run" }
+            "params": { "edgeId": ids.edge_file_run.as_str() }
         }),
     )
     .await?;
     let edge_details: GraphEdgeDetailsDto = result_value(edge_details)?;
-    assert_eq!("edge-file-run", edge_details.edge_id);
+    assert_eq!(ids.edge_file_run, edge_details.edge_id);
 
     let search_results = rpc_request(
         state,
@@ -392,7 +401,7 @@ async fn rpc_invalid_params_and_missing_ids_return_json_rpc_errors() -> Result<(
         search_results
             .results
             .iter()
-            .any(|result| result.node_id == "symbol-run")
+            .any(|result| result.node_id == ids.symbol_run)
     );
 
     std::fs::remove_file(database_path)?;
@@ -434,363 +443,309 @@ where
 
 async fn seeded_database_path() -> Result<PathBuf, Box<dyn Error>> {
     let database_path = temp_database_path()?;
-    let pool = create_fixture_database(&database_path).await?;
-    seed_fixture_database(&pool).await?;
-    pool.close().await;
+    let writer = WriteManager::start(&database_path).await?;
+    writer.migrate().await?;
+    seed_fixture_database(&writer).await?;
+    writer.shutdown().await?;
     Ok(database_path)
 }
 
-async fn create_fixture_database(database_path: &PathBuf) -> Result<SqlitePool, sqlx::Error> {
-    let options = SqliteConnectOptions::new()
-        .filename(database_path)
-        .create_if_missing(true)
-        .foreign_keys(true);
+async fn seed_fixture_database(
+    writer: &semantic_graph_db_manager::WriteHandle,
+) -> Result<(), Box<dyn Error>> {
+    let workspace_id = writer.create_workspace("file:///fixture", "rust").await?;
+    let run_id = writer
+        .start_run(workspace_id, "rust-analyzer", Some("fixture"), None)
+        .await?;
+    let lib_file_id = writer
+        .upsert_file(FileInput {
+            workspace_id,
+            uri: "file:///fixture/src/lib.rs",
+            path: "src/lib.rs",
+            language: "rust",
+            content_hash: None,
+            last_seen_run_id: Some(run_id),
+            properties_json: json!({}),
+        })
+        .await?;
+    let helper_file_id = writer
+        .upsert_file(FileInput {
+            workspace_id,
+            uri: "file:///fixture/src/z.rs",
+            path: "src/z.rs",
+            language: "rust",
+            content_hash: None,
+            last_seen_run_id: Some(run_id),
+            properties_json: json!({}),
+        })
+        .await?;
+    let ids = FixtureIds::new();
 
-    let pool = SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect_with(options)
+    writer
+        .upsert_node(NodeInput {
+            workspace_id,
+            language: "rust",
+            kind: "file",
+            name: "lib.rs",
+            qualified_name: Some("src/lib.rs"),
+            display_name: Some("lib.rs"),
+            symbol_key: "file:///fixture/src/lib.rs",
+            file_id: Some(lib_file_id),
+            range: None,
+            selection_range: None,
+            container_node_id: None,
+            properties_json: json!({}),
+            run_id: Some(run_id),
+        })
+        .await?;
+    writer
+        .upsert_node(NodeInput {
+            workspace_id,
+            language: "rust",
+            kind: "module",
+            name: "crate",
+            qualified_name: Some("crate"),
+            display_name: Some("crate"),
+            symbol_key: "module:crate",
+            file_id: Some(lib_file_id),
+            range: Some(range(1, 0, 30, 0)),
+            selection_range: Some(range(1, 0, 1, 0)),
+            container_node_id: None,
+            properties_json: json!({}),
+            run_id: Some(run_id),
+        })
+        .await?;
+    writer
+        .upsert_node(NodeInput {
+            workspace_id,
+            language: "rust",
+            kind: "function",
+            name: "run",
+            qualified_name: Some("crate::run"),
+            display_name: Some("run"),
+            symbol_key: "function:crate::run",
+            file_id: Some(lib_file_id),
+            range: Some(range(10, 4, 12, 5)),
+            selection_range: Some(range(10, 7, 10, 10)),
+            container_node_id: Some(&ids.module_root),
+            properties_json: json!({ "visibility": "public" }),
+            run_id: Some(run_id),
+        })
+        .await?;
+    writer
+        .upsert_node(NodeInput {
+            workspace_id,
+            language: "rust",
+            kind: "function",
+            name: "helper",
+            qualified_name: Some("crate::z_helper"),
+            display_name: Some("helper"),
+            symbol_key: "function:crate::z_helper",
+            file_id: Some(helper_file_id),
+            range: Some(range(2, 0, 4, 1)),
+            selection_range: Some(range(2, 3, 2, 9)),
+            container_node_id: None,
+            properties_json: json!({}),
+            run_id: Some(run_id),
+        })
         .await?;
 
-    sqlx::raw_sql(include_str!(
-        "../../../semantic-graph-store/migrations/01_create_graph_store.sql"
-    ))
-    .execute(&pool)
-    .await?;
+    writer
+        .upsert_edge(EdgeInput {
+            workspace_id,
+            src_node_id: &ids.file_src_lib,
+            dst_node_id: &ids.symbol_run,
+            relation: "contains",
+            context: Some("document-symbol"),
+            confidence: "EXTRACTED",
+            confidence_score: 1.0,
+            weight: 1.0,
+            properties_json: json!({ "source": "documentSymbol" }),
+            run_id: Some(run_id),
+        })
+        .await?;
+    writer
+        .upsert_edge(EdgeInput {
+            workspace_id,
+            src_node_id: &ids.module_root,
+            dst_node_id: &ids.symbol_run,
+            relation: "contains",
+            context: Some("document-symbol"),
+            confidence: "EXTRACTED",
+            confidence_score: 1.0,
+            weight: 1.0,
+            properties_json: json!({}),
+            run_id: Some(run_id),
+        })
+        .await?;
+    writer
+        .upsert_edge(EdgeInput {
+            workspace_id,
+            src_node_id: &ids.symbol_run,
+            dst_node_id: &ids.symbol_helper,
+            relation: "contains",
+            context: Some("document-symbol"),
+            confidence: "EXTRACTED",
+            confidence_score: 1.0,
+            weight: 1.0,
+            properties_json: json!({}),
+            run_id: Some(run_id),
+        })
+        .await?;
+    writer
+        .upsert_edge(EdgeInput {
+            workspace_id,
+            src_node_id: &ids.symbol_run,
+            dst_node_id: &ids.symbol_helper,
+            relation: "references",
+            context: Some("symbol"),
+            confidence: "EXTRACTED",
+            confidence_score: 1.0,
+            weight: 2.0,
+            properties_json: json!({ "source_resolution": "symbol" }),
+            run_id: Some(run_id),
+        })
+        .await?;
+    writer
+        .upsert_edge(EdgeInput {
+            workspace_id,
+            src_node_id: &ids.symbol_run,
+            dst_node_id: &ids.symbol_helper,
+            relation: "calls",
+            context: Some("direct"),
+            confidence: "EXTRACTED",
+            confidence_score: 1.0,
+            weight: 2.0,
+            properties_json: json!({ "source_resolution": "symbol" }),
+            run_id: Some(run_id),
+        })
+        .await?;
 
-    Ok(pool)
+    writer
+        .insert_occurrence(OccurrenceInput {
+            node_id: &ids.symbol_run,
+            run_id,
+            file_id: lib_file_id,
+            role: "definition",
+            range: range(10, 4, 12, 5),
+            enclosing_node_id: Some(&ids.module_root),
+            raw_json: Some(json!({ "source": "occurrence" })),
+        })
+        .await?;
+    writer
+        .insert_occurrence(OccurrenceInput {
+            node_id: &ids.symbol_helper,
+            run_id,
+            file_id: lib_file_id,
+            role: "reference",
+            range: range(11, 8, 11, 14),
+            enclosing_node_id: Some(&ids.symbol_run),
+            raw_json: Some(json!({ "source": "reference-occurrence" })),
+        })
+        .await?;
+    writer
+        .insert_occurrence(OccurrenceInput {
+            node_id: &ids.symbol_helper,
+            run_id,
+            file_id: lib_file_id,
+            role: "call",
+            range: range(11, 8, 11, 14),
+            enclosing_node_id: Some(&ids.symbol_run),
+            raw_json: Some(json!({ "source": "call-occurrence" })),
+        })
+        .await?;
+
+    writer
+        .insert_edge_evidence(EdgeEvidenceInput {
+            edge_id: &ids.edge_file_run,
+            run_id,
+            provider: "rust-analyzer",
+            lsp_method: Some("textDocument/documentSymbol"),
+            file_id: Some(lib_file_id),
+            range: Some(range(10, 4, 12, 5)),
+            raw_json: Some(json!({ "source": "edge-evidence" })),
+        })
+        .await?;
+    writer
+        .insert_edge_evidence(EdgeEvidenceInput {
+            edge_id: &ids.edge_run_helper_reference,
+            run_id,
+            provider: "rust-analyzer",
+            lsp_method: Some("textDocument/references"),
+            file_id: Some(lib_file_id),
+            range: Some(range(11, 8, 11, 14)),
+            raw_json: Some(json!({ "source": "reference-evidence" })),
+        })
+        .await?;
+    writer
+        .insert_edge_evidence(EdgeEvidenceInput {
+            edge_id: &ids.edge_run_helper_call,
+            run_id,
+            provider: "rust-analyzer",
+            lsp_method: Some("callHierarchy/outgoingCalls"),
+            file_id: Some(lib_file_id),
+            range: Some(range(11, 8, 11, 14)),
+            raw_json: Some(json!({ "source": "call-evidence" })),
+        })
+        .await?;
+    writer.finish_run(run_id, "complete").await?;
+    Ok(())
 }
 
-async fn seed_fixture_database(pool: &SqlitePool) -> Result<(), sqlx::Error> {
-    sqlx::raw_sql(
-        r#"
-        INSERT INTO workspaces (id, root_uri, kind)
-        VALUES (1, 'file:///fixture', 'rust');
+struct FixtureIds {
+    file_src_lib: String,
+    module_root: String,
+    symbol_run: String,
+    symbol_helper: String,
+    edge_file_run: String,
+    edge_run_helper_reference: String,
+    edge_run_helper_call: String,
+}
 
-        INSERT INTO extraction_runs (id, workspace_id, provider, provider_version, status)
-        VALUES (1, 1, 'rust-analyzer', 'fixture', 'complete');
+impl FixtureIds {
+    fn new() -> Self {
+        let workspace_id = 1;
+        let file_src_lib = node_id(workspace_id, "rust", "file:///fixture/src/lib.rs");
+        let module_root = node_id(workspace_id, "rust", "module:crate");
+        let symbol_run = node_id(workspace_id, "rust", "function:crate::run");
+        let symbol_helper = node_id(workspace_id, "rust", "function:crate::z_helper");
+        Self {
+            edge_file_run: edge_id(
+                workspace_id,
+                &file_src_lib,
+                &symbol_run,
+                "contains",
+                Some("document-symbol"),
+            ),
+            edge_run_helper_reference: edge_id(
+                workspace_id,
+                &symbol_run,
+                &symbol_helper,
+                "references",
+                Some("symbol"),
+            ),
+            edge_run_helper_call: edge_id(
+                workspace_id,
+                &symbol_run,
+                &symbol_helper,
+                "calls",
+                Some("direct"),
+            ),
+            file_src_lib,
+            module_root,
+            symbol_run,
+            symbol_helper,
+        }
+    }
+}
 
-        INSERT INTO files (id, workspace_id, uri, path, language, last_seen_run_id)
-        VALUES
-          (1, 1, 'file:///fixture/src/lib.rs', 'src/lib.rs', 'rust', 1),
-          (2, 1, 'file:///fixture/src/z.rs', 'src/z.rs', 'rust', 1);
-
-        INSERT INTO nodes (
-          id,
-          workspace_id,
-          language,
-          kind,
-          name,
-          qualified_name,
-          display_name,
-          symbol_key,
-          file_id,
-          start_line,
-          start_col,
-          end_line,
-          end_col,
-          selection_start_line,
-          selection_start_col,
-          container_node_id,
-          properties_json,
-          first_seen_run_id,
-          last_seen_run_id,
-          valid_to_run_id
-        )
-        VALUES
-          (
-            'file-src-lib',
-            1,
-            'rust',
-            'file',
-            'lib.rs',
-            'src/lib.rs',
-            'lib.rs',
-            'file:///fixture/src/lib.rs',
-            1,
-            NULL,
-            NULL,
-            NULL,
-            NULL,
-            NULL,
-            NULL,
-            NULL,
-            '{}',
-            1,
-            1,
-            NULL
-          ),
-          (
-            'module-root',
-            1,
-            'rust',
-            'module',
-            'crate',
-            'crate',
-            'crate',
-            'module:crate',
-            1,
-            1,
-            0,
-            30,
-            0,
-            1,
-            0,
-            NULL,
-            '{}',
-            1,
-            1,
-            NULL
-          ),
-          (
-            'symbol-run',
-            1,
-            'rust',
-            'function',
-            'run',
-            'crate::run',
-            'run',
-            'function:crate::run',
-            1,
-            10,
-            4,
-            12,
-            5,
-            10,
-            7,
-            'module-root',
-            '{"visibility":"public"}',
-            1,
-            1,
-            NULL
-          ),
-          (
-            'symbol-helper',
-            1,
-            'rust',
-            'function',
-            'helper',
-            'crate::z_helper',
-            'helper',
-            'function:crate::z_helper',
-            2,
-            2,
-            0,
-            4,
-            1,
-            2,
-            3,
-            NULL,
-            '{}',
-            1,
-            1,
-            NULL
-          );
-
-        INSERT INTO edges (
-          id,
-          workspace_id,
-          src_node_id,
-          dst_node_id,
-          relation,
-          context,
-          confidence,
-          confidence_score,
-          weight,
-          properties_json,
-          first_seen_run_id,
-          last_seen_run_id,
-          valid_to_run_id
-        )
-        VALUES
-          (
-            'edge-file-run',
-            1,
-            'file-src-lib',
-            'symbol-run',
-            'contains',
-            'document-symbol',
-            'EXTRACTED',
-            1.0,
-            1.0,
-            '{"source":"documentSymbol"}',
-            1,
-            1,
-            NULL
-          ),
-          (
-            'edge-module-run',
-            1,
-            'module-root',
-            'symbol-run',
-            'contains',
-            'document-symbol',
-            'EXTRACTED',
-            1.0,
-            1.0,
-            '{}',
-            1,
-            1,
-            NULL
-          ),
-          (
-            'edge-run-helper',
-            1,
-            'symbol-run',
-            'symbol-helper',
-            'contains',
-            'document-symbol',
-            'EXTRACTED',
-            1.0,
-            1.0,
-            '{}',
-            1,
-            1,
-            NULL
-          ),
-          (
-            'edge-run-helper-reference',
-            1,
-            'symbol-run',
-            'symbol-helper',
-            'references',
-            'symbol',
-            'EXTRACTED',
-            1.0,
-            2.0,
-            '{"source_resolution":"symbol"}',
-            1,
-            1,
-            NULL
-          ),
-          (
-            'edge-run-helper-call',
-            1,
-            'symbol-run',
-            'symbol-helper',
-            'calls',
-            'direct',
-            'EXTRACTED',
-            1.0,
-            2.0,
-            '{"source_resolution":"symbol"}',
-            1,
-            1,
-            NULL
-          );
-
-        INSERT INTO occurrences (
-          id,
-          node_id,
-          run_id,
-          file_id,
-          role,
-          start_line,
-          start_col,
-          end_line,
-          end_col,
-          enclosing_node_id,
-          raw_json
-        )
-        VALUES
-          (
-            1,
-            'symbol-run',
-            1,
-            1,
-            'definition',
-            10,
-            4,
-            12,
-            5,
-            'module-root',
-            '{"source":"occurrence"}'
-          ),
-          (
-            2,
-            'symbol-helper',
-            1,
-            1,
-            'reference',
-            11,
-            8,
-            11,
-            14,
-            'symbol-run',
-            '{"source":"reference-occurrence"}'
-          ),
-          (
-            3,
-            'symbol-helper',
-            1,
-            1,
-            'call',
-            11,
-            8,
-            11,
-            14,
-            'symbol-run',
-            '{"source":"call-occurrence"}'
-          );
-
-        INSERT INTO edge_evidence (
-          id,
-          edge_id,
-          run_id,
-          provider,
-          lsp_method,
-          file_id,
-          start_line,
-          start_col,
-          end_line,
-          end_col,
-          raw_json
-        )
-        VALUES
-          (
-            1,
-            'edge-file-run',
-            1,
-            'rust-analyzer',
-            'textDocument/documentSymbol',
-            1,
-            10,
-            4,
-            12,
-            5,
-            '{"source":"edge-evidence"}'
-          ),
-          (
-            2,
-            'edge-run-helper-reference',
-            1,
-            'rust-analyzer',
-            'textDocument/references',
-            1,
-            11,
-            8,
-            11,
-            14,
-            '{"source":"reference-evidence"}'
-          ),
-          (
-            3,
-            'edge-run-helper-call',
-            1,
-            'rust-analyzer',
-            'callHierarchy/outgoingCalls',
-            1,
-            11,
-            8,
-            11,
-            14,
-            '{"source":"call-evidence"}'
-          );
-        "#,
-    )
-    .execute(pool)
-    .await?;
-
-    Ok(())
+fn range(start_line: i64, start_col: i64, end_line: i64, end_col: i64) -> TextRange {
+    TextRange {
+        start_line,
+        start_col,
+        end_line,
+        end_col,
+    }
 }
 
 fn temp_database_path() -> Result<PathBuf, Box<dyn Error>> {

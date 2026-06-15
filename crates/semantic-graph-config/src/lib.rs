@@ -4,14 +4,17 @@ mod error;
 mod load_options;
 mod raw_config;
 mod raw_database_config;
+mod raw_writer_config;
 mod resolved_database_path;
 mod resolved_database_path_source;
 #[cfg(test)]
 mod tests;
+mod writer_config;
 
 // ---------------------------------------------------------------------------------------------- //
 
 pub(crate) use raw_database_config::RawDatabaseConfig;
+pub(crate) use raw_writer_config::RawWriterConfig;
 
 pub use config::Config;
 pub use database_config::DatabaseConfig;
@@ -20,6 +23,7 @@ pub use load_options::LoadOptions;
 pub use raw_config::load_config;
 pub use resolved_database_path::ResolvedDatabasePath;
 pub use resolved_database_path_source::ResolvedDatabasePathSource;
+pub use writer_config::WriterConfig;
 
 // ---------------------------------------------------------------------------------------------- //
 

@@ -26,6 +26,13 @@ pub enum ConfigError {
         config_path: Option<PathBuf>,
         location: ErrorLocation,
     },
+
+    #[error("invalid writer setting setting={setting} at {location}: {message}")]
+    InvalidWriterSetting {
+        setting: String,
+        message: String,
+        location: ErrorLocation,
+    },
 }
 
 impl ConfigError {
@@ -56,11 +63,21 @@ impl ConfigError {
         }
     }
 
+    #[track_caller]
+    pub fn invalid_writer_setting(setting: impl Into<String>, message: impl Into<String>) -> Self {
+        Self::InvalidWriterSetting {
+            setting: setting.into(),
+            message: message.into(),
+            location: ErrorLocation::from(Location::caller()),
+        }
+    }
+
     pub fn message(&self) -> &'static str {
         match self {
             Self::Io { .. } => "io error",
             Self::Toml { .. } => "toml error",
             Self::MissingDatabasePath { .. } => "missing database path",
+            Self::InvalidWriterSetting { .. } => "invalid writer setting",
         }
     }
 
@@ -68,7 +85,8 @@ impl ConfigError {
         match self {
             Self::Io { location, .. }
             | Self::Toml { location, .. }
-            | Self::MissingDatabasePath { location, .. } => *location,
+            | Self::MissingDatabasePath { location, .. }
+            | Self::InvalidWriterSetting { location, .. } => *location,
         }
     }
 }

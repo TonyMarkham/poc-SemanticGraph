@@ -1,2 +1,8 @@
 [database]
 path = "./content.db"
+
+[writer]
+queue_capacity = 4096
+max_rows_per_commit = 1000
+max_millis_per_commit = 250
+busy_timeout_ms = 5000

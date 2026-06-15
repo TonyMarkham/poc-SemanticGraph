@@ -4,13 +4,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use semantic_graph_db_manager::WriteManager;
 use semantic_graph_extract::document_symbols::paths::file_uri;
 use semantic_graph_extract::model::{
     CallBatchRequest, DocumentSymbolBatchRequest, ReferenceBatchRequest,
 };
 use semantic_graph_extract::persist::ExtractionPersister;
 use semantic_graph_extract::providers::rust_analyzer::RustAnalyzerProvider;
-use semantic_graph_store::GraphStore;
 use tokio::runtime::Builder;
 
 static WORKSPACE_LOAD_LOCK: Mutex<()> = Mutex::new(());
@@ -83,12 +83,13 @@ fn extractor_route_persists_wip_batch_without_binary() -> Result<(), Box<dyn Err
         );
 
         let db_path = temp_db_path("wip-batch")?;
-        let store = GraphStore::connect(&db_path).await?;
+        let store = WriteManager::start(&db_path).await?;
         store.migrate().await?;
         let workspace_root_uri = file_uri(&repo_root)?;
         let summary = ExtractionPersister
             .persist_document_symbol_batch(&store, &workspace_root_uri, &extraction)
             .await?;
+        store.shutdown().await?;
 
         assert_eq!(summary.files, 4);
         assert!(summary.nodes > 3);
@@ -150,12 +151,13 @@ fn workspace_route_persists_workspace_batch_without_binary() -> Result<(), Box<d
         );
 
         let db_path = temp_db_path("workspace-batch")?;
-        let store = GraphStore::connect(&db_path).await?;
+        let store = WriteManager::start(&db_path).await?;
         store.migrate().await?;
         let workspace_root_uri = file_uri(&repo_root)?;
         let summary = ExtractionPersister
             .persist_document_symbol_batch(&store, &workspace_root_uri, &extraction)
             .await?;
+        store.shutdown().await?;
 
         assert_eq!(summary.files, file_count);
         assert!(summary.nodes > summary.files);
@@ -194,7 +196,7 @@ fn workspace_route_persists_workspace_references_without_binary() -> Result<(), 
         assert!(extraction.summary.reference_occurrences > 0);
 
         let db_path = temp_db_path("workspace-references")?;
-        let store = GraphStore::connect(&db_path).await?;
+        let store = WriteManager::start(&db_path).await?;
         store.migrate().await?;
         let workspace_root_uri = file_uri(&repo_root)?;
         ExtractionPersister
@@ -207,6 +209,7 @@ fn workspace_route_persists_workspace_references_without_binary() -> Result<(), 
         let summary = ExtractionPersister
             .persist_reference_batch(&store, &workspace_root_uri, &extraction)
             .await?;
+        store.shutdown().await?;
 
         assert_eq!(summary.files, 0);
         assert_eq!(summary.reference_edges, extraction.summary.reference_edges);
@@ -247,7 +250,7 @@ fn workspace_route_persists_workspace_calls_without_binary() -> Result<(), Box<d
         assert!(extraction.summary.call_occurrences > 0);
 
         let db_path = temp_db_path("workspace-calls")?;
-        let store = GraphStore::connect(&db_path).await?;
+        let store = WriteManager::start(&db_path).await?;
         store.migrate().await?;
         let workspace_root_uri = file_uri(&repo_root)?;
         ExtractionPersister
@@ -260,6 +263,7 @@ fn workspace_route_persists_workspace_calls_without_binary() -> Result<(), Box<d
         let summary = ExtractionPersister
             .persist_call_batch(&store, &workspace_root_uri, &extraction)
             .await?;
+        store.shutdown().await?;
 
         assert_eq!(summary.files, 0);
         assert_eq!(summary.call_edges, extraction.summary.call_edges);

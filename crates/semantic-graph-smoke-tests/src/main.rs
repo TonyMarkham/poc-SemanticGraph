@@ -4,13 +4,13 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use lsp_types::DocumentSymbol;
+use semantic_graph_db_manager::WriteManager;
 use semantic_graph_extract::document_symbols::paths::file_uri;
 use semantic_graph_extract::model::{
     CallBatchRequest, DocumentSymbolBatchRequest, ReferenceBatchRequest,
 };
 use semantic_graph_extract::persist::ExtractionPersister;
 use semantic_graph_extract::providers::rust_analyzer::RustAnalyzerProvider;
-use semantic_graph_store::GraphStore;
 
 #[tokio::main]
 async fn main() {
@@ -94,12 +94,13 @@ async fn run() -> Result<(), Box<dyn Error>> {
     )?;
 
     let db_path = temp_db_path("crate")?;
-    let store = GraphStore::connect(&db_path).await?;
+    let store = WriteManager::start(&db_path).await?;
     store.migrate().await?;
     let workspace_root_uri = file_uri(&workspace_root)?;
     let summary = ExtractionPersister
         .persist_document_symbol_batch(&store, &workspace_root_uri, &extraction)
         .await?;
+    store.shutdown().await?;
     println!("crate.persistence.db={}", db_path.display());
     println!("crate.persistence.files={}", summary.files);
     println!("crate.persistence.nodes={}", summary.nodes);
@@ -167,11 +168,12 @@ async fn run() -> Result<(), Box<dyn Error>> {
     )?;
 
     let workspace_db_path = temp_db_path("workspace")?;
-    let workspace_store = GraphStore::connect(&workspace_db_path).await?;
+    let workspace_store = WriteManager::start(&workspace_db_path).await?;
     workspace_store.migrate().await?;
     let workspace_summary = ExtractionPersister
         .persist_document_symbol_batch(&workspace_store, &workspace_root_uri, &workspace_extraction)
         .await?;
+    workspace_store.shutdown().await?;
     println!("workspace.persistence.db={}", workspace_db_path.display());
     println!("workspace.persistence.files={}", workspace_summary.files);
     println!("workspace.persistence.nodes={}", workspace_summary.nodes);
@@ -250,7 +252,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
     )?;
 
     let reference_db_path = temp_db_path("workspace-references")?;
-    let reference_store = GraphStore::connect(&reference_db_path).await?;
+    let reference_store = WriteManager::start(&reference_db_path).await?;
     reference_store.migrate().await?;
     let reference_base_summary = ExtractionPersister
         .persist_document_symbol_batch(
@@ -262,6 +264,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
     let reference_summary = ExtractionPersister
         .persist_reference_batch(&reference_store, &workspace_root_uri, &reference_extraction)
         .await?;
+    reference_store.shutdown().await?;
     println!(
         "workspace.references.persistence.db={}",
         reference_db_path.display()
@@ -387,7 +390,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
     )?;
 
     let call_db_path = temp_db_path("workspace-calls")?;
-    let call_store = GraphStore::connect(&call_db_path).await?;
+    let call_store = WriteManager::start(&call_db_path).await?;
     call_store.migrate().await?;
     let call_base_summary = ExtractionPersister
         .persist_document_symbol_batch(
@@ -399,6 +402,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
     let call_summary = ExtractionPersister
         .persist_call_batch(&call_store, &workspace_root_uri, &call_extraction)
         .await?;
+    call_store.shutdown().await?;
     println!("workspace.calls.persistence.db={}", call_db_path.display());
     println!("workspace.calls.base.files={}", call_base_summary.files);
     println!("workspace.calls.base.nodes={}", call_base_summary.nodes);

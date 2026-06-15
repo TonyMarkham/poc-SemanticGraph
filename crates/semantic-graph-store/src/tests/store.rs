@@ -3,10 +3,11 @@ use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::{
-    CloseStaleRouteInput, EdgeInput, FileInput, GraphStore, GraphStoreStats, NodeInput,
+use crate::{GraphStore, GraphStoreResult, GraphStoreStats};
+use semantic_graph_db_manager::{
+    CloseStaleRouteInput, DbManagerResult, DemoSeedSummary, EdgeInput, FileInput, NodeInput,
     RouteObservationInput, RouteStatusCompleteInput, RouteStatusFailInput, RouteStatusStartInput,
-    TextRange, edge_id, node_id,
+    TextRange, WriteHandle, WriteManager, edge_id, node_id,
 };
 use serde_json::json;
 use sqlx::SqlitePool;
@@ -26,23 +27,108 @@ fn temp_db_path() -> std::result::Result<PathBuf, Box<dyn Error>> {
     )))
 }
 
-async fn migrated_store() -> std::result::Result<GraphStore, Box<dyn Error>> {
+struct TestStore {
+    writer: WriteHandle,
+    path: PathBuf,
+}
+
+impl TestStore {
+    async fn create_workspace(&self, root_uri: &str, kind: &str) -> DbManagerResult<i64> {
+        self.writer.create_workspace(root_uri, kind).await
+    }
+
+    async fn start_run(
+        &self,
+        workspace_id: i64,
+        provider: &str,
+        provider_version: Option<&str>,
+        git_commit: Option<&str>,
+    ) -> DbManagerResult<i64> {
+        self.writer
+            .start_run(workspace_id, provider, provider_version, git_commit)
+            .await
+    }
+
+    async fn upsert_file(&self, input: FileInput<'_>) -> DbManagerResult<i64> {
+        self.writer.upsert_file(input).await
+    }
+
+    async fn upsert_node(&self, input: NodeInput<'_>) -> DbManagerResult<String> {
+        self.writer.upsert_node(input).await
+    }
+
+    async fn upsert_edge(&self, input: EdgeInput<'_>) -> DbManagerResult<String> {
+        self.writer.upsert_edge(input).await
+    }
+
+    async fn start_route_status(&self, input: RouteStatusStartInput<'_>) -> DbManagerResult<i64> {
+        self.writer.start_route_status(input).await
+    }
+
+    async fn complete_route_status(
+        &self,
+        input: RouteStatusCompleteInput<'_>,
+    ) -> DbManagerResult<()> {
+        self.writer.complete_route_status(input).await
+    }
+
+    async fn fail_route_status(&self, input: RouteStatusFailInput<'_>) -> DbManagerResult<()> {
+        self.writer.fail_route_status(input).await
+    }
+
+    async fn record_route_observation(
+        &self,
+        input: RouteObservationInput<'_>,
+    ) -> DbManagerResult<()> {
+        self.writer.record_route_observation(input).await
+    }
+
+    async fn close_stale_nodes_for_route(
+        &self,
+        input: CloseStaleRouteInput<'_>,
+    ) -> DbManagerResult<u64> {
+        self.writer.close_stale_nodes_for_route(input).await
+    }
+
+    async fn close_stale_edges_for_route(
+        &self,
+        input: CloseStaleRouteInput<'_>,
+    ) -> DbManagerResult<u64> {
+        self.writer.close_stale_edges_for_route(input).await
+    }
+
+    async fn demo_seed(&self, root_uri: &str) -> DbManagerResult<DemoSeedSummary> {
+        self.writer.demo_seed(root_uri).await
+    }
+
+    async fn stats(&self) -> GraphStoreResult<GraphStoreStats> {
+        GraphStore::connect(&self.path).await?.stats().await
+    }
+}
+
+async fn migrated_store() -> std::result::Result<TestStore, Box<dyn Error>> {
     let (store, _path) = migrated_store_with_path().await?;
     Ok(store)
 }
 
-async fn migrated_store_with_path() -> std::result::Result<(GraphStore, PathBuf), Box<dyn Error>> {
+async fn migrated_store_with_path() -> std::result::Result<(TestStore, PathBuf), Box<dyn Error>> {
     let path = temp_db_path()?;
-    let store = GraphStore::connect(&path).await?;
-    store.migrate().await?;
+    let writer = WriteManager::start(&path).await?;
+    writer.migrate().await?;
+    let store = TestStore {
+        writer,
+        path: path.clone(),
+    };
     Ok((store, path))
 }
 
 #[tokio::test]
 async fn migration_creates_empty_core_schema() -> std::result::Result<(), Box<dyn Error>> {
     let path = temp_db_path()?;
+    let writer = WriteManager::start(&path).await?;
+    writer.migrate().await?;
+    writer.shutdown().await?;
     let store = GraphStore::connect(&path).await?;
-    store.migrate().await?;
 
     assert_eq!(
         store.stats().await?,
@@ -933,7 +1019,7 @@ async fn sqlite_pool(path: &Path) -> std::result::Result<SqlitePool, Box<dyn Err
 }
 
 async fn insert_file(
-    store: &GraphStore,
+    store: &TestStore,
     workspace_id: i64,
     run_id: i64,
     path: &str,
@@ -953,7 +1039,7 @@ async fn insert_file(
 }
 
 async fn insert_node(
-    store: &GraphStore,
+    store: &TestStore,
     workspace_id: i64,
     run_id: i64,
     file_id: i64,
@@ -980,7 +1066,7 @@ async fn insert_node(
 }
 
 async fn insert_edge(
-    store: &GraphStore,
+    store: &TestStore,
     workspace_id: i64,
     run_id: i64,
     src_node_id: &str,
@@ -1004,7 +1090,7 @@ async fn insert_edge(
 }
 
 async fn complete_file_route(
-    store: &GraphStore,
+    store: &TestStore,
     workspace_id: i64,
     run_id: i64,
     file_id: i64,
@@ -1041,7 +1127,7 @@ async fn complete_file_route(
 }
 
 async fn complete_workspace_route(
-    store: &GraphStore,
+    store: &TestStore,
     workspace_id: i64,
     run_id: i64,
     scope_key: &str,
@@ -1077,7 +1163,7 @@ async fn complete_workspace_route(
 }
 
 async fn complete_call_route(
-    store: &GraphStore,
+    store: &TestStore,
     workspace_id: i64,
     run_id: i64,
     scope_key: &str,
@@ -1113,7 +1199,7 @@ async fn complete_call_route(
 }
 
 async fn record_node_observation(
-    store: &GraphStore,
+    store: &TestStore,
     workspace_id: i64,
     run_id: i64,
     scope_key: &str,
@@ -1138,7 +1224,7 @@ async fn record_node_observation(
 }
 
 async fn record_edge_observation(
-    store: &GraphStore,
+    store: &TestStore,
     workspace_id: i64,
     run_id: i64,
     scope_key: &str,
@@ -1163,7 +1249,7 @@ async fn record_edge_observation(
 }
 
 async fn record_reference_observation(
-    store: &GraphStore,
+    store: &TestStore,
     workspace_id: i64,
     run_id: i64,
     scope_key: &str,
@@ -1188,7 +1274,7 @@ async fn record_reference_observation(
 }
 
 async fn record_call_observation(
-    store: &GraphStore,
+    store: &TestStore,
     workspace_id: i64,
     run_id: i64,
     scope_key: &str,

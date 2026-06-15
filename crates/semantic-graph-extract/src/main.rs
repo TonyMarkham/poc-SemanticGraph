@@ -11,11 +11,14 @@ use semantic_graph_extract::{
     providers::rust_analyzer::RustAnalyzerProvider,
 };
 
-use semantic_graph_config::{LoadOptions, resolve_database_path};
-use semantic_graph_store::GraphStore;
+use semantic_graph_config::{LoadOptions, discover_config, load_config, resolve_database_path};
+use semantic_graph_db_manager::{Config, WriteHandle, WriteManager};
 
 use clap::{Parser, Subcommand};
-use std::path::{Path, PathBuf};
+use std::{
+    error::Error,
+    path::{Path, PathBuf},
+};
 
 #[derive(Debug, Parser)]
 #[command(about = "Language-server-backed semantic graph extraction prototype")]
@@ -82,8 +85,18 @@ enum Command {
 #[tokio::main]
 async fn main() {
     if let Err(error) = run().await {
-        eprintln!("{error}");
+        print_error(&error);
         std::process::exit(1);
+    }
+}
+
+fn print_error(error: &dyn Error) {
+    eprintln!("{error}");
+
+    let mut source = error.source();
+    while let Some(error) = source {
+        eprintln!("caused by: {error}");
+        source = error.source();
     }
 }
 
@@ -105,16 +118,14 @@ async fn run() -> ExtractResult<()> {
             })?;
             let workspace_root_uri = file_uri(&request.workspace_root)?;
             let db = resolve_cli_database_path(db, &config, &request.workspace_root)?;
-            let store = GraphStore::connect(db)
-                .await
-                .map_err(ExtractError::storage)?;
-            store.migrate().await.map_err(ExtractError::storage)?;
+            let store = start_writer(db, &config, &request.workspace_root).await?;
 
             let provider = RustAnalyzerProvider::new();
             let extraction = provider.extract_document_symbols(request).await?;
             let summary = ExtractionPersister
                 .persist_document_symbols(&store, &workspace_root_uri, &extraction)
                 .await?;
+            shutdown_writer(&store).await?;
 
             println!(
                 "workspace={} run={} files={} nodes={} edges={} occurrences={} evidence={}",
@@ -141,15 +152,13 @@ async fn run() -> ExtractResult<()> {
             })?;
             let workspace_root_uri = file_uri(&request.workspace_root)?;
             let db = resolve_cli_database_path(db, &config, &request.workspace_root)?;
-            let store = GraphStore::connect(db)
-                .await
-                .map_err(ExtractError::storage)?;
-            store.migrate().await.map_err(ExtractError::storage)?;
+            let store = start_writer(db, &config, &request.workspace_root).await?;
 
             let extraction = provider.extract_document_symbol_batch(request).await?;
             let summary = ExtractionPersister
                 .persist_document_symbol_batch(&store, &workspace_root_uri, &extraction)
                 .await?;
+            shutdown_writer(&store).await?;
 
             println!(
                 "workspace={} run={} files={} nodes={} edges={} occurrences={} evidence={}",
@@ -172,15 +181,13 @@ async fn run() -> ExtractResult<()> {
             })?;
             let workspace_root_uri = file_uri(&request.workspace_root)?;
             let db = resolve_cli_database_path(db, &config, &request.workspace_root)?;
-            let store = GraphStore::connect(db)
-                .await
-                .map_err(ExtractError::storage)?;
-            store.migrate().await.map_err(ExtractError::storage)?;
+            let store = start_writer(db, &config, &request.workspace_root).await?;
 
             let extraction = provider.extract_document_symbol_batch(request).await?;
             let summary = ExtractionPersister
                 .persist_document_symbol_batch(&store, &workspace_root_uri, &extraction)
                 .await?;
+            shutdown_writer(&store).await?;
 
             println!(
                 "workspace={} run={} files={} nodes={} edges={} occurrences={} evidence={}",
@@ -204,10 +211,7 @@ async fn run() -> ExtractResult<()> {
                 })?;
             let workspace_root_uri = file_uri(&document_request.workspace_root)?;
             let db = resolve_cli_database_path(db, &config, &document_request.workspace_root)?;
-            let store = GraphStore::connect(db)
-                .await
-                .map_err(ExtractError::storage)?;
-            store.migrate().await.map_err(ExtractError::storage)?;
+            let store = start_writer(db, &config, &document_request.workspace_root).await?;
 
             let extraction = provider
                 .extract_rust_references(ReferenceBatchRequest {
@@ -219,6 +223,7 @@ async fn run() -> ExtractResult<()> {
             let summary = ExtractionPersister
                 .persist_reference_batch(&store, &workspace_root_uri, &extraction)
                 .await?;
+            shutdown_writer(&store).await?;
 
             println!(
                 "workspace={} run={} targets={} references_edges={} reference_occurrences={} evidence={} stale_edges_closed={}",
@@ -242,10 +247,7 @@ async fn run() -> ExtractResult<()> {
                 })?;
             let workspace_root_uri = file_uri(&document_request.workspace_root)?;
             let db = resolve_cli_database_path(db, &config, &document_request.workspace_root)?;
-            let store = GraphStore::connect(db)
-                .await
-                .map_err(ExtractError::storage)?;
-            store.migrate().await.map_err(ExtractError::storage)?;
+            let store = start_writer(db, &config, &document_request.workspace_root).await?;
 
             let extraction = provider
                 .extract_rust_calls(CallBatchRequest {
@@ -257,6 +259,7 @@ async fn run() -> ExtractResult<()> {
             let summary = ExtractionPersister
                 .persist_call_batch(&store, &workspace_root_uri, &extraction)
                 .await?;
+            shutdown_writer(&store).await?;
 
             println!(
                 "workspace={} run={} callable_nodes={} calls_edges={} call_occurrences={} evidence={} skipped_external_targets={} skipped_unresolved_targets={} stale_edges_closed={}",
@@ -282,10 +285,7 @@ async fn run() -> ExtractResult<()> {
                 })?;
             let workspace_root_uri = file_uri(&document_request.workspace_root)?;
             let db = resolve_cli_database_path(db, &config, &document_request.workspace_root)?;
-            let store = GraphStore::connect(db)
-                .await
-                .map_err(ExtractError::storage)?;
-            store.migrate().await.map_err(ExtractError::storage)?;
+            let store = start_writer(db, &config, &document_request.workspace_root).await?;
 
             let reference_extraction = provider
                 .extract_rust_references(ReferenceBatchRequest {
@@ -314,6 +314,7 @@ async fn run() -> ExtractResult<()> {
             let call_summary = ExtractionPersister
                 .persist_call_batch(&store, &workspace_root_uri, &call_extraction)
                 .await?;
+            shutdown_writer(&store).await?;
 
             println!(
                 "workspace={} document_run={} reference_run={} call_run={} files={} nodes={} contains_edges={} references_edges={} reference_occurrences={} calls_edges={} call_occurrences={} evidence={} routes_complete={} stale_nodes_closed={} stale_edges_closed={}",
@@ -341,6 +342,44 @@ async fn run() -> ExtractResult<()> {
     }
 
     Ok(())
+}
+
+async fn start_writer(
+    db: PathBuf,
+    config: &Option<PathBuf>,
+    workspace_root: &Path,
+) -> ExtractResult<WriteHandle> {
+    let writer_config = resolve_cli_writer_config(config, workspace_root)?;
+    let writer = WriteManager::start_with_config(db, writer_config)
+        .await
+        .map_err(ExtractError::storage)?;
+    writer.migrate().await.map_err(ExtractError::storage)?;
+    Ok(writer)
+}
+
+async fn shutdown_writer(writer: &WriteHandle) -> ExtractResult<()> {
+    writer
+        .shutdown()
+        .await
+        .map(|_| ())
+        .map_err(ExtractError::storage)
+}
+
+fn resolve_cli_writer_config(
+    config: &Option<PathBuf>,
+    workspace_root: &Path,
+) -> ExtractResult<Config> {
+    let config_path = match config {
+        Some(path) => Some(path.clone()),
+        None => discover_config(workspace_root).map_err(ExtractError::config)?,
+    };
+
+    let Some(config_path) = config_path else {
+        return Ok(Config::default());
+    };
+
+    let config = load_config(config_path).map_err(ExtractError::config)?;
+    Ok(Config::from(config.writer()))
 }
 
 fn resolve_cli_database_path(

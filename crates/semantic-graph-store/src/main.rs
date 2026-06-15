@@ -1,4 +1,5 @@
-use semantic_graph_config::{LoadOptions, resolve_database_path};
+use semantic_graph_config::{LoadOptions, discover_config, load_config, resolve_database_path};
+use semantic_graph_db_manager::{Config, WriteManager};
 use semantic_graph_store::{GraphStore, GraphStoreResult};
 
 use clap::{Parser, Subcommand};
@@ -47,15 +48,38 @@ async fn run() -> GraphStoreResult<()> {
     match cli.command {
         Command::Init { db } => {
             let db = resolve_cli_database_path(db, &config)?;
-            let store = GraphStore::connect(db).await?;
-            store.migrate().await?;
+            let writer_config = resolve_cli_writer_config(&config)?;
+            let writer = WriteManager::start_with_config(db, writer_config)
+                .await
+                .map_err(semantic_graph_store::GraphStoreError::db_manager)?;
+            writer
+                .migrate()
+                .await
+                .map_err(semantic_graph_store::GraphStoreError::db_manager)?;
+            writer
+                .shutdown()
+                .await
+                .map_err(semantic_graph_store::GraphStoreError::db_manager)?;
             println!("initialized");
         }
         Command::DemoSeed { db, root_uri } => {
             let db = resolve_cli_database_path(db, &config)?;
-            let store = GraphStore::connect(db).await?;
-            store.migrate().await?;
-            let summary = store.demo_seed(&root_uri).await?;
+            let writer_config = resolve_cli_writer_config(&config)?;
+            let writer = WriteManager::start_with_config(db, writer_config)
+                .await
+                .map_err(semantic_graph_store::GraphStoreError::db_manager)?;
+            writer
+                .migrate()
+                .await
+                .map_err(semantic_graph_store::GraphStoreError::db_manager)?;
+            let summary = writer
+                .demo_seed(&root_uri)
+                .await
+                .map_err(semantic_graph_store::GraphStoreError::db_manager)?;
+            writer
+                .shutdown()
+                .await
+                .map_err(semantic_graph_store::GraphStoreError::db_manager)?;
             println!(
                 "seeded workspace={} run={} file={} edge={}",
                 summary.workspace_id, summary.run_id, summary.file_id, summary.edge_id
@@ -63,8 +87,19 @@ async fn run() -> GraphStoreResult<()> {
         }
         Command::Stats { db } => {
             let db = resolve_cli_database_path(db, &config)?;
+            let writer_config = resolve_cli_writer_config(&config)?;
+            let writer = WriteManager::start_with_config(&db, writer_config)
+                .await
+                .map_err(semantic_graph_store::GraphStoreError::db_manager)?;
+            writer
+                .migrate()
+                .await
+                .map_err(semantic_graph_store::GraphStoreError::db_manager)?;
+            writer
+                .shutdown()
+                .await
+                .map_err(semantic_graph_store::GraphStoreError::db_manager)?;
             let store = GraphStore::connect(db).await?;
-            store.migrate().await?;
             let stats = store.stats().await?;
             println!("workspaces={}", stats.workspaces);
             println!("extraction_runs={}", stats.extraction_runs);
@@ -77,6 +112,21 @@ async fn run() -> GraphStoreResult<()> {
     }
 
     Ok(())
+}
+
+fn resolve_cli_writer_config(config: &Option<PathBuf>) -> GraphStoreResult<Config> {
+    let config_path = match config {
+        Some(path) => Some(path.clone()),
+        None => discover_config(PathBuf::from("."))
+            .map_err(semantic_graph_store::GraphStoreError::config)?,
+    };
+
+    let Some(config_path) = config_path else {
+        return Ok(Config::default());
+    };
+
+    let config = load_config(config_path).map_err(semantic_graph_store::GraphStoreError::config)?;
+    Ok(Config::from(config.writer()))
 }
 
 fn resolve_cli_database_path(

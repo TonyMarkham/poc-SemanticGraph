@@ -13,6 +13,7 @@ use crate::model::{
 use crate::persist::ExtractionPersister;
 use crate::providers::rust_analyzer::RustDocumentSymbolMapper;
 use lsp_types::DocumentSymbolResponse;
+use semantic_graph_db_manager::WriteManager;
 use semantic_graph_store::{GraphStore, GraphStoreStats};
 use serde_json::json;
 use sqlx::SqlitePool;
@@ -159,15 +160,17 @@ fn maps_hierarchical_fixture_to_provider_neutral_records() -> std::result::Resul
 #[tokio::test]
 async fn persists_fixture_symbols_into_sqlite() -> std::result::Result<(), Box<dyn Error>> {
     let db_path = temp_db_path()?;
-    let store = GraphStore::connect(&db_path).await?;
-    store.migrate().await?;
+    let writer = WriteManager::start(&db_path).await?;
+    writer.migrate().await?;
     let workspace_root_uri = file_uri(&repo_root()?)?;
     let extraction =
         RustDocumentSymbolMapper::map_response(request()?, fixture_response()?, None, json!({}))?;
 
     let summary = ExtractionPersister
-        .persist_document_symbols(&store, &workspace_root_uri, &extraction)
+        .persist_document_symbols(&writer, &workspace_root_uri, &extraction)
         .await?;
+    writer.shutdown().await?;
+    let store = GraphStore::connect(&db_path).await?;
 
     assert_eq!(summary.files, 1);
     assert_eq!(summary.nodes, 5);
@@ -217,14 +220,16 @@ async fn persists_fixture_symbols_into_sqlite() -> std::result::Result<(), Box<d
 async fn persists_batch_fixture_symbols_into_one_sqlite_run()
 -> std::result::Result<(), Box<dyn Error>> {
     let db_path = temp_db_path()?;
-    let store = GraphStore::connect(&db_path).await?;
-    store.migrate().await?;
+    let writer = WriteManager::start(&db_path).await?;
+    writer.migrate().await?;
     let workspace_root_uri = file_uri(&repo_root()?)?;
     let extraction = batch_fixture_extraction()?;
 
     let summary = ExtractionPersister
-        .persist_document_symbol_batch(&store, &workspace_root_uri, &extraction)
+        .persist_document_symbol_batch(&writer, &workspace_root_uri, &extraction)
         .await?;
+    writer.shutdown().await?;
+    let store = GraphStore::connect(&db_path).await?;
 
     assert_eq!(summary.files, 3);
     assert_eq!(summary.nodes, 27);

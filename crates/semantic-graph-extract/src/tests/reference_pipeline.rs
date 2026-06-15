@@ -11,7 +11,7 @@ use crate::model::ReferenceBatchRequest;
 use crate::persist::ExtractionPersister;
 use crate::providers::rust_analyzer::RustAnalyzerProvider;
 
-use semantic_graph_store::GraphStore;
+use semantic_graph_db_manager::WriteManager;
 use sqlx::SqlitePool;
 use tokio::runtime::Builder;
 
@@ -58,19 +58,20 @@ fn persists_reference_edges_occurrences_and_evidence() -> std::result::Result<()
         let workspace_root_uri = file_uri(&request.workspace_root)?;
         let extraction = provider.extract_rust_references(request).await?;
         let db_path = temp_db_path()?;
-        let store = GraphStore::connect(&db_path).await?;
-        store.migrate().await?;
+        let writer = WriteManager::start(&db_path).await?;
+        writer.migrate().await?;
         ExtractionPersister
             .persist_document_symbol_batch(
-                &store,
+                &writer,
                 &workspace_root_uri,
                 &extraction.document_symbols,
             )
             .await?;
 
         let summary = ExtractionPersister
-            .persist_reference_batch(&store, &workspace_root_uri, &extraction)
+            .persist_reference_batch(&writer, &workspace_root_uri, &extraction)
             .await?;
+        writer.shutdown().await?;
 
         assert_eq!(summary.files, 0);
         assert_eq!(summary.reference_edges, extraction.references.len());
@@ -127,17 +128,17 @@ fn later_successful_reference_run_closes_unobserved_reference_edges()
         assert!(!extraction.references.is_empty());
 
         let db_path = temp_db_path()?;
-        let store = GraphStore::connect(&db_path).await?;
-        store.migrate().await?;
+        let writer = WriteManager::start(&db_path).await?;
+        writer.migrate().await?;
         ExtractionPersister
             .persist_document_symbol_batch(
-                &store,
+                &writer,
                 &workspace_root_uri,
                 &extraction.document_symbols,
             )
             .await?;
         ExtractionPersister
-            .persist_reference_batch(&store, &workspace_root_uri, &extraction)
+            .persist_reference_batch(&writer, &workspace_root_uri, &extraction)
             .await?;
 
         let mut second_extraction = extraction.clone();
@@ -145,8 +146,9 @@ fn later_successful_reference_run_closes_unobserved_reference_edges()
         second_extraction.summary.reference_edges = 0;
         second_extraction.summary.reference_occurrences = 0;
         ExtractionPersister
-            .persist_reference_batch(&store, &workspace_root_uri, &second_extraction)
+            .persist_reference_batch(&writer, &workspace_root_uri, &second_extraction)
             .await?;
+        writer.shutdown().await?;
 
         let pool = sqlite_pool(&db_path).await?;
         let stale_reference_edges: i64 = sqlx::query_scalar(

@@ -18,6 +18,64 @@ fn parses_valid_config() -> Result<(), Box<dyn Error>> {
     let config = load_config(&config_path)?;
 
     assert_eq!(config.database().path(), &PathBuf::from(".local/test.db"));
+    assert_eq!(config.writer().queue_capacity(), 4096);
+    assert_eq!(config.writer().max_rows_per_commit(), 1000);
+    assert_eq!(config.writer().max_millis_per_commit(), 250);
+    assert_eq!(config.writer().busy_timeout_ms(), 5000);
+    Ok(())
+}
+
+#[test]
+fn parses_writer_config() -> Result<(), Box<dyn Error>> {
+    let root = temp_dir("parses-writer-config")?;
+    let config_dir = root.join(".refactor-radar");
+    fs::create_dir_all(&config_dir)?;
+    let config_path = config_dir.join("config.toml");
+    fs::write(
+        &config_path,
+        r#"
+[database]
+path = ".local/test.db"
+
+[writer]
+queue_capacity = 128
+max_rows_per_commit = 64
+max_millis_per_commit = 50
+busy_timeout_ms = 2500
+"#,
+    )?;
+
+    let config = load_config(&config_path)?;
+
+    assert_eq!(config.writer().queue_capacity(), 128);
+    assert_eq!(config.writer().max_rows_per_commit(), 64);
+    assert_eq!(config.writer().max_millis_per_commit(), 50);
+    assert_eq!(config.writer().busy_timeout_ms(), 2500);
+    Ok(())
+}
+
+#[test]
+fn rejects_invalid_writer_config() -> Result<(), Box<dyn Error>> {
+    let root = temp_dir("rejects-invalid-writer-config")?;
+    let config_dir = root.join(".refactor-radar");
+    fs::create_dir_all(&config_dir)?;
+    let config_path = config_dir.join("config.toml");
+    fs::write(
+        &config_path,
+        r#"
+[database]
+path = ".local/test.db"
+
+[writer]
+queue_capacity = 0
+"#,
+    )?;
+
+    let error = load_config(&config_path)
+        .err()
+        .ok_or("expected config error")?;
+
+    assert!(matches!(error, ConfigError::InvalidWriterSetting { .. }));
     Ok(())
 }
 

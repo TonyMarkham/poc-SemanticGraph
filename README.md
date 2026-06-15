@@ -20,12 +20,23 @@ every invocation. The default discovered location is:
 # .refactor-radar/config.toml
 [database]
 path = "content.db"
+
+# Optional; defaults shown.
+[writer]
+queue_capacity = 4096
+max_rows_per_commit = 1000
+max_millis_per_commit = 250
+busy_timeout_ms = 5000
 ```
 
 When the config file exists, `[database].path` is required. Relative database
 paths resolve relative to the directory containing the config file, so the
 example above points at `.refactor-radar/content.db` from the repo root. An
 absolute path is used as-is.
+
+The optional `[writer]` section configures the queued SQLite writer used by
+DB-backed write commands. Values must be greater than zero and are validated
+before extraction starts.
 
 Resolution precedence is:
 

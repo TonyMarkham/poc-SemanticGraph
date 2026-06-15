@@ -1,5 +1,6 @@
 use error_location::ErrorLocation;
 use semantic_graph_config::ConfigError;
+use semantic_graph_db_manager::DbManagerError;
 use std::{io, panic::Location, path::PathBuf};
 use thiserror::Error;
 
@@ -32,6 +33,13 @@ pub enum GraphStoreError {
     Config {
         #[source]
         source: Box<ConfigError>,
+        location: ErrorLocation,
+    },
+
+    #[error("db manager error at {location}")]
+    DbManager {
+        #[source]
+        source: Box<DbManagerError>,
         location: ErrorLocation,
     },
 }
@@ -71,12 +79,21 @@ impl GraphStoreError {
         }
     }
 
+    #[track_caller]
+    pub fn db_manager(source: DbManagerError) -> Self {
+        Self::DbManager {
+            source: Box::new(source),
+            location: ErrorLocation::from(Location::caller()),
+        }
+    }
+
     pub fn message(&self) -> &'static str {
         match self {
             Self::Database { .. } => "database error",
             Self::Migration { .. } => "migration error",
             Self::Io { .. } => "io error",
             Self::Config { .. } => "configuration error",
+            Self::DbManager { .. } => "db manager error",
         }
     }
 
@@ -85,7 +102,8 @@ impl GraphStoreError {
             Self::Database { location, .. }
             | Self::Migration { location, .. }
             | Self::Io { location, .. }
-            | Self::Config { location, .. } => *location,
+            | Self::Config { location, .. }
+            | Self::DbManager { location, .. } => *location,
         }
     }
 }

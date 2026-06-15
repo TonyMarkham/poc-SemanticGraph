@@ -2355,6 +2355,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "semantic-graph-db-manager"
+version = "0.1.0"
+dependencies = [
+ "error-location",
+ "hex",
+ "semantic-graph-config",
+ "serde_json",
+ "sha2 0.11.0",
+ "sqlx",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "semantic-graph-extract"
 version = "0.1.0"
 dependencies = [
@@ -2364,6 +2378,7 @@ dependencies = [
  "lsp-types",
  "rust-analyzer-lib",
  "semantic-graph-config",
+ "semantic-graph-db-manager",
  "semantic-graph-store",
  "serde_json",
  "sha2 0.11.0",
@@ -2378,8 +2393,8 @@ version = "0.1.0"
 dependencies = [
  "lsp-types",
  "rust-analyzer-lib",
+ "semantic-graph-db-manager",
  "semantic-graph-extract",
- "semantic-graph-store",
  "tokio",
 ]
 
@@ -2389,11 +2404,9 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "error-location",
- "hex",
  "semantic-graph-config",
- "serde",
+ "semantic-graph-db-manager",
  "serde_json",
- "sha2 0.11.0",
  "sqlx",
  "thiserror",
  "tokio",
@@ -2407,6 +2420,7 @@ dependencies = [
  "clap",
  "error-location",
  "semantic-graph-config",
+ "semantic-graph-db-manager",
  "serde",
  "serde_json",
  "sqlx",

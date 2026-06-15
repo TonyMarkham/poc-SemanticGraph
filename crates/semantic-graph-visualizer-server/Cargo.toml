@@ -4,17 +4,20 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-axum                  = { workspace = true }
-clap                  = { workspace = true }
-error-location        = { workspace = true }
-serde                 = { workspace = true }
-serde_json            = { workspace = true }
-sqlx                  = { workspace = true }
-thiserror             = { workspace = true }
-tokio                 = { workspace = true }
-tower-http            = { workspace = true }
+axum                      = { workspace = true }
+clap                      = { workspace = true }
+error-location            = { workspace = true }
+serde                     = { workspace = true }
+serde_json                = { workspace = true }
+sqlx                      = { workspace = true }
+thiserror                 = { workspace = true }
+tokio                     = { workspace = true }
+tower-http                = { workspace = true }
 
-semantic-graph-config = { workspace = true }
+semantic-graph-config     = { workspace = true }
+
+[dev-dependencies]
+semantic-graph-db-manager = { workspace = true }
 
 [lints]
-workspace             = true
+workspace                 = true

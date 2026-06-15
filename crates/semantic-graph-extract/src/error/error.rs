@@ -1,6 +1,6 @@
 use error_location::ErrorLocation;
 use semantic_graph_config::ConfigError;
-use semantic_graph_store::GraphStoreError;
+use semantic_graph_db_manager::DbManagerError;
 use std::{io, panic::Location, path::PathBuf};
 use thiserror::Error;
 
@@ -9,7 +9,7 @@ pub enum ExtractError {
     #[error("storage error at {location}")]
     Storage {
         #[source]
-        source: Box<GraphStoreError>,
+        source: Box<DbManagerError>,
         location: ErrorLocation,
     },
 
@@ -100,7 +100,7 @@ pub enum ExtractError {
 
 impl ExtractError {
     #[track_caller]
-    pub fn storage(source: GraphStoreError) -> Self {
+    pub fn storage(source: DbManagerError) -> Self {
         Self::Storage {
             source: Box::new(source),
             location: ErrorLocation::from(Location::caller()),
