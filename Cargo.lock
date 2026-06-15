@@ -2227,6 +2227,7 @@ dependencies = [
  "project-model",
  "syntax",
  "thiserror",
+ "tokio",
  "vfs",
 ]
 

@@ -24,7 +24,7 @@ pub fn outgoing_calls_for_symbols(
     Ok(call_sets)
 }
 
-fn outgoing_calls_for_target(
+pub(super) fn outgoing_calls_for_target(
     loaded: &LoadedAnalysis,
     caller: &ResolvedCallTarget,
 ) -> RustAnalyzerLibResult<ResolvedOutgoingCallSet> {

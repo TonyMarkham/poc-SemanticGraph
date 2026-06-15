@@ -1,19 +1,31 @@
-use crate::{RustAnalyzerLibError, RustAnalyzerLibResult};
+use crate::{
+    RustAnalyzerLibError, RustAnalyzerLibResult,
+    model::{
+        ResolvedCallTarget, ResolvedOutgoingCallSet, ResolvedReferenceSet, ResolvedReferenceTarget,
+    },
+    semantic::{
+        document_symbols_for_file::document_symbols_for_path,
+        file_semantic_result::FileSemanticResult, file_semantic_work::FileSemanticWork,
+        outgoing_calls_for_symbols::outgoing_calls_for_target,
+        references_for_symbols::references_for_target,
+    },
+};
 
 use ide::{AnalysisHost, FileId};
 use load_cargo::{LoadCargoConfig, ProcMacroServerChoice};
+use lsp_types::DocumentSymbol;
 use paths::AbsPathBuf;
 use project_model::{CargoConfig, ProjectManifest, ProjectWorkspace};
 use std::path::{Path, PathBuf};
 use vfs::{FileExcluded, VfsPath};
 
-pub(super) struct LoadedAnalysis {
+pub struct LoadedAnalysis {
     pub(super) analysis: ide::Analysis,
     pub(super) vfs: vfs::Vfs,
 }
 
 impl LoadedAnalysis {
-    pub(super) fn load(workspace_root: &Path) -> RustAnalyzerLibResult<Self> {
+    pub fn load(workspace_root: &Path) -> RustAnalyzerLibResult<Self> {
         let workspace_root = absolute_path(workspace_root, "canonicalize workspace root")?;
         let abs_root = AbsPathBuf::assert_utf8(workspace_root);
         let manifest = ProjectManifest::discover_single(&abs_root).map_err(|source| {
@@ -50,6 +62,54 @@ impl LoadedAnalysis {
         Ok(Self {
             analysis: host.analysis(),
             vfs,
+        })
+    }
+
+    pub fn document_symbols_for_files(
+        &self,
+        file_paths: &[PathBuf],
+    ) -> RustAnalyzerLibResult<Vec<(PathBuf, Vec<DocumentSymbol>)>> {
+        file_paths
+            .iter()
+            .map(|file_path| {
+                document_symbols_for_path(self, file_path)
+                    .map(|symbols| (file_path.clone(), symbols))
+            })
+            .collect()
+    }
+
+    pub fn references_for_symbol(
+        &self,
+        target: &ResolvedReferenceTarget,
+    ) -> RustAnalyzerLibResult<ResolvedReferenceSet> {
+        references_for_target(self, target)
+    }
+
+    pub fn outgoing_calls_for_symbol(
+        &self,
+        caller: &ResolvedCallTarget,
+    ) -> RustAnalyzerLibResult<ResolvedOutgoingCallSet> {
+        outgoing_calls_for_target(self, caller)
+    }
+
+    pub fn file_semantic_work(
+        &self,
+        work: FileSemanticWork,
+    ) -> RustAnalyzerLibResult<FileSemanticResult> {
+        let mut reference_sets = Vec::with_capacity(work.reference_targets.len());
+        for target in &work.reference_targets {
+            reference_sets.push(references_for_target(self, target)?);
+        }
+
+        let mut call_sets = Vec::with_capacity(work.call_targets.len());
+        for target in &work.call_targets {
+            call_sets.push(outgoing_calls_for_target(self, target)?);
+        }
+
+        Ok(FileSemanticResult {
+            file_path: work.file_path,
+            reference_sets,
+            call_sets,
         })
     }
 

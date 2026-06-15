@@ -4,9 +4,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use crate::{
-    ResolvedCallTarget, ResolvedReferenceTarget, document_symbols_for_file, load_workspace,
-    outgoing_calls_for_symbols, package_source_files, provider_version, references_for_symbols,
-    workspace_source_files,
+    AnalysisWorker, AnalysisWorkerPool, FileSemanticWork, ResolvedCallTarget,
+    ResolvedReferenceTarget, document_symbols_for_file, load_workspace, outgoing_calls_for_symbols,
+    package_source_files, provider_version, references_for_symbols, workspace_source_files,
 };
 use lsp_types::DocumentSymbol;
 
@@ -142,6 +142,115 @@ fn extracts_outgoing_calls_for_wip_callable() -> Result<(), Box<dyn Error>> {
                 && !call.callsite_ranges.is_empty())
     );
 
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn analysis_worker_serves_reference_and_call_queries() -> Result<(), Box<dyn Error>> {
+    let _guard = workspace_load_guard()?;
+    let repo_root = repo_root()?;
+    let target_file_path = repo_root.join("crates/wip/src/pipeline.rs");
+    let worker = AnalysisWorker::start(&repo_root)?;
+    let document_symbols = worker
+        .document_symbols_for_files(vec![target_file_path.clone()])
+        .await?;
+    let symbols = document_symbols
+        .first()
+        .ok_or_else(|| io::Error::other("analysis worker returned no document symbols"))?
+        .1
+        .as_slice();
+    let reference_target_symbol = find_symbol(symbols, "WidgetProcessor")
+        .ok_or_else(|| io::Error::other("WidgetProcessor symbol was not found"))?;
+    let call_target_symbol = find_symbol(symbols, "ingest")
+        .ok_or_else(|| io::Error::other("WidgetProcessor::ingest symbol was not found"))?;
+
+    let references = worker
+        .references_for_symbol(ResolvedReferenceTarget {
+            file_path: target_file_path.clone(),
+            selection_range: reference_target_symbol.selection_range,
+            name: reference_target_symbol.name.clone(),
+        })
+        .await?;
+    let calls = worker
+        .outgoing_calls_for_symbol(ResolvedCallTarget {
+            file_path: target_file_path.clone(),
+            selection_range: call_target_symbol.selection_range,
+            name: call_target_symbol.name.clone(),
+        })
+        .await?;
+    worker.shutdown().await?;
+
+    assert!(references.references.iter().any(|location| {
+        relative_path(&repo_root, &location.file_path).as_deref()
+            == Some("crates/wip/src/tests/mod.rs")
+    }));
+    assert!(calls.outgoing_calls.iter().any(|call| {
+        call.target_name == "upsert"
+            && relative_path(&repo_root, &call.target_file_path).as_deref()
+                == Some("crates/wip/src/pipeline.rs")
+    }));
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn analysis_worker_pool_serves_parallel_query_lanes() -> Result<(), Box<dyn Error>> {
+    let _guard = workspace_load_guard()?;
+    let repo_root = repo_root()?;
+    let target_file_path = repo_root.join("crates/wip/src/pipeline.rs");
+    let pool = AnalysisWorkerPool::start(&repo_root, 2)?;
+    let document_symbols = pool
+        .document_symbols_for_files(vec![target_file_path.clone()])
+        .await?;
+    let symbols = document_symbols
+        .first()
+        .ok_or_else(|| io::Error::other("analysis worker pool returned no document symbols"))?
+        .1
+        .as_slice();
+    let reference_target_symbol = find_symbol(symbols, "WidgetProcessor")
+        .ok_or_else(|| io::Error::other("WidgetProcessor symbol was not found"))?;
+    let call_target_symbol = find_symbol(symbols, "ingest")
+        .ok_or_else(|| io::Error::other("WidgetProcessor::ingest symbol was not found"))?;
+
+    let worker = pool
+        .worker_handles()
+        .first()
+        .cloned()
+        .ok_or_else(|| io::Error::other("analysis worker pool returned no worker handles"))?;
+    let file_result = worker
+        .file_semantic_work(FileSemanticWork {
+            file_path: target_file_path.clone(),
+            reference_targets: vec![ResolvedReferenceTarget {
+                file_path: target_file_path.clone(),
+                selection_range: reference_target_symbol.selection_range,
+                name: reference_target_symbol.name.clone(),
+            }],
+            call_targets: vec![ResolvedCallTarget {
+                file_path: target_file_path.clone(),
+                selection_range: call_target_symbol.selection_range,
+                name: call_target_symbol.name.clone(),
+            }],
+        })
+        .await?;
+    pool.shutdown().await?;
+
+    assert_eq!(pool.worker_count(), 2);
+    let reference_set = file_result
+        .reference_sets
+        .first()
+        .ok_or_else(|| io::Error::other("file semantic result returned no references"))?;
+    let call_set = file_result
+        .call_sets
+        .first()
+        .ok_or_else(|| io::Error::other("file semantic result returned no calls"))?;
+    assert!(reference_set.references.iter().any(|location| {
+        relative_path(&repo_root, &location.file_path).as_deref()
+            == Some("crates/wip/src/tests/mod.rs")
+    }));
+    assert!(call_set.outgoing_calls.iter().any(|call| {
+        call.target_name == "upsert"
+            && relative_path(&repo_root, &call.target_file_path).as_deref()
+                == Some("crates/wip/src/pipeline.rs")
+    }));
     Ok(())
 }
 

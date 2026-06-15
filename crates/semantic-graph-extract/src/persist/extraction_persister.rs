@@ -3,7 +3,7 @@ use crate::{
     document_symbols::paths::basename_from_relative_path,
     model::{
         CallBatchExtraction, DocumentSymbolBatchExtraction, DocumentSymbolExtraction,
-        ReferenceBatchExtraction, RouteName, RouteScope,
+        ExtractedCall, ExtractedReference, ReferenceBatchExtraction, RouteName, RouteScope,
     },
     persist::PersistenceSummary,
 };
@@ -490,99 +490,143 @@ impl ExtractionPersister {
         };
 
         for reference in &extraction.references {
-            let source_node_id = node_id(workspace_id, "rust", &reference.source_symbol_key);
-            let target_node_id = node_id(workspace_id, "rust", &reference.target_symbol_key);
-            let edge_id = store
-                .upsert_edge(EdgeInput {
+            let reference_summary = self
+                .persist_reference_after_route_started(
+                    store,
                     workspace_id,
-                    src_node_id: &source_node_id,
-                    dst_node_id: &target_node_id,
-                    relation: "references",
-                    context: Some("symbol"),
-                    confidence: &reference.confidence,
-                    confidence_score: reference.confidence_score,
-                    weight: reference.occurrences.len() as f64,
+                    run_id,
+                    workspace_root_uri,
+                    reference,
+                    file_ids,
+                )
+                .await?;
+
+            merge_summary(&mut summary, &reference_summary);
+        }
+
+        Ok(summary)
+    }
+
+    pub async fn persist_reference_after_route_started(
+        &self,
+        store: &WriteHandle,
+        workspace_id: i64,
+        run_id: i64,
+        workspace_root_uri: &str,
+        reference: &ExtractedReference,
+        file_ids: &HashMap<String, i64>,
+    ) -> ExtractResult<PersistenceSummary> {
+        let provider = reference.provider.as_str();
+        self.require_node(
+            store,
+            workspace_id,
+            provider,
+            "textDocument/references",
+            &reference.source_symbol_key,
+        )
+        .await?;
+        self.require_node(
+            store,
+            workspace_id,
+            provider,
+            "textDocument/references",
+            &reference.target_symbol_key,
+        )
+        .await?;
+
+        let source_node_id = node_id(workspace_id, "rust", &reference.source_symbol_key);
+        let target_node_id = node_id(workspace_id, "rust", &reference.target_symbol_key);
+        let edge_id = store
+            .upsert_edge(EdgeInput {
+                workspace_id,
+                src_node_id: &source_node_id,
+                dst_node_id: &target_node_id,
+                relation: "references",
+                context: Some("symbol"),
+                confidence: &reference.confidence,
+                confidence_score: reference.confidence_score,
+                weight: reference.occurrences.len() as f64,
+                properties_json: json!({
+                    "provider": reference.provider.as_str(),
+                    "route": RouteName::RUST_REFERENCES.as_str(),
+                    "source_resolution": reference.source_resolution,
+                    "source_symbol_key": reference.source_symbol_key,
+                    "target_symbol_key": reference.target_symbol_key,
+                }),
+                run_id: Some(run_id),
+            })
+            .await
+            .map_err(ExtractError::storage)?;
+
+        let mut summary = empty_summary(workspace_id, run_id);
+        summary.edges += 1;
+        summary.reference_edges += 1;
+
+        for occurrence in &reference.occurrences {
+            let file_id = *file_ids.get(&occurrence.file_uri).ok_or_else(|| {
+                ExtractError::response_shape(
+                    provider,
+                    "textDocument/references",
+                    format!(
+                        "reference occurrence file {} was not in the current document-symbol batch",
+                        occurrence.file_uri
+                    ),
+                )
+            })?;
+            let enclosing_node_id = occurrence
+                .enclosing_symbol_key
+                .as_ref()
+                .map(|symbol_key| node_id(workspace_id, "rust", symbol_key));
+
+            store
+                .insert_occurrence(OccurrenceInput {
+                    node_id: &target_node_id,
+                    run_id,
+                    file_id,
+                    role: "reference",
+                    range: occurrence.range,
+                    enclosing_node_id: enclosing_node_id.as_deref(),
+                    raw_json: Some(occurrence.raw_json.clone()),
+                })
+                .await
+                .map_err(ExtractError::storage)?;
+            store
+                .insert_edge_evidence(EdgeEvidenceInput {
+                    edge_id: &edge_id,
+                    run_id,
+                    provider: reference.provider.as_str(),
+                    lsp_method: Some("textDocument/references"),
+                    file_id: Some(file_id),
+                    range: Some(occurrence.range),
+                    raw_json: Some(json!({
+                        "edge": reference.raw_json,
+                        "occurrence": occurrence.raw_json,
+                    })),
+                })
+                .await
+                .map_err(ExtractError::storage)?;
+            store
+                .record_route_observation(RouteObservationInput {
+                    workspace_id,
+                    run_id,
+                    route: RouteName::RUST_REFERENCES.as_str(),
+                    scope: RouteScope::WORKSPACE.as_str(),
+                    scope_key: workspace_root_uri,
+                    provider,
+                    entity_kind: "edge",
+                    entity_id: &edge_id,
+                    source_file_id: Some(file_id),
                     properties_json: json!({
-                        "provider": reference.provider.as_str(),
-                        "route": RouteName::RUST_REFERENCES.as_str(),
+                        "source": "textDocument/references",
                         "source_resolution": reference.source_resolution,
-                        "source_symbol_key": reference.source_symbol_key,
-                        "target_symbol_key": reference.target_symbol_key,
                     }),
-                    run_id: Some(run_id),
                 })
                 .await
                 .map_err(ExtractError::storage)?;
 
-            summary.edges += 1;
-            summary.reference_edges += 1;
-
-            for occurrence in &reference.occurrences {
-                let file_id = *file_ids.get(&occurrence.file_uri).ok_or_else(|| {
-                    ExtractError::response_shape(
-                        extraction.provider.as_str(),
-                        "textDocument/references",
-                        format!(
-                            "reference occurrence file {} was not in the current document-symbol batch",
-                            occurrence.file_uri
-                        ),
-                    )
-                })?;
-                let enclosing_node_id = occurrence
-                    .enclosing_symbol_key
-                    .as_ref()
-                    .map(|symbol_key| node_id(workspace_id, "rust", symbol_key));
-
-                store
-                    .insert_occurrence(OccurrenceInput {
-                        node_id: &target_node_id,
-                        run_id,
-                        file_id,
-                        role: "reference",
-                        range: occurrence.range,
-                        enclosing_node_id: enclosing_node_id.as_deref(),
-                        raw_json: Some(occurrence.raw_json.clone()),
-                    })
-                    .await
-                    .map_err(ExtractError::storage)?;
-                store
-                    .insert_edge_evidence(EdgeEvidenceInput {
-                        edge_id: &edge_id,
-                        run_id,
-                        provider: reference.provider.as_str(),
-                        lsp_method: Some("textDocument/references"),
-                        file_id: Some(file_id),
-                        range: Some(occurrence.range),
-                        raw_json: Some(json!({
-                            "edge": reference.raw_json,
-                            "occurrence": occurrence.raw_json,
-                        })),
-                    })
-                    .await
-                    .map_err(ExtractError::storage)?;
-                store
-                    .record_route_observation(RouteObservationInput {
-                        workspace_id,
-                        run_id,
-                        route: RouteName::RUST_REFERENCES.as_str(),
-                        scope: RouteScope::WORKSPACE.as_str(),
-                        scope_key: workspace_root_uri,
-                        provider: extraction.provider.as_str(),
-                        entity_kind: "edge",
-                        entity_id: &edge_id,
-                        source_file_id: Some(file_id),
-                        properties_json: json!({
-                            "source": "textDocument/references",
-                            "source_resolution": reference.source_resolution,
-                        }),
-                    })
-                    .await
-                    .map_err(ExtractError::storage)?;
-
-                summary.occurrences += 1;
-                summary.reference_occurrences += 1;
-                summary.evidence += 1;
-            }
+            summary.occurrences += 1;
+            summary.reference_occurrences += 1;
+            summary.evidence += 1;
         }
 
         Ok(summary)
@@ -963,96 +1007,139 @@ impl ExtractionPersister {
         };
 
         for call in &extraction.calls {
-            let caller_node_id = node_id(workspace_id, "rust", &call.caller_symbol_key);
-            let callee_node_id = node_id(workspace_id, "rust", &call.callee_symbol_key);
-            let edge_id = store
-                .upsert_edge(EdgeInput {
+            let call_summary = self
+                .persist_call_after_route_started(
+                    store,
                     workspace_id,
-                    src_node_id: &caller_node_id,
-                    dst_node_id: &callee_node_id,
-                    relation: "calls",
-                    context: Some(&call.context),
-                    confidence: &call.confidence,
-                    confidence_score: call.confidence_score,
-                    weight: call.occurrences.len() as f64,
+                    run_id,
+                    workspace_root_uri,
+                    call,
+                    file_ids,
+                )
+                .await?;
+
+            merge_summary(&mut summary, &call_summary);
+        }
+
+        Ok(summary)
+    }
+
+    pub async fn persist_call_after_route_started(
+        &self,
+        store: &WriteHandle,
+        workspace_id: i64,
+        run_id: i64,
+        workspace_root_uri: &str,
+        call: &ExtractedCall,
+        file_ids: &HashMap<String, i64>,
+    ) -> ExtractResult<PersistenceSummary> {
+        let provider = call.provider.as_str();
+        self.require_node(
+            store,
+            workspace_id,
+            provider,
+            "callHierarchy/outgoingCalls",
+            &call.caller_symbol_key,
+        )
+        .await?;
+        self.require_node(
+            store,
+            workspace_id,
+            provider,
+            "callHierarchy/outgoingCalls",
+            &call.callee_symbol_key,
+        )
+        .await?;
+
+        let caller_node_id = node_id(workspace_id, "rust", &call.caller_symbol_key);
+        let callee_node_id = node_id(workspace_id, "rust", &call.callee_symbol_key);
+        let edge_id = store
+            .upsert_edge(EdgeInput {
+                workspace_id,
+                src_node_id: &caller_node_id,
+                dst_node_id: &callee_node_id,
+                relation: "calls",
+                context: Some(&call.context),
+                confidence: &call.confidence,
+                confidence_score: call.confidence_score,
+                weight: call.occurrences.len() as f64,
+                properties_json: json!({
+                    "provider": call.provider.as_str(),
+                    "route": RouteName::RUST_CALLS.as_str(),
+                    "caller_symbol_key": call.caller_symbol_key,
+                    "callee_symbol_key": call.callee_symbol_key,
+                }),
+                run_id: Some(run_id),
+            })
+            .await
+            .map_err(ExtractError::storage)?;
+
+        let mut summary = empty_summary(workspace_id, run_id);
+        summary.edges += 1;
+        summary.call_edges += 1;
+
+        for occurrence in &call.occurrences {
+            let file_id = *file_ids.get(&occurrence.file_uri).ok_or_else(|| {
+                ExtractError::response_shape(
+                    provider,
+                    "callHierarchy/outgoingCalls",
+                    format!(
+                        "call occurrence file {} was not in the current document-symbol batch",
+                        occurrence.file_uri
+                    ),
+                )
+            })?;
+            let enclosing_node_id = node_id(workspace_id, "rust", &occurrence.enclosing_symbol_key);
+
+            store
+                .insert_occurrence(OccurrenceInput {
+                    node_id: &callee_node_id,
+                    run_id,
+                    file_id,
+                    role: "call",
+                    range: occurrence.range,
+                    enclosing_node_id: Some(&enclosing_node_id),
+                    raw_json: Some(occurrence.raw_json.clone()),
+                })
+                .await
+                .map_err(ExtractError::storage)?;
+            store
+                .insert_edge_evidence(EdgeEvidenceInput {
+                    edge_id: &edge_id,
+                    run_id,
+                    provider: call.provider.as_str(),
+                    lsp_method: Some("callHierarchy/outgoingCalls"),
+                    file_id: Some(file_id),
+                    range: Some(occurrence.range),
+                    raw_json: Some(json!({
+                        "edge": call.raw_json,
+                        "occurrence": occurrence.raw_json,
+                    })),
+                })
+                .await
+                .map_err(ExtractError::storage)?;
+            store
+                .record_route_observation(RouteObservationInput {
+                    workspace_id,
+                    run_id,
+                    route: RouteName::RUST_CALLS.as_str(),
+                    scope: RouteScope::WORKSPACE.as_str(),
+                    scope_key: workspace_root_uri,
+                    provider,
+                    entity_kind: "edge",
+                    entity_id: &edge_id,
+                    source_file_id: Some(file_id),
                     properties_json: json!({
-                        "provider": call.provider.as_str(),
-                        "route": RouteName::RUST_CALLS.as_str(),
-                        "caller_symbol_key": call.caller_symbol_key,
-                        "callee_symbol_key": call.callee_symbol_key,
+                        "source": "callHierarchy/outgoingCalls",
+                        "context": call.context,
                     }),
-                    run_id: Some(run_id),
                 })
                 .await
                 .map_err(ExtractError::storage)?;
 
-            summary.edges += 1;
-            summary.call_edges += 1;
-
-            for occurrence in &call.occurrences {
-                let file_id = *file_ids.get(&occurrence.file_uri).ok_or_else(|| {
-                    ExtractError::response_shape(
-                        extraction.provider.as_str(),
-                        "callHierarchy/outgoingCalls",
-                        format!(
-                            "call occurrence file {} was not in the current document-symbol batch",
-                            occurrence.file_uri
-                        ),
-                    )
-                })?;
-                let enclosing_node_id =
-                    node_id(workspace_id, "rust", &occurrence.enclosing_symbol_key);
-
-                store
-                    .insert_occurrence(OccurrenceInput {
-                        node_id: &callee_node_id,
-                        run_id,
-                        file_id,
-                        role: "call",
-                        range: occurrence.range,
-                        enclosing_node_id: Some(&enclosing_node_id),
-                        raw_json: Some(occurrence.raw_json.clone()),
-                    })
-                    .await
-                    .map_err(ExtractError::storage)?;
-                store
-                    .insert_edge_evidence(EdgeEvidenceInput {
-                        edge_id: &edge_id,
-                        run_id,
-                        provider: call.provider.as_str(),
-                        lsp_method: Some("callHierarchy/outgoingCalls"),
-                        file_id: Some(file_id),
-                        range: Some(occurrence.range),
-                        raw_json: Some(json!({
-                            "edge": call.raw_json,
-                            "occurrence": occurrence.raw_json,
-                        })),
-                    })
-                    .await
-                    .map_err(ExtractError::storage)?;
-                store
-                    .record_route_observation(RouteObservationInput {
-                        workspace_id,
-                        run_id,
-                        route: RouteName::RUST_CALLS.as_str(),
-                        scope: RouteScope::WORKSPACE.as_str(),
-                        scope_key: workspace_root_uri,
-                        provider: extraction.provider.as_str(),
-                        entity_kind: "edge",
-                        entity_id: &edge_id,
-                        source_file_id: Some(file_id),
-                        properties_json: json!({
-                            "source": "callHierarchy/outgoingCalls",
-                            "context": call.context,
-                        }),
-                    })
-                    .await
-                    .map_err(ExtractError::storage)?;
-
-                summary.occurrences += 1;
-                summary.call_occurrences += 1;
-                summary.evidence += 1;
-            }
+            summary.occurrences += 1;
+            summary.call_occurrences += 1;
+            summary.evidence += 1;
         }
 
         Ok(summary)
@@ -1662,4 +1749,38 @@ fn symbol_properties_json(symbol: &crate::model::ExtractedSymbol) -> Value {
         "detail": symbol.detail.as_deref(),
         "raw": symbol.raw_json,
     })
+}
+
+fn empty_summary(workspace_id: i64, run_id: i64) -> PersistenceSummary {
+    PersistenceSummary {
+        workspace_id,
+        run_id,
+        files: 0,
+        nodes: 0,
+        edges: 0,
+        reference_edges: 0,
+        call_edges: 0,
+        occurrences: 0,
+        reference_occurrences: 0,
+        call_occurrences: 0,
+        evidence: 0,
+        routes_complete: 0,
+        stale_nodes_closed: 0,
+        stale_edges_closed: 0,
+    }
+}
+
+fn merge_summary(target: &mut PersistenceSummary, source: &PersistenceSummary) {
+    target.files += source.files;
+    target.nodes += source.nodes;
+    target.edges += source.edges;
+    target.reference_edges += source.reference_edges;
+    target.call_edges += source.call_edges;
+    target.occurrences += source.occurrences;
+    target.reference_occurrences += source.reference_occurrences;
+    target.call_occurrences += source.call_occurrences;
+    target.evidence += source.evidence;
+    target.routes_complete += source.routes_complete;
+    target.stale_nodes_closed += source.stale_nodes_closed;
+    target.stale_edges_closed += source.stale_edges_closed;
 }

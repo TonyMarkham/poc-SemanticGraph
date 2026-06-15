@@ -25,7 +25,7 @@ pub fn references_for_symbols(
     Ok(reference_sets)
 }
 
-fn references_for_target(
+pub(super) fn references_for_target(
     loaded: &LoadedAnalysis,
     target: &ResolvedReferenceTarget,
 ) -> RustAnalyzerLibResult<ResolvedReferenceSet> {

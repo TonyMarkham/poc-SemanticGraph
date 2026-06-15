@@ -1,6 +1,6 @@
 use crate::{
-    Config, ConfigError, ConfigResult, DatabaseConfig, RawDatabaseConfig, RawWriterConfig,
-    WriterConfig,
+    Config, ConfigError, ConfigResult, DatabaseConfig, ExtractorConfig, RawDatabaseConfig,
+    RawExtractorConfig, RawWriterConfig, WriterConfig,
 };
 
 use serde::Deserialize;
@@ -9,6 +9,7 @@ use std::{fs, path::Path};
 #[derive(Debug, Deserialize)]
 struct RawConfig {
     database: Option<RawDatabaseConfig>,
+    extractor: Option<RawExtractorConfig>,
     writer: Option<RawWriterConfig>,
 }
 
@@ -28,7 +29,12 @@ pub fn load_config(path: impl AsRef<Path>) -> ConfigResult<Config> {
         .and_then(|database| database.path)
         .ok_or_else(|| ConfigError::missing_database_path(Some(path.to_path_buf())))?;
 
+    let extractor = ExtractorConfig::from_raw(raw.extractor)?;
     let writer = WriterConfig::from_raw(raw.writer)?;
 
-    Ok(Config::new(DatabaseConfig::new(database_path), writer))
+    Ok(Config::new(
+        DatabaseConfig::new(database_path),
+        extractor,
+        writer,
+    ))
 }

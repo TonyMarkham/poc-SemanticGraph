@@ -16,7 +16,8 @@ pub use model::{
 };
 pub use project::{load_package, load_workspace, package_source_files, workspace_source_files};
 pub use semantic::{
-    document_symbols_for_file, document_symbols_for_files, outgoing_calls_for_symbols,
-    references_for_symbols,
+    AnalysisWorker, AnalysisWorkerHandle, AnalysisWorkerPool, DocumentSymbolItems,
+    FileSemanticResult, FileSemanticWork, LoadedAnalysis, document_symbols_for_file,
+    document_symbols_for_files, outgoing_calls_for_symbols, references_for_symbols,
 };
 pub use version::provider_version;

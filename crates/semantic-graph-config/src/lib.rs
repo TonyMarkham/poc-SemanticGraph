@@ -1,9 +1,12 @@
 mod config;
 mod database_config;
 mod error;
+mod extractor_config;
+mod extractor_mode;
 mod load_options;
 mod raw_config;
 mod raw_database_config;
+mod raw_extractor_config;
 mod raw_writer_config;
 mod resolved_database_path;
 mod resolved_database_path_source;
@@ -14,11 +17,14 @@ mod writer_config;
 // ---------------------------------------------------------------------------------------------- //
 
 pub(crate) use raw_database_config::RawDatabaseConfig;
+pub(crate) use raw_extractor_config::RawExtractorConfig;
 pub(crate) use raw_writer_config::RawWriterConfig;
 
 pub use config::Config;
 pub use database_config::DatabaseConfig;
 pub use error::{ConfigError, ConfigResult};
+pub use extractor_config::ExtractorConfig;
+pub use extractor_mode::ExtractorMode;
 pub use load_options::LoadOptions;
 pub use raw_config::load_config;
 pub use resolved_database_path::ResolvedDatabasePath;

@@ -33,6 +33,13 @@ pub enum ConfigError {
         message: String,
         location: ErrorLocation,
     },
+
+    #[error("invalid extractor setting setting={setting} at {location}: {message}")]
+    InvalidExtractorSetting {
+        setting: String,
+        message: String,
+        location: ErrorLocation,
+    },
 }
 
 impl ConfigError {
@@ -72,12 +79,25 @@ impl ConfigError {
         }
     }
 
+    #[track_caller]
+    pub fn invalid_extractor_setting(
+        setting: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self::InvalidExtractorSetting {
+            setting: setting.into(),
+            message: message.into(),
+            location: ErrorLocation::from(Location::caller()),
+        }
+    }
+
     pub fn message(&self) -> &'static str {
         match self {
             Self::Io { .. } => "io error",
             Self::Toml { .. } => "toml error",
             Self::MissingDatabasePath { .. } => "missing database path",
             Self::InvalidWriterSetting { .. } => "invalid writer setting",
+            Self::InvalidExtractorSetting { .. } => "invalid extractor setting",
         }
     }
 
@@ -86,7 +106,8 @@ impl ConfigError {
             Self::Io { location, .. }
             | Self::Toml { location, .. }
             | Self::MissingDatabasePath { location, .. }
-            | Self::InvalidWriterSetting { location, .. } => *location,
+            | Self::InvalidWriterSetting { location, .. }
+            | Self::InvalidExtractorSetting { location, .. } => *location,
         }
     }
 }

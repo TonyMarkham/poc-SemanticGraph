@@ -1,6 +1,6 @@
 use crate::{
-    ConfigError, LoadOptions, ResolvedDatabasePathSource, discover_config, load_config,
-    resolve_database_path,
+    ConfigError, ExtractorMode, LoadOptions, ResolvedDatabasePathSource, discover_config,
+    load_config, resolve_database_path,
 };
 
 use std::{
@@ -18,10 +18,102 @@ fn parses_valid_config() -> Result<(), Box<dyn Error>> {
     let config = load_config(&config_path)?;
 
     assert_eq!(config.database().path(), &PathBuf::from(".local/test.db"));
+    assert_eq!(config.extractor().mode(), ExtractorMode::Serial);
+    assert_eq!(config.extractor().jobs(), None);
+    assert_eq!(config.extractor().reference_jobs(), None);
+    assert_eq!(config.extractor().call_jobs(), None);
+    assert_eq!(config.extractor().analysis_workers(), None);
+    assert_eq!(config.extractor().reference_analysis_workers(), None);
+    assert_eq!(config.extractor().call_analysis_workers(), None);
     assert_eq!(config.writer().queue_capacity(), 4096);
     assert_eq!(config.writer().max_rows_per_commit(), 1000);
     assert_eq!(config.writer().max_millis_per_commit(), 250);
     assert_eq!(config.writer().busy_timeout_ms(), 5000);
+    Ok(())
+}
+
+#[test]
+fn parses_extractor_config() -> Result<(), Box<dyn Error>> {
+    let root = temp_dir("parses-extractor-config")?;
+    let config_dir = root.join(".refactor-radar");
+    fs::create_dir_all(&config_dir)?;
+    let config_path = config_dir.join("config.toml");
+    fs::write(
+        &config_path,
+        r#"
+[database]
+path = ".local/test.db"
+
+[extractor]
+mode = "threaded"
+jobs = 8
+reference_jobs = 5
+call_jobs = 3
+analysis_workers = 2
+reference_analysis_workers = 4
+call_analysis_workers = 0
+"#,
+    )?;
+
+    let config = load_config(&config_path)?;
+
+    assert_eq!(config.extractor().mode(), ExtractorMode::Threaded);
+    assert_eq!(config.extractor().jobs(), Some(8));
+    assert_eq!(config.extractor().reference_jobs(), Some(5));
+    assert_eq!(config.extractor().call_jobs(), Some(3));
+    assert_eq!(config.extractor().analysis_workers(), Some(2));
+    assert_eq!(config.extractor().reference_analysis_workers(), Some(4));
+    assert_eq!(config.extractor().call_analysis_workers(), Some(0));
+    Ok(())
+}
+
+#[test]
+fn rejects_invalid_extractor_config() -> Result<(), Box<dyn Error>> {
+    let root = temp_dir("rejects-invalid-extractor-config")?;
+    let config_dir = root.join(".refactor-radar");
+    fs::create_dir_all(&config_dir)?;
+    let config_path = config_dir.join("config.toml");
+    fs::write(
+        &config_path,
+        r#"
+[database]
+path = ".local/test.db"
+
+[extractor]
+mode = "parallel"
+"#,
+    )?;
+
+    let error = load_config(&config_path)
+        .err()
+        .ok_or("expected config error")?;
+
+    assert!(matches!(error, ConfigError::InvalidExtractorSetting { .. }));
+    Ok(())
+}
+
+#[test]
+fn rejects_invalid_analysis_worker_config() -> Result<(), Box<dyn Error>> {
+    let root = temp_dir("rejects-invalid-analysis-worker-config")?;
+    let config_dir = root.join(".refactor-radar");
+    fs::create_dir_all(&config_dir)?;
+    let config_path = config_dir.join("config.toml");
+    fs::write(
+        &config_path,
+        r#"
+[database]
+path = ".local/test.db"
+
+[extractor]
+analysis_workers = 0
+"#,
+    )?;
+
+    let error = load_config(&config_path)
+        .err()
+        .ok_or("expected config error")?;
+
+    assert!(matches!(error, ConfigError::InvalidExtractorSetting { .. }));
     Ok(())
 }
 

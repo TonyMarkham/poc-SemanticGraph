@@ -41,6 +41,27 @@ impl RustAnalyzerProvider {
         self.run_batch(request).await
     }
 
+    pub fn extract_document_symbol_batch_with_analysis(
+        &self,
+        analysis: &rust_analyzer_lib::LoadedAnalysis,
+        request: DocumentSymbolBatchRequest,
+    ) -> ExtractResult<DocumentSymbolBatchExtraction> {
+        self.run_batch_with_analysis(analysis, request)
+    }
+
+    pub fn map_document_symbol_items(
+        &self,
+        request: DocumentSymbolBatchRequest,
+        document_symbols: Vec<(PathBuf, Vec<lsp_types::DocumentSymbol>)>,
+    ) -> ExtractResult<DocumentSymbolBatchExtraction> {
+        let request = validate_document_symbol_batch_request(request)?;
+        self.map_document_symbol_items_with_version(
+            request,
+            rust_analyzer_lib::provider_version(),
+            document_symbols,
+        )
+    }
+
     pub async fn extract_rust_references(
         &self,
         request: ReferenceBatchRequest,
@@ -127,11 +148,43 @@ impl RustAnalyzerProvider {
     ) -> ExtractResult<DocumentSymbolBatchExtraction> {
         let request = validate_document_symbol_batch_request(request)?;
         let provider_version = rust_analyzer_lib::provider_version();
-        let document_symbols = rust_analyzer_lib::document_symbols_for_files(
-            &request.workspace_root,
-            &request.file_paths,
-        )
-        .map_err(|source| facade_error("rust-analyzer-lib document_symbols_for_files", source))?;
+        let analysis = rust_analyzer_lib::LoadedAnalysis::load(&request.workspace_root)
+            .map_err(|source| facade_error("rust-analyzer-lib load analysis", source))?;
+
+        self.map_document_symbols(&analysis, request, provider_version)
+    }
+
+    fn run_batch_with_analysis(
+        &self,
+        analysis: &rust_analyzer_lib::LoadedAnalysis,
+        request: DocumentSymbolBatchRequest,
+    ) -> ExtractResult<DocumentSymbolBatchExtraction> {
+        let request = validate_document_symbol_batch_request(request)?;
+        let provider_version = rust_analyzer_lib::provider_version();
+
+        self.map_document_symbols(analysis, request, provider_version)
+    }
+
+    fn map_document_symbols(
+        &self,
+        analysis: &rust_analyzer_lib::LoadedAnalysis,
+        request: DocumentSymbolBatchRequest,
+        provider_version: Option<String>,
+    ) -> ExtractResult<DocumentSymbolBatchExtraction> {
+        let document_symbols = analysis
+            .document_symbols_for_files(&request.file_paths)
+            .map_err(|source| {
+                facade_error("rust-analyzer-lib document_symbols_for_files", source)
+            })?;
+        self.map_document_symbol_items_with_version(request, provider_version, document_symbols)
+    }
+
+    fn map_document_symbol_items_with_version(
+        &self,
+        request: DocumentSymbolBatchRequest,
+        provider_version: Option<String>,
+        document_symbols: Vec<(PathBuf, Vec<lsp_types::DocumentSymbol>)>,
+    ) -> ExtractResult<DocumentSymbolBatchExtraction> {
         let mut extractions = Vec::with_capacity(document_symbols.len());
 
         for (file_path, symbols) in document_symbols {
@@ -181,11 +234,44 @@ impl RustAnalyzerProvider {
             .iter()
             .map(|context| context.target.clone())
             .collect::<Vec<_>>();
-        let reference_sets = rust_analyzer_lib::references_for_symbols(
-            &document_request.workspace_root,
-            &reference_targets,
+        let analysis = rust_analyzer_lib::LoadedAnalysis::load(&document_request.workspace_root)
+            .map_err(|source| facade_error("rust-analyzer-lib load analysis", source))?;
+        let mut reference_sets = Vec::with_capacity(reference_targets.len());
+        for target in &reference_targets {
+            reference_sets.push(analysis.references_for_symbol(target).map_err(|source| {
+                facade_error("rust-analyzer-lib references_for_symbol", source)
+            })?);
+        }
+
+        self.map_reference_sets(
+            &document_request,
+            document_symbols,
+            reference_sets,
+            reference_targets.len(),
         )
-        .map_err(|source| facade_error("rust-analyzer-lib references_for_symbols", source))?;
+    }
+
+    pub fn reference_targets_for_document_symbols(
+        &self,
+        request: &DocumentSymbolBatchRequest,
+        document_symbols: &DocumentSymbolBatchExtraction,
+    ) -> ExtractResult<Vec<rust_analyzer_lib::ResolvedReferenceTarget>> {
+        reference_target_contexts(request, document_symbols).map(|contexts| {
+            contexts
+                .into_iter()
+                .map(|context| context.target)
+                .collect::<Vec<_>>()
+        })
+    }
+
+    pub fn map_reference_sets(
+        &self,
+        document_request: &DocumentSymbolBatchRequest,
+        document_symbols: DocumentSymbolBatchExtraction,
+        reference_sets: Vec<rust_analyzer_lib::ResolvedReferenceSet>,
+        targets_queried: usize,
+    ) -> ExtractResult<ReferenceBatchExtraction> {
+        let target_contexts = reference_target_contexts(document_request, &document_symbols)?;
         let workspace_fingerprint = workspace_fingerprint(&document_symbols);
         let symbol_index = SymbolIndex::new(&document_request.workspace_root, &document_symbols)?;
         let mut grouped_references = BTreeMap::new();
@@ -297,7 +383,7 @@ impl RustAnalyzerProvider {
             .map(|reference| reference.occurrences.len())
             .sum();
         let summary = ReferenceRouteSummary {
-            targets_queried: reference_targets.len(),
+            targets_queried,
             reference_edges: references.len(),
             reference_occurrences,
             file_fallbacks,
@@ -331,11 +417,48 @@ impl RustAnalyzerProvider {
             .iter()
             .map(|context| context.target.clone())
             .collect::<Vec<_>>();
-        let call_sets = rust_analyzer_lib::outgoing_calls_for_symbols(
-            &document_request.workspace_root,
-            &call_targets,
+        let analysis = rust_analyzer_lib::LoadedAnalysis::load(&document_request.workspace_root)
+            .map_err(|source| facade_error("rust-analyzer-lib load analysis", source))?;
+        let mut call_sets = Vec::with_capacity(call_targets.len());
+        for target in &call_targets {
+            call_sets.push(
+                analysis
+                    .outgoing_calls_for_symbol(target)
+                    .map_err(|source| {
+                        facade_error("rust-analyzer-lib outgoing_calls_for_symbol", source)
+                    })?,
+            );
+        }
+
+        self.map_call_sets(
+            &document_request,
+            document_symbols,
+            call_sets,
+            call_targets.len(),
         )
-        .map_err(|source| facade_error("rust-analyzer-lib outgoing_calls_for_symbols", source))?;
+    }
+
+    pub fn call_targets_for_document_symbols(
+        &self,
+        request: &DocumentSymbolBatchRequest,
+        document_symbols: &DocumentSymbolBatchExtraction,
+    ) -> ExtractResult<Vec<rust_analyzer_lib::ResolvedCallTarget>> {
+        callable_target_contexts(request, document_symbols).map(|contexts| {
+            contexts
+                .into_iter()
+                .map(|context| context.target)
+                .collect::<Vec<_>>()
+        })
+    }
+
+    pub fn map_call_sets(
+        &self,
+        document_request: &DocumentSymbolBatchRequest,
+        document_symbols: DocumentSymbolBatchExtraction,
+        call_sets: Vec<rust_analyzer_lib::ResolvedOutgoingCallSet>,
+        callable_nodes: usize,
+    ) -> ExtractResult<CallBatchExtraction> {
+        let callable_contexts = callable_target_contexts(document_request, &document_symbols)?;
         let workspace_fingerprint = workspace_fingerprint(&document_symbols);
         let symbol_index = SymbolIndex::new(&document_request.workspace_root, &document_symbols)?;
         let caller_by_range = callable_contexts
@@ -456,7 +579,7 @@ impl RustAnalyzerProvider {
             .collect::<Vec<_>>();
         let call_occurrences = calls.iter().map(|call| call.occurrences.len()).sum();
         let summary = CallRouteSummary {
-            callable_nodes: call_targets.len(),
+            callable_nodes,
             call_edges: calls.len(),
             call_occurrences,
             skipped_external_targets,

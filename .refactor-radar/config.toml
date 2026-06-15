@@ -1,6 +1,10 @@
 [database]
 path = "./content.db"
 
+[extractor]
+mode = "threaded"
+analysis_workers = 8
+
 [writer]
 queue_capacity = 4096
 max_rows_per_commit = 1000
