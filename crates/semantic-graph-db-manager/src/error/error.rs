@@ -2,7 +2,10 @@ use error_location::ErrorLocation;
 use semantic_graph_config::ConfigError;
 use std::{io, panic::Location, path::PathBuf};
 use thiserror::Error;
-use tokio::sync::{mpsc, oneshot};
+use tokio::{
+    sync::{mpsc, oneshot},
+    task::JoinError,
+};
 
 #[derive(Debug, Error)]
 pub enum DbManagerError {
@@ -39,6 +42,13 @@ pub enum DbManagerError {
     #[error("db write manager closed during {context} at {location}")]
     Closed {
         context: String,
+        location: ErrorLocation,
+    },
+
+    #[error("db write manager task failed at {location}")]
+    WorkerTask {
+        #[source]
+        source: JoinError,
         location: ErrorLocation,
     },
 }
@@ -86,6 +96,14 @@ impl DbManagerError {
         }
     }
 
+    #[track_caller]
+    pub fn worker_task(source: JoinError) -> Self {
+        Self::WorkerTask {
+            source,
+            location: ErrorLocation::from(Location::caller()),
+        }
+    }
+
     pub fn message(&self) -> &'static str {
         match self {
             Self::Database { .. } => "database error",
@@ -93,6 +111,7 @@ impl DbManagerError {
             Self::Io { .. } => "io error",
             Self::Config { .. } => "configuration error",
             Self::Closed { .. } => "db write manager closed",
+            Self::WorkerTask { .. } => "db write manager task failed",
         }
     }
 
@@ -102,7 +121,8 @@ impl DbManagerError {
             | Self::Migration { location, .. }
             | Self::Io { location, .. }
             | Self::Config { location, .. }
-            | Self::Closed { location, .. } => *location,
+            | Self::Closed { location, .. }
+            | Self::WorkerTask { location, .. } => *location,
         }
     }
 }

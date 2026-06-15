@@ -3,13 +3,13 @@
 SemanticGraph is a proof of concept for extracting code facts into a durable
 SQLite graph.
 
-Right now, the useful path is Rust document-symbol extraction, workspace
-reference extraction, and workspace call extraction through the checked-in
-`rust-analyzer` libraries. The extractor supports single-file, crate-scoped,
-workspace-scoped, workspace-reference, workspace-call, and all-in-one workspace
-routes. A read-only visualizer slice with projection, search, selection
-inspection, and evidence display is available through a Rust JSON-RPC backend
-and a Blazor WebAssembly client.
+Right now, the useful path is Rust single-file and workspace extraction through
+the checked-in `rust-analyzer` libraries. The extractor supports full
+single-file refresh, document-symbol-only, crate-scoped, workspace-scoped,
+workspace-reference, workspace-call, and all-in-one workspace routes. A
+read-only visualizer slice with projection, search, selection inspection, and
+evidence display is available through a Rust JSON-RPC backend and a Blazor
+WebAssembly client.
 
 ## Configure The Local Database
 
@@ -68,31 +68,54 @@ extraction easier to monitor and avoids the debug-profile overhead of
 
 ## Extract One Rust File
 
-Use this when you want to add or refresh facts for a file in a database. If the
-database already exists, the extractor reuses it and records another extraction
-run.
+Use this when you want to add or refresh facts for one file in a database. The
+default `rust-file` workflow extracts symbols, references, and calls for that
+file, then marks stale file-scoped observations that disappeared from the fresh
+run. If the database already exists, the extractor reuses it and records new
+extraction runs.
 
 From the repo root:
 
 ```sh
-./target/release/semantic-graph-extract rust-document-symbols \
-  --db .local/rust-extract-wip.db \
-  --workspace-root . \
-  --package-path crates/wip \
-  --file crates/wip/src/lib.rs
+./target/release/semantic-graph-extract rust-file crates/wip/src/lib.rs
 ```
+
+or
+
+```sh
+./target/release/semantic-graph-extract rust-file \
+  --db .local/rust-extract-wip.db \
+  crates/wip/src/lib.rs
+```
+
+`rust-file` defaults `--workspace-root` to `.`, so pass
+`--workspace-root <WORKSPACE_ROOT>` only when running from another directory or
+when the extraction boundary should be explicit.
 
 This creates or updates `.local/rust-extract-wip.db`.
 
 You do not need to initialize the database first. The extractor opens the
 SQLite database, runs migrations, loads the pinned `rust-analyzer` libraries
-in-process through `rust-analyzer-lib`, extracts symbols for the requested
-file, and writes the graph rows.
+in-process through `rust-analyzer-lib`, starts one analysis worker for the
+single-file command, extracts facts for the requested file, and writes the graph
+rows.
+
+Special route-only modes:
+
+```sh
+./target/release/semantic-graph-extract rust-file crates/wip/src/lib.rs --symbols
+./target/release/semantic-graph-extract rust-file crates/wip/src/lib.rs --references
+./target/release/semantic-graph-extract rust-file crates/wip/src/lib.rs --calls
+```
+
+`--symbols` refreshes only document symbols for the file. `--references` and
+`--calls` refresh only those file-scoped relation routes and require the file's
+symbol graph to already exist in the target database.
 
 Example successful output:
 
 ```text
-workspace=1 run=1 files=1 nodes=4 edges=3 occurrences=3 evidence=3
+mode=full workspace=1 last_run=3 files=1 nodes=4 contains_edges=3 references_edges=2 reference_occurrences=2 calls_edges=0 call_occurrences=0 evidence=5 routes_complete=3 stale_nodes_closed=0 stale_edges_closed=0
 ```
 
 ## Inspect The Result
@@ -108,28 +131,27 @@ Expected shape after extracting `crates/wip/src/lib.rs`:
 
 ```text
 workspaces=1
-extraction_runs=1
+extraction_runs=3
 files=1
 nodes=4
-edges=3
-occurrences=3
-edge_evidence=3
+edges=5
+occurrences=5
+edge_evidence=5
 ```
 
 ## Extract A Different File
 
-Use the same command and change `--file`:
+Use the same command and change the positional file path:
 
 ```sh
-./target/release/semantic-graph-extract rust-document-symbols \
+./target/release/semantic-graph-extract rust-file \
   --db .local/rust-extract-wip.db \
-  --workspace-root . \
-  --package-path crates/wip \
-  --file crates/wip/src/models.rs
+  crates/wip/src/models.rs
 ```
 
-Each run records a new extraction run. Canonical file, node, and edge rows are
-upserted, while occurrence and evidence rows are inserted as run proof.
+Each default `rust-file` invocation records document-symbol, reference, and call
+runs. Canonical file, node, and edge rows are upserted, stale file-scoped facts
+are soft-closed, and occurrence and evidence rows are inserted as run proof.
 
 ## Extract A Rust Crate
 
@@ -300,8 +322,7 @@ Use this when you want a fresh complete SQLite graph with document symbols,
 references, and calls in one CLI invocation:
 
 ```sh
-./target/release/semantic-graph-extract rust-workspace-all \
-  --workspace-root .
+./target/release/semantic-graph-extract rust-workspace-all --workspace-root .
 ```
 
 The all-in-one command persists the document-symbol graph first, then refreshes
@@ -394,11 +415,9 @@ Delete a disposable local DB and run extraction again:
 
 ```sh
 rm -f .local/rust-extract-wip.db
-./target/release/semantic-graph-extract rust-document-symbols \
+./target/release/semantic-graph-extract rust-file \
   --db .local/rust-extract-wip.db \
-  --workspace-root . \
-  --package-path crates/wip \
-  --file crates/wip/src/lib.rs
+  crates/wip/src/lib.rs
 ```
 
 The `.local/` directory is for local smoke-test output.
@@ -411,9 +430,16 @@ Run:
 just rust-extract-smoke
 ```
 
-That recipe extracts `crates/wip/src/lib.rs` into
+That recipe extracts document symbols for `crates/wip/src/lib.rs` into
 `.local/rust-extract-wip.db` through the in-process `rust-analyzer-lib` route
-and then prints store stats.
+and then prints store stats. To smoke the default full single-file workflow
+directly, run:
+
+```sh
+./target/release/semantic-graph-extract rust-file \
+  --db /tmp/rust-file-scratch.db \
+  crates/wip/src/lib.rs
+```
 
 Crate and workspace smoke routes:
 
@@ -556,8 +582,8 @@ dotnet build SemanticGraph.Visualizer.slnx
 ## What Exists
 
 - `crates/semantic-graph-store`: SQLite graph store and stats/demo CLI.
-- `crates/semantic-graph-extract`: Rust document-symbol, workspace-reference,
-  and workspace-call extractor.
+- `crates/semantic-graph-extract`: Rust single-file, document-symbol,
+  workspace-reference, workspace-call, and all-in-one extractor.
 - `crates/semantic-graph-visualizer-server`: local read-only JSON-RPC backend
   for visualizer projection, search, and inspection.
 - `crates/rust-analyzer-lib`: in-process facade over the pinned

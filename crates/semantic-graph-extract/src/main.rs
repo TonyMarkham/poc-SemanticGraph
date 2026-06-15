@@ -5,9 +5,11 @@ use semantic_graph_extract::{
         file_uri, validate_document_symbol_batch_request, validate_document_symbol_request,
     },
     model::{
-        CallBatchRequest, DocumentSymbolBatchRequest, DocumentSymbolRequest, ReferenceBatchRequest,
+        CallBatchExtraction, CallBatchRequest, DocumentSymbolBatchExtraction,
+        DocumentSymbolBatchRequest, DocumentSymbolRequest, ReferenceBatchExtraction,
+        ReferenceBatchRequest,
     },
-    persist::ExtractionPersister,
+    persist::{ExtractionPersister, PersistenceSummary},
     provider::DocumentSymbolProvider,
     providers::rust_analyzer::RustAnalyzerProvider,
     workspace_all::{ThreadedWorkspaceAllConfig, ThreadedWorkspaceAllRunner},
@@ -36,6 +38,21 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    #[command(name = "rust-file")]
+    RustFile {
+        #[arg(long)]
+        db: Option<PathBuf>,
+        #[arg(long, value_name = "WORKSPACE_ROOT", default_value = ".")]
+        workspace_root: PathBuf,
+        #[arg(long)]
+        calls: bool,
+        #[arg(long)]
+        references: bool,
+        #[arg(long)]
+        symbols: bool,
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+    },
     #[command(name = "rust-document-symbols")]
     SingleFile {
         #[arg(long)]
@@ -100,6 +117,43 @@ enum Command {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RustFileMode {
+    Full,
+    Symbols,
+    References,
+    Calls,
+}
+
+impl RustFileMode {
+    fn includes_symbols(self) -> bool {
+        matches!(self, Self::Full | Self::Symbols)
+    }
+
+    fn includes_references(self) -> bool {
+        matches!(self, Self::Full | Self::References)
+    }
+
+    fn includes_calls(self) -> bool {
+        matches!(self, Self::Full | Self::Calls)
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Full => "full",
+            Self::Symbols => "symbols",
+            Self::References => "references",
+            Self::Calls => "calls",
+        }
+    }
+}
+
+struct RustFileExtractions {
+    document_symbols: DocumentSymbolBatchExtraction,
+    references: Option<ReferenceBatchExtraction>,
+    calls: Option<CallBatchExtraction>,
+}
+
 #[tokio::main]
 async fn main() {
     if let Err(error) = run().await {
@@ -123,6 +177,37 @@ async fn run() -> ExtractResult<()> {
     let config = cli.config;
 
     match cli.command {
+        Command::RustFile {
+            db,
+            workspace_root,
+            calls,
+            references,
+            symbols,
+            file,
+        } => {
+            let mode = resolve_rust_file_mode(calls, references, symbols)?;
+            let document_request =
+                validate_document_symbol_batch_request(DocumentSymbolBatchRequest {
+                    package_path: workspace_root.clone(),
+                    workspace_root,
+                    file_paths: vec![file],
+                })?;
+            validate_rust_file_path(&document_request.file_paths[0])?;
+
+            let workspace_root_uri = file_uri(&document_request.workspace_root)?;
+            let db = resolve_cli_database_path(db, &config, &document_request.workspace_root)?;
+            let store = start_writer(db, &config, &document_request.workspace_root).await?;
+
+            let provider = RustAnalyzerProvider::new();
+            let extractions =
+                extract_rust_file_with_single_worker(&provider, document_request, mode).await?;
+            let summary =
+                persist_rust_file_extractions(&store, &workspace_root_uri, mode, &extractions)
+                    .await?;
+            shutdown_writer(&store).await?;
+
+            print_rust_file_summary(mode, &summary);
+        }
         Command::SingleFile {
             db,
             workspace_root,
@@ -506,6 +591,225 @@ async fn run() -> ExtractResult<()> {
     Ok(())
 }
 
+fn resolve_rust_file_mode(
+    calls: bool,
+    references: bool,
+    symbols: bool,
+) -> ExtractResult<RustFileMode> {
+    let selected = [calls, references, symbols]
+        .into_iter()
+        .filter(|selected| *selected)
+        .count();
+    if selected > 1 {
+        return Err(ExtractError::response_shape(
+            "rust-analyzer",
+            "rust-file",
+            "--calls, --references, and --symbols are mutually exclusive",
+        ));
+    }
+
+    if calls {
+        Ok(RustFileMode::Calls)
+    } else if references {
+        Ok(RustFileMode::References)
+    } else if symbols {
+        Ok(RustFileMode::Symbols)
+    } else {
+        Ok(RustFileMode::Full)
+    }
+}
+
+fn validate_rust_file_path(file_path: &Path) -> ExtractResult<()> {
+    if file_path.is_file() {
+        return Ok(());
+    }
+
+    Err(ExtractError::invalid_path(
+        file_path,
+        PathBuf::new(),
+        "rust-file requires the path to a single file",
+    ))
+}
+
+async fn extract_rust_file_with_single_worker(
+    provider: &RustAnalyzerProvider,
+    document_request: DocumentSymbolBatchRequest,
+    mode: RustFileMode,
+) -> ExtractResult<RustFileExtractions> {
+    let worker = rust_analyzer_lib::AnalysisWorker::start(&document_request.workspace_root)
+        .map_err(|source| {
+            ExtractError::rust_analyzer_lib("start single rust-file worker", source)
+        })?;
+    let result = extract_rust_file_with_worker(provider, &worker, document_request, mode).await;
+    let shutdown_result = worker.shutdown().await.map_err(|source| {
+        ExtractError::rust_analyzer_lib("shutdown single rust-file worker", source)
+    });
+
+    match (result, shutdown_result) {
+        (Ok(extractions), Ok(())) => Ok(extractions),
+        (Err(error), _) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+    }
+}
+
+async fn extract_rust_file_with_worker(
+    provider: &RustAnalyzerProvider,
+    worker: &rust_analyzer_lib::AnalysisWorkerHandle,
+    document_request: DocumentSymbolBatchRequest,
+    mode: RustFileMode,
+) -> ExtractResult<RustFileExtractions> {
+    let document_symbol_items = worker
+        .document_symbols_for_files(document_request.file_paths.clone())
+        .await
+        .map_err(|source| {
+            ExtractError::rust_analyzer_lib("rust-analyzer-lib document_symbols_for_files", source)
+        })?;
+    let document_symbols =
+        provider.map_document_symbol_items(document_request.clone(), document_symbol_items)?;
+
+    if !mode.includes_references() && !mode.includes_calls() {
+        return Ok(RustFileExtractions {
+            document_symbols,
+            references: None,
+            calls: None,
+        });
+    }
+
+    let reference_targets = if mode.includes_references() {
+        provider.reference_targets_for_document_symbols(&document_request, &document_symbols)?
+    } else {
+        Vec::new()
+    };
+    let call_targets = if mode.includes_calls() {
+        provider.call_targets_for_document_symbols(&document_request, &document_symbols)?
+    } else {
+        Vec::new()
+    };
+    let reference_target_count = reference_targets.len();
+    let call_target_count = call_targets.len();
+    let file_result = worker
+        .file_semantic_work(rust_analyzer_lib::FileSemanticWork {
+            file_path: document_request.file_paths[0].clone(),
+            reference_targets,
+            call_targets,
+        })
+        .await
+        .map_err(|source| {
+            ExtractError::rust_analyzer_lib("rust-analyzer-lib file_semantic_work", source)
+        })?;
+
+    let references = if mode.includes_references() {
+        Some(provider.map_reference_sets(
+            &document_request,
+            document_symbols.clone(),
+            file_result.reference_sets,
+            reference_target_count,
+        )?)
+    } else {
+        None
+    };
+    let calls = if mode.includes_calls() {
+        Some(provider.map_call_sets(
+            &document_request,
+            document_symbols.clone(),
+            file_result.call_sets,
+            call_target_count,
+        )?)
+    } else {
+        None
+    };
+
+    Ok(RustFileExtractions {
+        document_symbols,
+        references,
+        calls,
+    })
+}
+
+async fn persist_rust_file_extractions(
+    store: &WriteHandle,
+    workspace_root_uri: &str,
+    mode: RustFileMode,
+    extractions: &RustFileExtractions,
+) -> ExtractResult<PersistenceSummary> {
+    let mut summary = None;
+
+    if mode.includes_symbols() {
+        let document_summary = ExtractionPersister
+            .persist_document_symbol_batch(store, workspace_root_uri, &extractions.document_symbols)
+            .await?;
+        merge_optional_summary(&mut summary, document_summary);
+    }
+
+    if let Some(references) = &extractions.references {
+        let reference_summary = ExtractionPersister
+            .persist_reference_file_batch(store, workspace_root_uri, references)
+            .await?;
+        merge_optional_summary(&mut summary, reference_summary);
+    }
+
+    if let Some(calls) = &extractions.calls {
+        let call_summary = ExtractionPersister
+            .persist_call_file_batch(store, workspace_root_uri, calls)
+            .await?;
+        merge_optional_summary(&mut summary, call_summary);
+    }
+
+    summary.ok_or_else(|| {
+        ExtractError::response_shape(
+            "rust-analyzer",
+            "rust-file",
+            "rust-file extraction produced no persistence work",
+        )
+    })
+}
+
+fn merge_optional_summary(target: &mut Option<PersistenceSummary>, source: PersistenceSummary) {
+    match target {
+        Some(target) => {
+            target.run_id = source.run_id;
+            target.files += source.files;
+            target.nodes += source.nodes;
+            target.edges += source.edges;
+            target.reference_edges += source.reference_edges;
+            target.call_edges += source.call_edges;
+            target.occurrences += source.occurrences;
+            target.reference_occurrences += source.reference_occurrences;
+            target.call_occurrences += source.call_occurrences;
+            target.evidence += source.evidence;
+            target.routes_complete += source.routes_complete;
+            target.stale_nodes_closed += source.stale_nodes_closed;
+            target.stale_edges_closed += source.stale_edges_closed;
+        }
+        None => {
+            *target = Some(source);
+        }
+    }
+}
+
+fn print_rust_file_summary(mode: RustFileMode, summary: &PersistenceSummary) {
+    let contains_edges = summary
+        .edges
+        .saturating_sub(summary.reference_edges + summary.call_edges);
+    println!(
+        "mode={} workspace={} last_run={} files={} nodes={} contains_edges={} references_edges={} reference_occurrences={} calls_edges={} call_occurrences={} evidence={} routes_complete={} stale_nodes_closed={} stale_edges_closed={}",
+        mode.label(),
+        summary.workspace_id,
+        summary.run_id,
+        summary.files,
+        summary.nodes,
+        contains_edges,
+        summary.reference_edges,
+        summary.reference_occurrences,
+        summary.call_edges,
+        summary.call_occurrences,
+        summary.evidence,
+        summary.routes_complete,
+        summary.stale_nodes_closed,
+        summary.stale_edges_closed
+    );
+}
+
 fn resolve_cli_extractor_plan(
     options: CliExtractorPlanOptions,
 ) -> ExtractResult<ResolvedExtractorPlan> {
@@ -720,7 +1024,7 @@ fn resolve_cli_database_path(
 
 #[cfg(test)]
 mod cli_tests {
-    use crate::{Cli, Command, resolve_cli_database_path};
+    use crate::{Cli, Command, RustFileMode, resolve_cli_database_path, resolve_rust_file_mode};
     use clap::Parser;
     use std::{
         error::Error,
@@ -769,6 +1073,84 @@ mod cli_tests {
             _ => return Err("expected rust-workspace-all command".into()),
         }
 
+        Ok(())
+    }
+
+    #[test]
+    fn rust_file_requires_only_file_and_defaults_workspace_root() -> Result<(), Box<dyn Error>> {
+        let cli = Cli::try_parse_from([
+            "semantic-graph-extract",
+            "rust-file",
+            "crates/semantic-graph-extract/src/main.rs",
+        ])?;
+
+        match cli.command {
+            Command::RustFile {
+                db,
+                workspace_root,
+                calls,
+                references,
+                symbols,
+                file,
+            } => {
+                assert_eq!(db, None);
+                assert_eq!(workspace_root, PathBuf::from("."));
+                assert!(!calls);
+                assert!(!references);
+                assert!(!symbols);
+                assert_eq!(
+                    file,
+                    PathBuf::from("crates/semantic-graph-extract/src/main.rs")
+                );
+            }
+            _ => return Err("expected rust-file command".into()),
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn rust_file_accepts_workspace_root_and_symbols_mode() -> Result<(), Box<dyn Error>> {
+        let cli = Cli::try_parse_from([
+            "semantic-graph-extract",
+            "rust-file",
+            "--workspace-root",
+            ".",
+            "crates/semantic-graph-extract/src/main.rs",
+            "--symbols",
+        ])?;
+
+        match cli.command {
+            Command::RustFile {
+                workspace_root,
+                symbols,
+                file,
+                ..
+            } => {
+                assert_eq!(workspace_root, PathBuf::from("."));
+                assert!(symbols);
+                assert_eq!(
+                    file,
+                    PathBuf::from("crates/semantic-graph-extract/src/main.rs")
+                );
+            }
+            _ => return Err("expected rust-file command".into()),
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn rust_file_modes_are_mutually_exclusive() -> Result<(), Box<dyn Error>> {
+        assert_eq!(
+            resolve_rust_file_mode(false, false, false)?,
+            RustFileMode::Full
+        );
+        assert_eq!(
+            resolve_rust_file_mode(false, false, true)?,
+            RustFileMode::Symbols
+        );
+        assert!(resolve_rust_file_mode(true, true, false).is_err());
         Ok(())
     }
 

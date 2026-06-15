@@ -1,23 +1,34 @@
 use crate::{
-    CloseStaleRouteInput, DbManagerResult, DemoSeedSummary, EdgeEvidenceInput, EdgeInput,
-    FileInput, NodeInput, OccurrenceInput, RouteObservationInput, RouteStatusCompleteInput,
-    RouteStatusFailInput, RouteStatusStartInput, WriteProgress, WriteSummary, commands::Commands,
+    CloseStaleRouteInput, DbManagerError, DbManagerResult, DemoSeedSummary, EdgeEvidenceInput,
+    EdgeInput, FileInput, NodeInput, OccurrenceInput, RouteObservationInput,
+    RouteStatusCompleteInput, RouteStatusFailInput, RouteStatusStartInput, WriteProgress,
+    WriteSummary, commands::Commands,
 };
 
-use tokio::sync::{broadcast, mpsc, oneshot};
+use std::sync::Arc;
+use tokio::{
+    sync::{Mutex, broadcast, mpsc, oneshot},
+    task::JoinHandle,
+};
 
 #[derive(Debug, Clone)]
 pub struct WriteHandle {
     sender: mpsc::Sender<Commands>,
     progress: broadcast::Sender<WriteProgress>,
+    worker_task: Arc<Mutex<Option<JoinHandle<()>>>>,
 }
 
 impl WriteHandle {
     pub(crate) fn new(
         sender: mpsc::Sender<Commands>,
         progress: broadcast::Sender<WriteProgress>,
+        worker_task: JoinHandle<()>,
     ) -> Self {
-        Self { sender, progress }
+        Self {
+            sender,
+            progress,
+            worker_task: Arc::new(Mutex::new(Some(worker_task))),
+        }
     }
 
     pub fn subscribe_progress(&self) -> broadcast::Receiver<WriteProgress> {
@@ -257,7 +268,22 @@ impl WriteHandle {
 
     pub async fn shutdown(&self) -> DbManagerResult<WriteSummary> {
         let (response, receiver) = oneshot::channel();
-        self.sender.send(Commands::Shutdown { response }).await?;
-        receiver.await?
+        if let Err(error) = self.sender.send(Commands::Shutdown { response }).await {
+            self.await_worker_task().await?;
+            return Err(error.into());
+        }
+
+        let response_result = receiver.await;
+        self.await_worker_task().await?;
+        response_result?
+    }
+
+    async fn await_worker_task(&self) -> DbManagerResult<()> {
+        let mut worker_task = self.worker_task.lock().await;
+        let Some(worker_task) = worker_task.take() else {
+            return Ok(());
+        };
+
+        worker_task.await.map_err(DbManagerError::worker_task)
     }
 }

@@ -5,7 +5,7 @@ use crate::{
         CallBatchExtraction, DocumentSymbolBatchExtraction, DocumentSymbolExtraction,
         ExtractedCall, ExtractedReference, ReferenceBatchExtraction, RouteName, RouteScope,
     },
-    persist::PersistenceSummary,
+    persist::{PersistenceSummary, ScopedRoute},
 };
 
 use semantic_graph_db_manager::{
@@ -244,6 +244,63 @@ impl ExtractionPersister {
         }
     }
 
+    pub async fn persist_reference_file_batch(
+        &self,
+        store: &WriteHandle,
+        workspace_root_uri: &str,
+        extraction: &ReferenceBatchExtraction,
+    ) -> ExtractResult<PersistenceSummary> {
+        let file_scope_key = single_file_scope_key(
+            extraction.provider.as_str(),
+            "textDocument/references",
+            &extraction.document_symbols,
+        )?;
+        let workspace_id = self
+            .existing_workspace_id(
+                store,
+                workspace_root_uri,
+                extraction.provider.as_str(),
+                "textDocument/references",
+            )
+            .await?;
+        let run_id = store
+            .start_run(
+                workspace_id,
+                extraction.provider.as_str(),
+                extraction.provider_version.as_deref(),
+                None,
+            )
+            .await
+            .map_err(ExtractError::storage)?;
+
+        let result = self
+            .persist_reference_file_batch_after_run_started(
+                store,
+                workspace_id,
+                run_id,
+                &file_scope_key,
+                extraction,
+            )
+            .await;
+
+        match result {
+            Ok(summary) => {
+                store
+                    .finish_run(run_id, "complete")
+                    .await
+                    .map_err(ExtractError::storage)?;
+                Ok(summary)
+            }
+            Err(error) => {
+                let finish_result = store.finish_run(run_id, "failed").await;
+                if let Err(finish_error) = finish_result {
+                    return Err(ExtractError::storage(finish_error));
+                }
+                Err(error)
+            }
+        }
+    }
+
     async fn persist_reference_batch_route_only_after_run_started(
         &self,
         store: &WriteHandle,
@@ -281,11 +338,11 @@ impl ExtractionPersister {
             .map_err(ExtractError::storage)?;
 
         let result = self
-            .persist_references_after_route_started(
+            .persist_references_after_scoped_route_started(
                 store,
                 workspace_id,
                 run_id,
-                workspace_root_uri,
+                ScopedRoute::workspace(workspace_root_uri),
                 extraction,
                 &file_ids,
             )
@@ -388,11 +445,11 @@ impl ExtractionPersister {
             .map_err(ExtractError::storage)?;
 
         let result = self
-            .persist_references_after_route_started(
+            .persist_references_after_scoped_route_started(
                 store,
                 workspace_id,
                 run_id,
-                workspace_root_uri,
+                ScopedRoute::workspace(workspace_root_uri),
                 extraction,
                 &file_ids,
             )
@@ -463,12 +520,131 @@ impl ExtractionPersister {
         }
     }
 
-    async fn persist_references_after_route_started(
+    async fn persist_reference_file_batch_after_run_started(
         &self,
         store: &WriteHandle,
         workspace_id: i64,
         run_id: i64,
-        workspace_root_uri: &str,
+        file_scope_key: &str,
+        extraction: &ReferenceBatchExtraction,
+    ) -> ExtractResult<PersistenceSummary> {
+        let file_ids = self
+            .existing_document_symbol_file_ids(
+                store,
+                workspace_id,
+                extraction.provider.as_str(),
+                "textDocument/references",
+                &extraction.document_symbols,
+            )
+            .await?;
+        self.validate_reference_nodes(store, workspace_id, extraction)
+            .await?;
+        let file_id = *file_ids.get(file_scope_key).ok_or_else(|| {
+            ExtractError::response_shape(
+                extraction.provider.as_str(),
+                "textDocument/references",
+                format!("source file {file_scope_key} is missing from the database"),
+            )
+        })?;
+        let file_content_hash = single_file_content_hash(
+            extraction.provider.as_str(),
+            "textDocument/references",
+            &extraction.document_symbols,
+        )?;
+
+        store
+            .start_route_status(RouteStatusStartInput {
+                workspace_id,
+                route: RouteName::RUST_REFERENCES.as_str(),
+                scope: RouteScope::FILE.as_str(),
+                scope_key: file_scope_key,
+                file_id: Some(file_id),
+                provider: extraction.provider.as_str(),
+                provider_version: extraction.provider_version.as_deref(),
+                content_hash: file_content_hash.as_deref(),
+                run_id,
+                diagnostics_json: json!({}),
+            })
+            .await
+            .map_err(ExtractError::storage)?;
+
+        let result = self
+            .persist_references_after_scoped_route_started(
+                store,
+                workspace_id,
+                run_id,
+                ScopedRoute::file(file_scope_key),
+                extraction,
+                &file_ids,
+            )
+            .await;
+
+        match result {
+            Ok(mut summary) => {
+                store
+                    .complete_route_status(RouteStatusCompleteInput {
+                        workspace_id,
+                        route: RouteName::RUST_REFERENCES.as_str(),
+                        scope: RouteScope::FILE.as_str(),
+                        scope_key: file_scope_key,
+                        provider: extraction.provider.as_str(),
+                        provider_version: extraction.provider_version.as_deref(),
+                        content_hash: file_content_hash.as_deref(),
+                        run_id,
+                        diagnostics_json: json!({
+                            "targets_queried": extraction.summary.targets_queried,
+                            "reference_edges": summary.reference_edges,
+                            "reference_occurrences": summary.reference_occurrences,
+                            "file_fallbacks": extraction.summary.file_fallbacks,
+                            "skipped_external": extraction.summary.skipped_external,
+                        }),
+                    })
+                    .await
+                    .map_err(ExtractError::storage)?;
+                let stale_edges_closed = store
+                    .close_stale_edges_for_route(CloseStaleRouteInput {
+                        workspace_id,
+                        run_id,
+                        route: RouteName::RUST_REFERENCES.as_str(),
+                        scope: RouteScope::FILE.as_str(),
+                        scope_key: file_scope_key,
+                        provider: extraction.provider.as_str(),
+                    })
+                    .await
+                    .map_err(ExtractError::storage)?;
+
+                summary.routes_complete = 1;
+                summary.stale_edges_closed = stale_edges_closed as usize;
+
+                Ok(summary)
+            }
+            Err(error) => {
+                store
+                    .fail_route_status(RouteStatusFailInput {
+                        workspace_id,
+                        route: RouteName::RUST_REFERENCES.as_str(),
+                        scope: RouteScope::FILE.as_str(),
+                        scope_key: file_scope_key,
+                        provider: extraction.provider.as_str(),
+                        run_id,
+                        diagnostics_json: json!({
+                            "kind": error.message(),
+                            "error": error.to_string(),
+                        }),
+                    })
+                    .await
+                    .map_err(ExtractError::storage)?;
+                Err(error)
+            }
+        }
+    }
+
+    async fn persist_references_after_scoped_route_started(
+        &self,
+        store: &WriteHandle,
+        workspace_id: i64,
+        run_id: i64,
+        route: ScopedRoute<'_>,
         extraction: &ReferenceBatchExtraction,
         file_ids: &HashMap<String, i64>,
     ) -> ExtractResult<PersistenceSummary> {
@@ -491,13 +667,13 @@ impl ExtractionPersister {
 
         for reference in &extraction.references {
             let reference_summary = self
-                .persist_reference_after_route_started(
+                .persist_reference_after_scoped_route_started(
                     store,
                     workspace_id,
                     run_id,
-                    workspace_root_uri,
                     reference,
                     file_ids,
+                    route,
                 )
                 .await?;
 
@@ -515,6 +691,26 @@ impl ExtractionPersister {
         workspace_root_uri: &str,
         reference: &ExtractedReference,
         file_ids: &HashMap<String, i64>,
+    ) -> ExtractResult<PersistenceSummary> {
+        self.persist_reference_after_scoped_route_started(
+            store,
+            workspace_id,
+            run_id,
+            reference,
+            file_ids,
+            ScopedRoute::workspace(workspace_root_uri),
+        )
+        .await
+    }
+
+    async fn persist_reference_after_scoped_route_started(
+        &self,
+        store: &WriteHandle,
+        workspace_id: i64,
+        run_id: i64,
+        reference: &ExtractedReference,
+        file_ids: &HashMap<String, i64>,
+        route: ScopedRoute<'_>,
     ) -> ExtractResult<PersistenceSummary> {
         let provider = reference.provider.as_str();
         self.require_node(
@@ -610,8 +806,8 @@ impl ExtractionPersister {
                     workspace_id,
                     run_id,
                     route: RouteName::RUST_REFERENCES.as_str(),
-                    scope: RouteScope::WORKSPACE.as_str(),
-                    scope_key: workspace_root_uri,
+                    scope: route.scope,
+                    scope_key: route.scope_key,
                     provider,
                     entity_kind: "edge",
                     entity_id: &edge_id,
@@ -759,6 +955,63 @@ impl ExtractionPersister {
         }
     }
 
+    pub async fn persist_call_file_batch(
+        &self,
+        store: &WriteHandle,
+        workspace_root_uri: &str,
+        extraction: &CallBatchExtraction,
+    ) -> ExtractResult<PersistenceSummary> {
+        let file_scope_key = single_file_scope_key(
+            extraction.provider.as_str(),
+            "callHierarchy/outgoingCalls",
+            &extraction.document_symbols,
+        )?;
+        let workspace_id = self
+            .existing_workspace_id(
+                store,
+                workspace_root_uri,
+                extraction.provider.as_str(),
+                "callHierarchy/outgoingCalls",
+            )
+            .await?;
+        let run_id = store
+            .start_run(
+                workspace_id,
+                extraction.provider.as_str(),
+                extraction.provider_version.as_deref(),
+                None,
+            )
+            .await
+            .map_err(ExtractError::storage)?;
+
+        let result = self
+            .persist_call_file_batch_after_run_started(
+                store,
+                workspace_id,
+                run_id,
+                &file_scope_key,
+                extraction,
+            )
+            .await;
+
+        match result {
+            Ok(summary) => {
+                store
+                    .finish_run(run_id, "complete")
+                    .await
+                    .map_err(ExtractError::storage)?;
+                Ok(summary)
+            }
+            Err(error) => {
+                let finish_result = store.finish_run(run_id, "failed").await;
+                if let Err(finish_error) = finish_result {
+                    return Err(ExtractError::storage(finish_error));
+                }
+                Err(error)
+            }
+        }
+    }
+
     async fn persist_call_batch_route_only_after_run_started(
         &self,
         store: &WriteHandle,
@@ -796,11 +1049,11 @@ impl ExtractionPersister {
             .map_err(ExtractError::storage)?;
 
         let result = self
-            .persist_calls_after_route_started(
+            .persist_calls_after_scoped_route_started(
                 store,
                 workspace_id,
                 run_id,
-                workspace_root_uri,
+                ScopedRoute::workspace(workspace_root_uri),
                 extraction,
                 &file_ids,
             )
@@ -904,11 +1157,11 @@ impl ExtractionPersister {
             .map_err(ExtractError::storage)?;
 
         let result = self
-            .persist_calls_after_route_started(
+            .persist_calls_after_scoped_route_started(
                 store,
                 workspace_id,
                 run_id,
-                workspace_root_uri,
+                ScopedRoute::workspace(workspace_root_uri),
                 extraction,
                 &file_ids,
             )
@@ -980,12 +1233,132 @@ impl ExtractionPersister {
         }
     }
 
-    async fn persist_calls_after_route_started(
+    async fn persist_call_file_batch_after_run_started(
         &self,
         store: &WriteHandle,
         workspace_id: i64,
         run_id: i64,
-        workspace_root_uri: &str,
+        file_scope_key: &str,
+        extraction: &CallBatchExtraction,
+    ) -> ExtractResult<PersistenceSummary> {
+        let file_ids = self
+            .existing_document_symbol_file_ids(
+                store,
+                workspace_id,
+                extraction.provider.as_str(),
+                "callHierarchy/outgoingCalls",
+                &extraction.document_symbols,
+            )
+            .await?;
+        self.validate_call_nodes(store, workspace_id, extraction)
+            .await?;
+        let file_id = *file_ids.get(file_scope_key).ok_or_else(|| {
+            ExtractError::response_shape(
+                extraction.provider.as_str(),
+                "callHierarchy/outgoingCalls",
+                format!("source file {file_scope_key} is missing from the database"),
+            )
+        })?;
+        let file_content_hash = single_file_content_hash(
+            extraction.provider.as_str(),
+            "callHierarchy/outgoingCalls",
+            &extraction.document_symbols,
+        )?;
+
+        store
+            .start_route_status(RouteStatusStartInput {
+                workspace_id,
+                route: RouteName::RUST_CALLS.as_str(),
+                scope: RouteScope::FILE.as_str(),
+                scope_key: file_scope_key,
+                file_id: Some(file_id),
+                provider: extraction.provider.as_str(),
+                provider_version: extraction.provider_version.as_deref(),
+                content_hash: file_content_hash.as_deref(),
+                run_id,
+                diagnostics_json: json!({}),
+            })
+            .await
+            .map_err(ExtractError::storage)?;
+
+        let result = self
+            .persist_calls_after_scoped_route_started(
+                store,
+                workspace_id,
+                run_id,
+                ScopedRoute::file(file_scope_key),
+                extraction,
+                &file_ids,
+            )
+            .await;
+
+        match result {
+            Ok(mut summary) => {
+                store
+                    .complete_route_status(RouteStatusCompleteInput {
+                        workspace_id,
+                        route: RouteName::RUST_CALLS.as_str(),
+                        scope: RouteScope::FILE.as_str(),
+                        scope_key: file_scope_key,
+                        provider: extraction.provider.as_str(),
+                        provider_version: extraction.provider_version.as_deref(),
+                        content_hash: file_content_hash.as_deref(),
+                        run_id,
+                        diagnostics_json: json!({
+                            "callable_nodes": extraction.summary.callable_nodes,
+                            "call_edges": summary.call_edges,
+                            "call_occurrences": summary.call_occurrences,
+                            "skipped_external_targets": extraction.summary.skipped_external_targets,
+                            "skipped_unresolved_targets": extraction.summary.skipped_unresolved_targets,
+                            "skipped_non_callable_prepare_items": extraction.summary.skipped_non_callable_prepare_items,
+                        }),
+                    })
+                    .await
+                    .map_err(ExtractError::storage)?;
+                let stale_edges_closed = store
+                    .close_stale_edges_for_route(CloseStaleRouteInput {
+                        workspace_id,
+                        run_id,
+                        route: RouteName::RUST_CALLS.as_str(),
+                        scope: RouteScope::FILE.as_str(),
+                        scope_key: file_scope_key,
+                        provider: extraction.provider.as_str(),
+                    })
+                    .await
+                    .map_err(ExtractError::storage)?;
+
+                summary.routes_complete = 1;
+                summary.stale_edges_closed = stale_edges_closed as usize;
+
+                Ok(summary)
+            }
+            Err(error) => {
+                store
+                    .fail_route_status(RouteStatusFailInput {
+                        workspace_id,
+                        route: RouteName::RUST_CALLS.as_str(),
+                        scope: RouteScope::FILE.as_str(),
+                        scope_key: file_scope_key,
+                        provider: extraction.provider.as_str(),
+                        run_id,
+                        diagnostics_json: json!({
+                            "kind": error.message(),
+                            "error": error.to_string(),
+                        }),
+                    })
+                    .await
+                    .map_err(ExtractError::storage)?;
+                Err(error)
+            }
+        }
+    }
+
+    async fn persist_calls_after_scoped_route_started(
+        &self,
+        store: &WriteHandle,
+        workspace_id: i64,
+        run_id: i64,
+        route: ScopedRoute<'_>,
         extraction: &CallBatchExtraction,
         file_ids: &HashMap<String, i64>,
     ) -> ExtractResult<PersistenceSummary> {
@@ -1008,13 +1381,13 @@ impl ExtractionPersister {
 
         for call in &extraction.calls {
             let call_summary = self
-                .persist_call_after_route_started(
+                .persist_call_after_scoped_route_started(
                     store,
                     workspace_id,
                     run_id,
-                    workspace_root_uri,
                     call,
                     file_ids,
+                    route,
                 )
                 .await?;
 
@@ -1032,6 +1405,26 @@ impl ExtractionPersister {
         workspace_root_uri: &str,
         call: &ExtractedCall,
         file_ids: &HashMap<String, i64>,
+    ) -> ExtractResult<PersistenceSummary> {
+        self.persist_call_after_scoped_route_started(
+            store,
+            workspace_id,
+            run_id,
+            call,
+            file_ids,
+            ScopedRoute::workspace(workspace_root_uri),
+        )
+        .await
+    }
+
+    async fn persist_call_after_scoped_route_started(
+        &self,
+        store: &WriteHandle,
+        workspace_id: i64,
+        run_id: i64,
+        call: &ExtractedCall,
+        file_ids: &HashMap<String, i64>,
+        route: ScopedRoute<'_>,
     ) -> ExtractResult<PersistenceSummary> {
         let provider = call.provider.as_str();
         self.require_node(
@@ -1123,8 +1516,8 @@ impl ExtractionPersister {
                     workspace_id,
                     run_id,
                     route: RouteName::RUST_CALLS.as_str(),
-                    scope: RouteScope::WORKSPACE.as_str(),
-                    scope_key: workspace_root_uri,
+                    scope: route.scope,
+                    scope_key: route.scope_key,
                     provider,
                     entity_kind: "edge",
                     entity_id: &edge_id,
@@ -1192,7 +1585,7 @@ impl ExtractionPersister {
                     provider,
                     method,
                     format!(
-                        "workspace {workspace_root_uri} is missing; run rust-workspace-document-symbols first or use rust-workspace-all"
+                        "workspace {workspace_root_uri} is missing; run rust-workspace-document-symbols first, run rust-file --symbols for one file, or use rust-workspace-all"
                     ),
                 )
             })
@@ -1217,7 +1610,7 @@ impl ExtractionPersister {
                         provider,
                         method,
                         format!(
-                            "source file {} is missing from the database; run rust-workspace-document-symbols first or use rust-workspace-all",
+                            "source file {} is missing from the database; run rust-workspace-document-symbols first, run rust-file --symbols for one file, or use rust-workspace-all",
                             file_extraction.source_file.uri
                         ),
                     )
@@ -1305,7 +1698,7 @@ impl ExtractionPersister {
             provider,
             method,
             format!(
-                "symbol node {symbol_key} is missing from the database; run rust-workspace-document-symbols first or use rust-workspace-all"
+                "symbol node {symbol_key} is missing from the database; run rust-workspace-document-symbols first, run rust-file --symbols for one file, or use rust-workspace-all"
             ),
         ))
     }
@@ -1738,6 +2131,46 @@ impl ExtractionPersister {
             })
             .await
             .map_err(ExtractError::storage)
+    }
+}
+
+fn single_file_scope_key(
+    provider: &str,
+    method: &str,
+    extraction: &DocumentSymbolBatchExtraction,
+) -> ExtractResult<String> {
+    match extraction.extractions.as_slice() {
+        [file_extraction] => Ok(file_extraction.source_file.uri.clone()),
+        [] => Err(ExtractError::response_shape(
+            provider,
+            method,
+            "single-file relation extraction contained no document-symbol files",
+        )),
+        _ => Err(ExtractError::response_shape(
+            provider,
+            method,
+            "single-file relation extraction contained more than one document-symbol file",
+        )),
+    }
+}
+
+fn single_file_content_hash(
+    provider: &str,
+    method: &str,
+    extraction: &DocumentSymbolBatchExtraction,
+) -> ExtractResult<Option<String>> {
+    match extraction.extractions.as_slice() {
+        [file_extraction] => Ok(file_extraction.source_file.content_hash.clone()),
+        [] => Err(ExtractError::response_shape(
+            provider,
+            method,
+            "single-file relation extraction contained no document-symbol files",
+        )),
+        _ => Err(ExtractError::response_shape(
+            provider,
+            method,
+            "single-file relation extraction contained more than one document-symbol file",
+        )),
     }
 }
 

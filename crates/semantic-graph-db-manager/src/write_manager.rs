@@ -34,11 +34,11 @@ impl WriteManager {
         let (sender, receiver) = mpsc::channel(config.queue_capacity());
         let (progress, _unused_receiver) = broadcast::channel(config.queue_capacity().max(1));
         let worker = WriteWorker::new(pool, receiver, progress.clone());
-        tokio::spawn(async move {
+        let worker_task = tokio::spawn(async move {
             worker.run().await;
         });
 
-        Ok(WriteHandle::new(sender, progress))
+        Ok(WriteHandle::new(sender, progress, worker_task))
     }
 }
 

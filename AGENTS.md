@@ -49,6 +49,12 @@ Language intelligence:
   `crates/rust-analyzer-lib`. Do not reintroduce runtime shelling out to
   `rust-analyzer` CLI/LSIF paths unless the user explicitly asks for that
   design change.
+- The `rust-file` command is the default single-file refresh path. With no mode
+  flag, it extracts symbols, references, and calls for exactly one file, uses a
+  single `rust-analyzer-lib` worker, persists file-scoped route observations,
+  and runs file-scoped stale closing. `--symbols`, `--references`, and `--calls`
+  are special route-only modes; `--references` and `--calls` require the file's
+  symbol graph to already exist in the database.
 - C# semantic facts should come from `csharp-language-server`.
 - Avoid building a bespoke semantic interrogation system when the language
   server can provide a resolved fact.
@@ -157,8 +163,8 @@ Rust workspace:
 - `Cargo.toml`: workspace manifest.
 - `crates/rust-analyzer-lib`: in-process facade over pinned `rust-analyzer`
   submodule crates.
-- `crates/semantic-graph-extract`: Rust document-symbol, reference, call, and
-  all-in-one extractor CLI/library.
+- `crates/semantic-graph-extract`: Rust single-file, document-symbol,
+  reference, call, and all-in-one extractor CLI/library.
 - `crates/semantic-graph-smoke-tests`: route smoke-test/report surface.
 - `crates/semantic-graph-store`: SQLite graph store and stats/demo CLI.
 - `crates/semantic-graph-visualizer-server`: local read-only JSON-RPC backend
@@ -240,7 +246,7 @@ Validation:
 
 ```sh
 git submodule status
-rg -n "rust-analyzer-lib|rust-workspace-document-symbols|rust-workspace-references|rust-workspace-calls|rust-workspace-all|document_symbol|references|calls" crates
+rg -n "rust-analyzer-lib|rust-file|rust-workspace-document-symbols|rust-workspace-references|rust-workspace-calls|rust-workspace-all|document_symbol|references|calls" crates
 rg -n "semantic-graph-smoke-tests|workspace.persistence|workspace.references|workspace.calls|crate.persistence" README.md crates
 rg -n "anyhow|error-location|ExtractError|GraphStoreError|RustAnalyzerLibError" crates Cargo.toml
 rg -n "use super|::\\*|pub use .*::\\*" crates

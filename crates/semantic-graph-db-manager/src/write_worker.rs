@@ -49,17 +49,23 @@ impl WriteWorker {
     }
 
     pub(crate) async fn run(mut self) {
+        let mut shutdown_response = None;
         self.emit(DbWriteProgressKind::ManagerStarted);
         while let Some(command) = self.receiver.recv().await {
             self.summary.commands_queued += 1;
             self.emit(DbWriteProgressKind::CommandQueued);
-            let should_shutdown = matches!(command, Commands::Shutdown { .. });
-            self.handle_command(command).await;
-            if should_shutdown {
+            if let Commands::Shutdown { response } = command {
+                shutdown_response = Some(response);
                 break;
             }
+            self.handle_command(command).await;
         }
+
+        self.pool.close().await;
         self.emit(DbWriteProgressKind::ManagerShutdown);
+        if let Some(response) = shutdown_response {
+            let _send_result = response.send(Ok(self.summary));
+        }
     }
 
     fn emit(&self, kind: DbWriteProgressKind) {
@@ -176,8 +182,8 @@ impl WriteWorker {
                 let result = run_write_command!(self, self.demo_seed(&root_uri));
                 self.send_write_response(response, result).await;
             }
-            Commands::Shutdown { response } => {
-                let _send_result = response.send(Ok(self.summary));
+            Commands::Shutdown { .. } => {
+                unreachable!("shutdown is handled by WriteWorker::run");
             }
         }
     }
