@@ -300,6 +300,51 @@ async fn persists_batch_fixture_symbols_into_one_sqlite_run()
     Ok(())
 }
 
+#[tokio::test]
+async fn deleted_rust_file_marks_file_symbols_stale() -> std::result::Result<(), Box<dyn Error>> {
+    let db_path = temp_db_path()?;
+    let writer = WriteManager::start(&db_path).await?;
+    writer.migrate().await?;
+    let workspace_root_uri = file_uri(&repo_root()?)?;
+    let extraction =
+        RustDocumentSymbolMapper::map_response(request()?, fixture_response()?, None, json!({}))?;
+
+    ExtractionPersister
+        .persist_document_symbols(&writer, &workspace_root_uri, &extraction)
+        .await?;
+    let summary = ExtractionPersister
+        .mark_deleted_rust_file_stale(&writer, &workspace_root_uri, &extraction.source_file.uri)
+        .await?;
+    writer.shutdown().await?;
+
+    assert_eq!(summary.routes_complete, 3);
+    assert_eq!(summary.stale_nodes_closed, 5);
+    assert_eq!(summary.stale_edges_closed, 4);
+
+    let pool = SqlitePool::connect(&format!("sqlite://{}", db_path.display())).await?;
+    let stale_file_nodes: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM nodes WHERE kind = 'file' AND valid_to_run_id IS NOT NULL",
+    )
+    .fetch_one(&pool)
+    .await?;
+    let stale_symbols: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM nodes WHERE kind <> 'file' AND valid_to_run_id IS NOT NULL",
+    )
+    .fetch_one(&pool)
+    .await?;
+    let stale_contains_edges: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM edges WHERE relation = 'contains' AND valid_to_run_id IS NOT NULL",
+    )
+    .fetch_one(&pool)
+    .await?;
+
+    assert_eq!(stale_file_nodes, 1);
+    assert_eq!(stale_symbols, 4);
+    assert_eq!(stale_contains_edges, 4);
+
+    Ok(())
+}
+
 #[test]
 fn provider_error_format_includes_method_context() {
     let error = ExtractError::protocol(

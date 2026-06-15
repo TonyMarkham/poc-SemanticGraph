@@ -1,12 +1,14 @@
 use crate::{
     DbManagerError, DbManagerResult, DbWriteProgressKind, DemoSeedSummary, EdgeEvidenceInput,
-    EdgeInput, FileInput, NodeInput, OccurrenceInput, TextRange, WriteProgress, WriteSummary,
+    EdgeInput, FileInput, NodeInput, OccurrenceInput, StaleFileSummary, TextRange, WriteProgress,
+    WriteSummary,
     commands::Commands,
     edge_id,
     models::{
-        OwnedCloseStaleRouteInput, OwnedEdgeEvidenceInput, OwnedEdgeInput, OwnedFileInput,
-        OwnedNodeInput, OwnedOccurrenceInput, OwnedRouteObservationInput,
-        OwnedRouteStatusCompleteInput, OwnedRouteStatusFailInput, OwnedRouteStatusStartInput,
+        OwnedCloseStaleFileInput, OwnedCloseStaleRouteInput, OwnedEdgeEvidenceInput,
+        OwnedEdgeInput, OwnedFileInput, OwnedNodeInput, OwnedOccurrenceInput,
+        OwnedRouteObservationInput, OwnedRouteStatusCompleteInput, OwnedRouteStatusFailInput,
+        OwnedRouteStatusStartInput,
     },
     node_id,
 };
@@ -14,6 +16,8 @@ use crate::{
 use serde_json::json;
 use sqlx::{Executor, SqlitePool};
 use tokio::sync::{broadcast, mpsc, oneshot};
+
+const FILE_ROUTE_SCOPE: &str = "file";
 
 macro_rules! run_write_command {
     ($worker:ident, $operation:expr) => {{
@@ -172,6 +176,10 @@ impl WriteWorker {
             }
             Commands::CloseStaleNodesForRoute { input, response } => {
                 let result = run_write_command!(self, self.close_stale_nodes_for_route(input));
+                self.send_write_response(response, result).await;
+            }
+            Commands::CloseStaleFile { input, response } => {
+                let result = run_write_command!(self, self.close_stale_file(input));
                 self.send_write_response(response, result).await;
             }
             Commands::CloseStaleEdgesForRoute { input, response } => {
@@ -830,7 +838,92 @@ impl WriteWorker {
         .await
         .map_err(DbManagerError::database)?;
 
-        Ok(result.rows_affected())
+        let source_file_rows = self.close_stale_source_file_nodes_for_route(&input).await?;
+
+        Ok(result.rows_affected() + source_file_rows)
+    }
+
+    async fn close_stale_file(
+        &self,
+        input: OwnedCloseStaleFileInput,
+    ) -> DbManagerResult<StaleFileSummary> {
+        let file_id = self.file_id(input.workspace_id, &input.file_uri).await?;
+        let Some(file_id) = file_id else {
+            return Ok(StaleFileSummary {
+                file_id: None,
+                stale_nodes_closed: 0,
+                stale_edges_closed: 0,
+            });
+        };
+
+        let edge_result = sqlx::query(
+            r#"
+            UPDATE edges
+            SET valid_to_run_id = ?
+            WHERE workspace_id = ?
+              AND valid_to_run_id IS NULL
+              AND (
+                src_node_id IN (
+                  SELECT id
+                  FROM nodes
+                  WHERE workspace_id = ?
+                    AND file_id = ?
+                )
+                OR dst_node_id IN (
+                  SELECT id
+                  FROM nodes
+                  WHERE workspace_id = ?
+                    AND file_id = ?
+                )
+                OR id IN (
+                  SELECT edge_id
+                  FROM edge_evidence
+                  WHERE file_id = ?
+                )
+                OR id IN (
+                  SELECT entity_id
+                  FROM route_observations
+                  WHERE workspace_id = ?
+                    AND entity_kind = 'edge'
+                    AND source_file_id = ?
+                )
+              )
+            "#,
+        )
+        .bind(input.run_id)
+        .bind(input.workspace_id)
+        .bind(input.workspace_id)
+        .bind(file_id)
+        .bind(input.workspace_id)
+        .bind(file_id)
+        .bind(file_id)
+        .bind(input.workspace_id)
+        .bind(file_id)
+        .execute(&self.pool)
+        .await
+        .map_err(DbManagerError::database)?;
+
+        let node_result = sqlx::query(
+            r#"
+            UPDATE nodes
+            SET valid_to_run_id = ?
+            WHERE workspace_id = ?
+              AND file_id = ?
+              AND valid_to_run_id IS NULL
+            "#,
+        )
+        .bind(input.run_id)
+        .bind(input.workspace_id)
+        .bind(file_id)
+        .execute(&self.pool)
+        .await
+        .map_err(DbManagerError::database)?;
+
+        Ok(StaleFileSummary {
+            file_id: Some(file_id),
+            stale_nodes_closed: node_result.rows_affected(),
+            stale_edges_closed: edge_result.rows_affected(),
+        })
     }
 
     async fn close_stale_edges_for_route(
@@ -880,6 +973,141 @@ impl WriteWorker {
         .bind(&input.scope_key)
         .bind(&input.provider)
         .bind(input.run_id)
+        .bind(input.run_id)
+        .execute(&self.pool)
+        .await
+        .map_err(DbManagerError::database)?;
+
+        let source_file_rows = self
+            .close_stale_file_related_edges_for_route(&input)
+            .await?;
+
+        Ok(result.rows_affected() + source_file_rows)
+    }
+
+    async fn close_stale_source_file_nodes_for_route(
+        &self,
+        input: &OwnedCloseStaleRouteInput,
+    ) -> DbManagerResult<u64> {
+        if input.scope != FILE_ROUTE_SCOPE {
+            return Ok(0);
+        }
+
+        let Some(file_id) = self.file_id(input.workspace_id, &input.scope_key).await? else {
+            return Ok(0);
+        };
+
+        let result = sqlx::query(
+            r#"
+            UPDATE nodes
+            SET valid_to_run_id = ?
+            WHERE workspace_id = ?
+              AND valid_to_run_id IS NULL
+              AND id IN (
+                SELECT DISTINCT previous.entity_id
+                FROM route_observations previous
+                WHERE previous.workspace_id = ?
+                  AND previous.route = ?
+                  AND previous.provider = ?
+                  AND previous.entity_kind = 'node'
+                  AND previous.source_file_id = ?
+                  AND previous.run_id <> ?
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM route_observations current
+                    WHERE current.workspace_id = previous.workspace_id
+                      AND current.route = previous.route
+                      AND current.scope = ?
+                      AND current.scope_key = ?
+                      AND current.provider = previous.provider
+                      AND current.entity_kind = previous.entity_kind
+                      AND current.entity_id = previous.entity_id
+                      AND current.run_id = ?
+                  )
+              )
+            "#,
+        )
+        .bind(input.run_id)
+        .bind(input.workspace_id)
+        .bind(input.workspace_id)
+        .bind(&input.route)
+        .bind(&input.provider)
+        .bind(file_id)
+        .bind(input.run_id)
+        .bind(&input.scope)
+        .bind(&input.scope_key)
+        .bind(input.run_id)
+        .execute(&self.pool)
+        .await
+        .map_err(DbManagerError::database)?;
+
+        Ok(result.rows_affected())
+    }
+
+    async fn close_stale_file_related_edges_for_route(
+        &self,
+        input: &OwnedCloseStaleRouteInput,
+    ) -> DbManagerResult<u64> {
+        if input.scope != FILE_ROUTE_SCOPE {
+            return Ok(0);
+        }
+
+        let Some(file_id) = self.file_id(input.workspace_id, &input.scope_key).await? else {
+            return Ok(0);
+        };
+
+        let result = sqlx::query(
+            r#"
+            UPDATE edges
+            SET valid_to_run_id = ?
+            WHERE workspace_id = ?
+              AND valid_to_run_id IS NULL
+              AND id IN (
+                SELECT DISTINCT previous.entity_id
+                FROM route_observations previous
+                JOIN edges previous_edge
+                  ON previous_edge.id = previous.entity_id
+                 AND previous_edge.workspace_id = previous.workspace_id
+                LEFT JOIN nodes previous_src
+                  ON previous_src.id = previous_edge.src_node_id
+                LEFT JOIN nodes previous_dst
+                  ON previous_dst.id = previous_edge.dst_node_id
+                WHERE previous.workspace_id = ?
+                  AND previous.route = ?
+                  AND previous.provider = ?
+                  AND previous.entity_kind = 'edge'
+                  AND (
+                    previous.source_file_id = ?
+                    OR previous_src.file_id = ?
+                    OR previous_dst.file_id = ?
+                  )
+                  AND previous.run_id <> ?
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM route_observations current
+                    WHERE current.workspace_id = previous.workspace_id
+                      AND current.route = previous.route
+                      AND current.scope = ?
+                      AND current.scope_key = ?
+                      AND current.provider = previous.provider
+                      AND current.entity_kind = previous.entity_kind
+                      AND current.entity_id = previous.entity_id
+                      AND current.run_id = ?
+                  )
+              )
+            "#,
+        )
+        .bind(input.run_id)
+        .bind(input.workspace_id)
+        .bind(input.workspace_id)
+        .bind(&input.route)
+        .bind(&input.provider)
+        .bind(file_id)
+        .bind(file_id)
+        .bind(file_id)
+        .bind(input.run_id)
+        .bind(&input.scope)
+        .bind(&input.scope_key)
         .bind(input.run_id)
         .execute(&self.pool)
         .await

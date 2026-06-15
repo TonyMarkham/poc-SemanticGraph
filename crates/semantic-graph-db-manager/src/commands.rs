@@ -1,9 +1,10 @@
 use crate::{
-    DbManagerResult, DemoSeedSummary, WriteSummary,
+    DbManagerResult, DemoSeedSummary, StaleFileSummary, WriteSummary,
     models::{
-        OwnedCloseStaleRouteInput, OwnedEdgeEvidenceInput, OwnedEdgeInput, OwnedFileInput,
-        OwnedNodeInput, OwnedOccurrenceInput, OwnedRouteObservationInput,
-        OwnedRouteStatusCompleteInput, OwnedRouteStatusFailInput, OwnedRouteStatusStartInput,
+        OwnedCloseStaleFileInput, OwnedCloseStaleRouteInput, OwnedEdgeEvidenceInput,
+        OwnedEdgeInput, OwnedFileInput, OwnedNodeInput, OwnedOccurrenceInput,
+        OwnedRouteObservationInput, OwnedRouteStatusCompleteInput, OwnedRouteStatusFailInput,
+        OwnedRouteStatusStartInput,
     },
 };
 
@@ -83,6 +84,10 @@ pub(crate) enum Commands {
         input: OwnedCloseStaleRouteInput,
         response: oneshot::Sender<DbManagerResult<u64>>,
     },
+    CloseStaleFile {
+        input: OwnedCloseStaleFileInput,
+        response: oneshot::Sender<DbManagerResult<StaleFileSummary>>,
+    },
     CloseStaleEdgesForRoute {
         input: OwnedCloseStaleRouteInput,
         response: oneshot::Sender<DbManagerResult<u64>>,
@@ -116,6 +121,7 @@ impl Commands {
             Self::FailRouteStatus { .. } => "fail_route_status",
             Self::RecordRouteObservation { .. } => "record_route_observation",
             Self::CloseStaleNodesForRoute { .. } => "close_stale_nodes_for_route",
+            Self::CloseStaleFile { .. } => "close_stale_file",
             Self::CloseStaleEdgesForRoute { .. } => "close_stale_edges_for_route",
             Self::DemoSeed { .. } => "demo_seed",
             Self::Shutdown { .. } => "shutdown",

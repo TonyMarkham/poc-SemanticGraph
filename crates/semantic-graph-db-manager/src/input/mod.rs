@@ -5,6 +5,7 @@
 //! command payloads. `crate::models` intentionally mirrors this module with
 //! owned versions that can safely cross the async write queue boundary.
 
+mod close_stale_file_input;
 mod close_stale_route_input;
 mod edge_evidence_input;
 mod edge_input;
@@ -19,6 +20,7 @@ mod text_range;
 
 // ---------------------------------------------------------------------------------------------- //
 
+pub use close_stale_file_input::CloseStaleFileInput;
 pub use close_stale_route_input::CloseStaleRouteInput;
 pub use edge_evidence_input::EdgeEvidenceInput;
 pub use edge_input::EdgeInput;

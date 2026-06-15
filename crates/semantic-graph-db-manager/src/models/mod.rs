@@ -4,6 +4,7 @@
 //! borrow from caller-owned data, while these models own strings and JSON so a
 //! command can be queued and processed after the caller's stack frame is gone.
 
+mod owned_close_stale_file_input;
 mod owned_close_stale_route_input;
 mod owned_edge_evidence_input;
 mod owned_edge_input;
@@ -15,6 +16,7 @@ mod owned_route_status_complete_input;
 mod owned_route_status_fail_input;
 mod owned_route_status_start_input;
 
+pub(crate) use owned_close_stale_file_input::OwnedCloseStaleFileInput;
 pub(crate) use owned_close_stale_route_input::OwnedCloseStaleRouteInput;
 pub(crate) use owned_edge_evidence_input::OwnedEdgeEvidenceInput;
 pub(crate) use owned_edge_input::OwnedEdgeInput;

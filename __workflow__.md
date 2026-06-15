@@ -9,26 +9,16 @@ I want you to Audit the graphify repo in this repo's submodules with the followi
 - It is my intention to use `csharp-language-server` (source in this repo's submodules) as an LSP for building the semantic model for C# solutions
 ```
 
-````text
-I want to add another CLI command to the `crates/semantic-graph-extract` CLI crate.
-- `rust-file` should perform a full extraction when fed the path to a single file
-- Mandatory to pass it the path to a single file
-- Option: --calls | Only extract calls to database
-- Option: --references | Only extract references to database
-- Option: --symbols | Only extract Symbols to database
-
-**Full Extraction**
-```bash
-./target/release/semantic-graph-extract rust-file crates/semantic-graph-extract/src/main.rs
+```text
+My Smoke Test:
+- Start with simple wip crate w/o FooBar or FooBarbaz
+- Ran full repo extract
+- Add FooBar and FooBarBaz including related changes to lib
+- Ran rust-file extract on the 3 new files
+- Modified FooBar to expose new as pub
+- Modified FooBarBaz to make calls to FooBar::new and AuditNote::new
+- Ran rust-file on FooBar and FooBarBaz
 ```
-
-**Extract only symbols**
-```bash
-./target/release/semantic-graph-extract rust-file crates/semantic-graph-extract/src/main.rs --symbols
-```
-
-For single file extraction, I expect not to have to spin up multiple RAlib workers. If you don't want to write a new workflow, maybe use the existing one and when using the `rust-file` command, force only spinning up a single worker
-````
 
 ---
 

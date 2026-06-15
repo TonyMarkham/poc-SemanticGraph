@@ -55,13 +55,12 @@ db-smoke db=demo_db:
 confidence:
     just --justfile {{justfile()}} sqlx-prepare
     just --justfile {{justfile()}} fmt
-    SQLX_OFFLINE=true cargo check -p {{package}}
-    SQLX_OFFLINE=true cargo clippy -p {{package}} --all-targets -- -D warnings
-    SQLX_OFFLINE=true cargo test -p {{package}}
-    SQLX_OFFLINE=true cargo check -p {{extract_package}}
-    SQLX_OFFLINE=true cargo clippy -p {{extract_package}} --all-targets -- -D warnings
-    SQLX_OFFLINE=true cargo test -p {{extract_package}}
-    just --justfile {{justfile()}} db-smoke
+    SQLX_OFFLINE=true cargo check
+    SQLX_OFFLINE=true cargo clippy --all-targets -- -D warnings
+    SQLX_OFFLINE=true cargo build
+    SQLX_OFFLINE=true cargo build --release
+    SQLX_OFFLINE=true cargo test
+    just --justfile {{justfile()}} confidence-rust-workspace-all
 
 # Exercise rust-analyzer document-symbol extraction against crates/wip.
 rust-extract-smoke:
@@ -116,6 +115,10 @@ rust-workspace-calls-smoke:
       --db .local/rust-workspace-calls.db \
       --workspace-root .
     cargo run -p {{package}} -- stats --db .local/rust-workspace-calls.db
+
+# Exercise complete workspace extraction as part of confidence checks.
+confidence-rust-workspace-all:
+    ./target/release/semantic-graph-extract rust-workspace-all --workspace-root .
 
 # Exercise complete workspace-scoped rust-analyzer extraction in one CLI call.
 rust-workspace-all-smoke:

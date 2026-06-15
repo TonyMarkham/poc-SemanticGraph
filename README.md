@@ -153,6 +153,32 @@ Each default `rust-file` invocation records document-symbol, reference, and call
 runs. Canonical file, node, and edge rows are upserted, stale file-scoped facts
 are soft-closed, and occurrence and evidence rows are inserted as run proof.
 
+## Mark A Deleted Rust File Stale
+
+Use this from file-watcher remove events when `notify` reports the path to a
+Rust file that no longer exists:
+
+```sh
+./target/release/semantic-graph-extract rust-file-deleted crates/wip/src/foo.rs
+```
+
+`rust-file-deleted` defaults `--workspace-root` to `.` and accepts the deleted
+file path even when it is already absent from disk. Relative deleted-file paths
+are resolved under the workspace root.
+
+The command writes through the DB manager, records completed file-scoped
+document-symbol, reference, and call routes with zero observations, and marks
+active graph facts for that file stale. This soft-closes nodes whose `file_id`
+matches the deleted file and edges connected to those nodes or backed by
+evidence/route observations from that file. It does not remove historical
+occurrence/evidence rows or delete the `files` row.
+
+Example successful output:
+
+```text
+mode=deleted file=crates/wip/src/foo.rs workspace=1 run=4 routes_complete=3 stale_nodes_closed=5 stale_edges_closed=4
+```
+
 ## Extract A Rust Crate
 
 Use this when you want to extract every Rust source file that `rust-analyzer`

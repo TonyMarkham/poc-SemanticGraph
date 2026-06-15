@@ -3,6 +3,7 @@ use semantic_graph_extract::{
     benchmark::{BenchmarkSummary, Stopwatch},
     document_symbols::paths::{
         file_uri, validate_document_symbol_batch_request, validate_document_symbol_request,
+        workspace_relative_path,
     },
     model::{
         CallBatchExtraction, CallBatchRequest, DocumentSymbolBatchExtraction,
@@ -23,7 +24,7 @@ use semantic_graph_db_manager::{Config, WriteHandle, WriteManager};
 use clap::{Parser, Subcommand};
 use std::{
     error::Error,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
 
 #[derive(Debug, Parser)]
@@ -50,6 +51,15 @@ enum Command {
         references: bool,
         #[arg(long)]
         symbols: bool,
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+    },
+    #[command(name = "rust-file-deleted")]
+    RustFileDeleted {
+        #[arg(long)]
+        db: Option<PathBuf>,
+        #[arg(long, value_name = "WORKSPACE_ROOT", default_value = ".")]
+        workspace_root: PathBuf,
         #[arg(value_name = "FILE")]
         file: PathBuf,
     },
@@ -149,6 +159,7 @@ impl RustFileMode {
 }
 
 struct RustFileExtractions {
+    file_scope_key: String,
     document_symbols: DocumentSymbolBatchExtraction,
     references: Option<ReferenceBatchExtraction>,
     calls: Option<CallBatchExtraction>,
@@ -207,6 +218,24 @@ async fn run() -> ExtractResult<()> {
             shutdown_writer(&store).await?;
 
             print_rust_file_summary(mode, &summary);
+        }
+        Command::RustFileDeleted {
+            db,
+            workspace_root,
+            file,
+        } => {
+            let (workspace_root, deleted_file_uri, relative_path) =
+                validate_deleted_rust_file_request(workspace_root, &file)?;
+            let workspace_root_uri = file_uri(&workspace_root)?;
+            let db = resolve_cli_database_path(db, &config, &workspace_root)?;
+            let store = start_writer(db, &config, &workspace_root).await?;
+
+            let summary = ExtractionPersister
+                .mark_deleted_rust_file_stale(&store, &workspace_root_uri, &deleted_file_uri)
+                .await?;
+            shutdown_writer(&store).await?;
+
+            print_rust_file_deleted_summary(&relative_path, &summary);
         }
         Command::SingleFile {
             db,
@@ -631,6 +660,66 @@ fn validate_rust_file_path(file_path: &Path) -> ExtractResult<()> {
     ))
 }
 
+fn validate_deleted_rust_file_request(
+    workspace_root: PathBuf,
+    file_path: &Path,
+) -> ExtractResult<(PathBuf, String, String)> {
+    let workspace_root = workspace_root
+        .canonicalize()
+        .map_err(|source| ExtractError::io("canonicalize workspace root", None, source))?;
+    let file_path = resolve_deleted_file_path(&workspace_root, file_path)?;
+
+    if file_path.exists() && !file_path.is_file() {
+        return Err(ExtractError::invalid_path(
+            &file_path,
+            &workspace_root,
+            "deleted rust-file path must be a file path",
+        ));
+    }
+
+    let relative_path = workspace_relative_path(&workspace_root, &file_path)?;
+    let file_uri = file_uri(&file_path)?;
+
+    Ok((workspace_root, file_uri, relative_path))
+}
+
+fn resolve_deleted_file_path(workspace_root: &Path, file_path: &Path) -> ExtractResult<PathBuf> {
+    let file_path = if file_path.is_absolute() {
+        file_path.to_path_buf()
+    } else {
+        workspace_root.join(file_path)
+    };
+    let file_path = normalize_lexical_path(&file_path);
+
+    if !file_path.starts_with(workspace_root) {
+        return Err(ExtractError::invalid_path(
+            &file_path,
+            workspace_root,
+            "deleted rust-file path is outside the workspace root",
+        ));
+    }
+
+    Ok(file_path)
+}
+
+fn normalize_lexical_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::RootDir => normalized.push(component.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::Normal(value) => normalized.push(value),
+        }
+    }
+
+    normalized
+}
+
 async fn extract_rust_file_with_single_worker(
     provider: &RustAnalyzerProvider,
     document_request: DocumentSymbolBatchRequest,
@@ -658,40 +747,38 @@ async fn extract_rust_file_with_worker(
     document_request: DocumentSymbolBatchRequest,
     mode: RustFileMode,
 ) -> ExtractResult<RustFileExtractions> {
-    let document_symbol_items = worker
-        .document_symbols_for_files(document_request.file_paths.clone())
-        .await
-        .map_err(|source| {
-            ExtractError::rust_analyzer_lib("rust-analyzer-lib document_symbols_for_files", source)
-        })?;
+    let file_scope_key = file_uri(&document_request.file_paths[0])?;
     let document_symbols =
-        provider.map_document_symbol_items(document_request.clone(), document_symbol_items)?;
+        document_symbols_with_worker(provider, worker, document_request.clone()).await?;
 
     if !mode.includes_references() && !mode.includes_calls() {
         return Ok(RustFileExtractions {
+            file_scope_key,
             document_symbols,
             references: None,
             calls: None,
         });
     }
 
+    let (relation_document_request, relation_document_symbols) =
+        rust_file_relation_document_symbols(provider, worker, &document_request).await?;
+
     let reference_targets = if mode.includes_references() {
+        provider.reference_targets_for_document_symbols(
+            &relation_document_request,
+            &relation_document_symbols,
+        )?
+    } else if mode.includes_calls() {
         provider.reference_targets_for_document_symbols(&document_request, &document_symbols)?
     } else {
         Vec::new()
     };
-    let call_targets = if mode.includes_calls() {
-        provider.call_targets_for_document_symbols(&document_request, &document_symbols)?
-    } else {
-        Vec::new()
-    };
     let reference_target_count = reference_targets.len();
-    let call_target_count = call_targets.len();
-    let file_result = worker
+    let reference_result = worker
         .file_semantic_work(rust_analyzer_lib::FileSemanticWork {
             file_path: document_request.file_paths[0].clone(),
             reference_targets,
-            call_targets,
+            call_targets: Vec::new(),
         })
         .await
         .map_err(|source| {
@@ -699,31 +786,192 @@ async fn extract_rust_file_with_worker(
         })?;
 
     let references = if mode.includes_references() {
+        let reference_sets = reference_sets_for_file_relations(
+            reference_result.reference_sets.clone(),
+            &document_request.file_paths[0],
+        );
         Some(provider.map_reference_sets(
-            &document_request,
-            document_symbols.clone(),
-            file_result.reference_sets,
+            &relation_document_request,
+            relation_document_symbols.clone(),
+            reference_sets,
             reference_target_count,
         )?)
     } else {
         None
     };
     let calls = if mode.includes_calls() {
-        Some(provider.map_call_sets(
-            &document_request,
-            document_symbols.clone(),
-            file_result.call_sets,
+        let inbound_caller_files = caller_files_referencing_file(
+            &reference_result.reference_sets,
+            &document_request.file_paths[0],
+        );
+        let call_targets = call_targets_for_file_relations(
+            provider.call_targets_for_document_symbols(
+                &relation_document_request,
+                &relation_document_symbols,
+            )?,
+            &document_request.file_paths[0],
+            &inbound_caller_files,
+        );
+        let call_target_count = call_targets.len();
+        let call_result = worker
+            .file_semantic_work(rust_analyzer_lib::FileSemanticWork {
+                file_path: document_request.file_paths[0].clone(),
+                reference_targets: Vec::new(),
+                call_targets,
+            })
+            .await
+            .map_err(|source| {
+                ExtractError::rust_analyzer_lib("rust-analyzer-lib file_semantic_work", source)
+            })?;
+        let calls = provider.map_call_sets(
+            &relation_document_request,
+            relation_document_symbols,
+            call_result.call_sets,
             call_target_count,
-        )?)
+        )?;
+        Some(call_extraction_for_file_relations(calls, &file_scope_key))
     } else {
         None
     };
 
     Ok(RustFileExtractions {
+        file_scope_key,
         document_symbols,
         references,
         calls,
     })
+}
+
+async fn document_symbols_with_worker(
+    provider: &RustAnalyzerProvider,
+    worker: &rust_analyzer_lib::AnalysisWorkerHandle,
+    document_request: DocumentSymbolBatchRequest,
+) -> ExtractResult<DocumentSymbolBatchExtraction> {
+    let document_symbol_items = worker
+        .document_symbols_for_files(document_request.file_paths.clone())
+        .await
+        .map_err(|source| {
+            ExtractError::rust_analyzer_lib("rust-analyzer-lib document_symbols_for_files", source)
+        })?;
+
+    provider.map_document_symbol_items(document_request, document_symbol_items)
+}
+
+async fn rust_file_relation_document_symbols(
+    provider: &RustAnalyzerProvider,
+    worker: &rust_analyzer_lib::AnalysisWorkerHandle,
+    document_request: &DocumentSymbolBatchRequest,
+) -> ExtractResult<(DocumentSymbolBatchRequest, DocumentSymbolBatchExtraction)> {
+    let mut file_paths =
+        provider.discover_rust_workspace_source_files(&document_request.workspace_root)?;
+    file_paths.push(document_request.file_paths[0].clone());
+
+    let relation_document_request =
+        validate_document_symbol_batch_request(DocumentSymbolBatchRequest {
+            package_path: document_request.workspace_root.clone(),
+            workspace_root: document_request.workspace_root.clone(),
+            file_paths,
+        })?;
+    let relation_document_symbols =
+        document_symbols_with_worker(provider, worker, relation_document_request.clone()).await?;
+
+    Ok((relation_document_request, relation_document_symbols))
+}
+
+fn reference_sets_for_file_relations(
+    mut reference_sets: Vec<rust_analyzer_lib::ResolvedReferenceSet>,
+    file_path: &Path,
+) -> Vec<rust_analyzer_lib::ResolvedReferenceSet> {
+    for reference_set in &mut reference_sets {
+        let target_is_in_file = reference_set.target_file_path == file_path;
+        reference_set
+            .references
+            .retain(|location| target_is_in_file || location.file_path == file_path);
+    }
+
+    reference_sets
+        .into_iter()
+        .filter(|reference_set| !reference_set.references.is_empty())
+        .collect()
+}
+
+fn caller_files_referencing_file(
+    reference_sets: &[rust_analyzer_lib::ResolvedReferenceSet],
+    file_path: &Path,
+) -> Vec<PathBuf> {
+    let mut caller_files = Vec::new();
+    for reference_set in reference_sets {
+        if reference_set.target_file_path != file_path {
+            continue;
+        }
+
+        for location in &reference_set.references {
+            if location.file_path == file_path || caller_files.contains(&location.file_path) {
+                continue;
+            }
+
+            caller_files.push(location.file_path.clone());
+        }
+    }
+
+    caller_files
+}
+
+fn call_targets_for_file_relations(
+    call_targets: Vec<rust_analyzer_lib::ResolvedCallTarget>,
+    file_path: &Path,
+    inbound_caller_files: &[PathBuf],
+) -> Vec<rust_analyzer_lib::ResolvedCallTarget> {
+    let mut selected_targets = Vec::new();
+    for target in call_targets {
+        if target.file_path != file_path && !inbound_caller_files.contains(&target.file_path) {
+            continue;
+        }
+        if selected_targets.contains(&target) {
+            continue;
+        }
+
+        selected_targets.push(target);
+    }
+
+    selected_targets
+}
+
+fn call_extraction_for_file_relations(
+    mut extraction: CallBatchExtraction,
+    file_scope_key: &str,
+) -> CallBatchExtraction {
+    extraction.calls = extraction
+        .calls
+        .into_iter()
+        .filter_map(|mut call| {
+            let callee_is_in_file =
+                symbol_key_belongs_to_file(&call.callee_symbol_key, file_scope_key);
+            call.occurrences
+                .retain(|occurrence| occurrence.file_uri == file_scope_key || callee_is_in_file);
+            if call.occurrences.is_empty() {
+                None
+            } else {
+                Some(call)
+            }
+        })
+        .collect();
+    extraction.summary.call_edges = extraction.calls.len();
+    extraction.summary.call_occurrences = extraction
+        .calls
+        .iter()
+        .map(|call| call.occurrences.len())
+        .sum();
+
+    extraction
+}
+
+fn symbol_key_belongs_to_file(symbol_key: &str, file_scope_key: &str) -> bool {
+    let file_node_key = format!("file:{file_scope_key}");
+    symbol_key == file_node_key
+        || symbol_key
+            .strip_prefix(file_scope_key)
+            .is_some_and(|suffix| suffix.starts_with('#'))
 }
 
 async fn persist_rust_file_extractions(
@@ -743,14 +991,24 @@ async fn persist_rust_file_extractions(
 
     if let Some(references) = &extractions.references {
         let reference_summary = ExtractionPersister
-            .persist_reference_file_batch(store, workspace_root_uri, references)
+            .persist_reference_file_batch_for_file(
+                store,
+                workspace_root_uri,
+                &extractions.file_scope_key,
+                references,
+            )
             .await?;
         merge_optional_summary(&mut summary, reference_summary);
     }
 
     if let Some(calls) = &extractions.calls {
         let call_summary = ExtractionPersister
-            .persist_call_file_batch(store, workspace_root_uri, calls)
+            .persist_call_file_batch_for_file(
+                store,
+                workspace_root_uri,
+                &extractions.file_scope_key,
+                calls,
+            )
             .await?;
         merge_optional_summary(&mut summary, call_summary);
     }
@@ -804,6 +1062,18 @@ fn print_rust_file_summary(mode: RustFileMode, summary: &PersistenceSummary) {
         summary.call_edges,
         summary.call_occurrences,
         summary.evidence,
+        summary.routes_complete,
+        summary.stale_nodes_closed,
+        summary.stale_edges_closed
+    );
+}
+
+fn print_rust_file_deleted_summary(relative_path: &str, summary: &PersistenceSummary) {
+    println!(
+        "mode=deleted file={} workspace={} run={} routes_complete={} stale_nodes_closed={} stale_edges_closed={}",
+        relative_path,
+        summary.workspace_id,
+        summary.run_id,
         summary.routes_complete,
         summary.stale_nodes_closed,
         summary.stale_edges_closed
@@ -1024,7 +1294,10 @@ fn resolve_cli_database_path(
 
 #[cfg(test)]
 mod cli_tests {
-    use crate::{Cli, Command, RustFileMode, resolve_cli_database_path, resolve_rust_file_mode};
+    use crate::{
+        Cli, Command, RustFileMode, resolve_cli_database_path, resolve_rust_file_mode,
+        validate_deleted_rust_file_request,
+    };
     use clap::Parser;
     use std::{
         error::Error,
@@ -1151,6 +1424,44 @@ mod cli_tests {
             RustFileMode::Symbols
         );
         assert!(resolve_rust_file_mode(true, true, false).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn rust_file_deleted_defaults_workspace_root() -> Result<(), Box<dyn Error>> {
+        let cli = Cli::try_parse_from([
+            "semantic-graph-extract",
+            "rust-file-deleted",
+            "crates/wip/src/foo.rs",
+        ])?;
+
+        match cli.command {
+            Command::RustFileDeleted {
+                db,
+                workspace_root,
+                file,
+            } => {
+                assert_eq!(db, None);
+                assert_eq!(workspace_root, PathBuf::from("."));
+                assert_eq!(file, PathBuf::from("crates/wip/src/foo.rs"));
+            }
+            _ => return Err("expected rust-file-deleted command".into()),
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn rust_file_deleted_accepts_missing_file_path() -> Result<(), Box<dyn Error>> {
+        let root = temp_dir("deleted-file-root")?;
+        let deleted_file = PathBuf::from("crates/wip/src/deleted.rs");
+        let (workspace_root, file_uri, relative_path) =
+            validate_deleted_rust_file_request(root.clone(), &deleted_file)?;
+
+        assert_eq!(workspace_root, root.canonicalize()?);
+        assert!(file_uri.ends_with("/crates/wip/src/deleted.rs"));
+        assert_eq!(relative_path, "crates/wip/src/deleted.rs");
+
         Ok(())
     }
 

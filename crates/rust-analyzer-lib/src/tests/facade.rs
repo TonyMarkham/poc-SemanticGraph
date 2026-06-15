@@ -146,7 +146,9 @@ fn extracts_outgoing_calls_for_wip_callable() -> Result<(), Box<dyn Error>> {
 }
 
 #[tokio::test(flavor = "current_thread")]
+#[allow(clippy::await_holding_lock)]
 async fn analysis_worker_serves_reference_and_call_queries() -> Result<(), Box<dyn Error>> {
+    // Serialize rust-analyzer workspace-load tests; this guard is intentionally held across awaits.
     let _guard = workspace_load_guard()?;
     let repo_root = repo_root()?;
     let target_file_path = repo_root.join("crates/wip/src/pipeline.rs");
@@ -193,7 +195,9 @@ async fn analysis_worker_serves_reference_and_call_queries() -> Result<(), Box<d
 }
 
 #[tokio::test(flavor = "current_thread")]
+#[allow(clippy::await_holding_lock)]
 async fn analysis_worker_pool_serves_parallel_query_lanes() -> Result<(), Box<dyn Error>> {
+    // Serialize rust-analyzer workspace-load tests; this guard is intentionally held across awaits.
     let _guard = workspace_load_guard()?;
     let repo_root = repo_root()?;
     let target_file_path = repo_root.join("crates/wip/src/pipeline.rs");

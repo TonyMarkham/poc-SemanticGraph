@@ -3,15 +3,16 @@ use crate::{
     document_symbols::paths::basename_from_relative_path,
     model::{
         CallBatchExtraction, DocumentSymbolBatchExtraction, DocumentSymbolExtraction,
-        ExtractedCall, ExtractedReference, ReferenceBatchExtraction, RouteName, RouteScope,
+        ExtractedCall, ExtractedReference, ProviderId, ReferenceBatchExtraction, RouteName,
+        RouteScope,
     },
     persist::{PersistenceSummary, ScopedRoute},
 };
 
 use semantic_graph_db_manager::{
-    CloseStaleRouteInput, EdgeEvidenceInput, EdgeInput, FileInput, NodeInput, OccurrenceInput,
-    RouteObservationInput, RouteStatusCompleteInput, RouteStatusFailInput, RouteStatusStartInput,
-    WriteHandle, node_id,
+    CloseStaleFileInput, CloseStaleRouteInput, EdgeEvidenceInput, EdgeInput, FileInput, NodeInput,
+    OccurrenceInput, RouteObservationInput, RouteStatusCompleteInput, RouteStatusFailInput,
+    RouteStatusStartInput, WriteHandle, node_id,
 };
 
 use serde_json::{Value, json};
@@ -20,6 +21,123 @@ use std::collections::HashMap;
 pub struct ExtractionPersister;
 
 impl ExtractionPersister {
+    pub async fn mark_deleted_rust_file_stale(
+        &self,
+        store: &WriteHandle,
+        workspace_root_uri: &str,
+        file_uri: &str,
+    ) -> ExtractResult<PersistenceSummary> {
+        let provider = ProviderId::rust_analyzer();
+        let workspace_id = store
+            .create_workspace(workspace_root_uri, "rust")
+            .await
+            .map_err(ExtractError::storage)?;
+        let run_id = store
+            .start_run(workspace_id, provider.as_str(), None, None)
+            .await
+            .map_err(ExtractError::storage)?;
+
+        let result = self
+            .mark_deleted_rust_file_stale_after_run_started(
+                store,
+                workspace_id,
+                run_id,
+                provider,
+                file_uri,
+            )
+            .await;
+
+        match result {
+            Ok(summary) => {
+                store
+                    .finish_run(run_id, "complete")
+                    .await
+                    .map_err(ExtractError::storage)?;
+                Ok(summary)
+            }
+            Err(error) => {
+                let finish_result = store.finish_run(run_id, "failed").await;
+                if let Err(finish_error) = finish_result {
+                    return Err(ExtractError::storage(finish_error));
+                }
+                Err(error)
+            }
+        }
+    }
+
+    async fn mark_deleted_rust_file_stale_after_run_started(
+        &self,
+        store: &WriteHandle,
+        workspace_id: i64,
+        run_id: i64,
+        provider: ProviderId,
+        file_uri: &str,
+    ) -> ExtractResult<PersistenceSummary> {
+        let file_id = store
+            .file_id(workspace_id, file_uri)
+            .await
+            .map_err(ExtractError::storage)?;
+        let mut summary = empty_summary(workspace_id, run_id);
+
+        for route in [
+            RouteName::RUST_DOCUMENT_SYMBOLS,
+            RouteName::RUST_REFERENCES,
+            RouteName::RUST_CALLS,
+        ] {
+            store
+                .start_route_status(RouteStatusStartInput {
+                    workspace_id,
+                    route: route.as_str(),
+                    scope: RouteScope::FILE.as_str(),
+                    scope_key: file_uri,
+                    file_id,
+                    provider: provider.as_str(),
+                    provider_version: None,
+                    content_hash: None,
+                    run_id,
+                    diagnostics_json: json!({
+                        "file_deleted": true,
+                        "source": "rust-file-deleted",
+                    }),
+                })
+                .await
+                .map_err(ExtractError::storage)?;
+
+            store
+                .complete_route_status(RouteStatusCompleteInput {
+                    workspace_id,
+                    route: route.as_str(),
+                    scope: RouteScope::FILE.as_str(),
+                    scope_key: file_uri,
+                    provider: provider.as_str(),
+                    provider_version: None,
+                    content_hash: None,
+                    run_id,
+                    diagnostics_json: json!({
+                        "file_deleted": true,
+                        "observations": 0,
+                        "source": "rust-file-deleted",
+                    }),
+                })
+                .await
+                .map_err(ExtractError::storage)?;
+            summary.routes_complete += 1;
+        }
+
+        let stale_summary = store
+            .close_stale_file(CloseStaleFileInput {
+                workspace_id,
+                run_id,
+                file_uri,
+            })
+            .await
+            .map_err(ExtractError::storage)?;
+        summary.stale_nodes_closed = stale_summary.stale_nodes_closed as usize;
+        summary.stale_edges_closed = stale_summary.stale_edges_closed as usize;
+
+        Ok(summary)
+    }
+
     pub async fn persist_document_symbols(
         &self,
         store: &WriteHandle,
@@ -255,6 +373,22 @@ impl ExtractionPersister {
             "textDocument/references",
             &extraction.document_symbols,
         )?;
+        self.persist_reference_file_batch_for_file(
+            store,
+            workspace_root_uri,
+            &file_scope_key,
+            extraction,
+        )
+        .await
+    }
+
+    pub async fn persist_reference_file_batch_for_file(
+        &self,
+        store: &WriteHandle,
+        workspace_root_uri: &str,
+        file_scope_key: &str,
+        extraction: &ReferenceBatchExtraction,
+    ) -> ExtractResult<PersistenceSummary> {
         let workspace_id = self
             .existing_workspace_id(
                 store,
@@ -278,7 +412,7 @@ impl ExtractionPersister {
                 store,
                 workspace_id,
                 run_id,
-                &file_scope_key,
+                file_scope_key,
                 extraction,
             )
             .await;
@@ -528,28 +662,37 @@ impl ExtractionPersister {
         file_scope_key: &str,
         extraction: &ReferenceBatchExtraction,
     ) -> ExtractResult<PersistenceSummary> {
-        let file_ids = self
-            .existing_document_symbol_file_ids(
+        let file_id = self
+            .existing_file_id_for_uri(
                 store,
                 workspace_id,
                 extraction.provider.as_str(),
                 "textDocument/references",
-                &extraction.document_symbols,
+                file_scope_key,
             )
             .await?;
-        self.validate_reference_nodes(store, workspace_id, extraction)
-            .await?;
-        let file_id = *file_ids.get(file_scope_key).ok_or_else(|| {
-            ExtractError::response_shape(
-                extraction.provider.as_str(),
-                "textDocument/references",
-                format!("source file {file_scope_key} is missing from the database"),
+        let (extraction, skipped_missing_source_nodes, skipped_missing_target_nodes) = self
+            .reference_file_extraction_with_existing_nodes(
+                store,
+                workspace_id,
+                file_scope_key,
+                extraction,
             )
-        })?;
-        let file_content_hash = single_file_content_hash(
+            .await?;
+        let (extraction, file_ids, skipped_missing_occurrence_files) = self
+            .reference_file_extraction_with_existing_files(
+                store,
+                workspace_id,
+                file_scope_key,
+                &extraction,
+            )
+            .await?;
+        let extraction = &extraction;
+        let file_content_hash = file_content_hash_for_scope_key(
             extraction.provider.as_str(),
             "textDocument/references",
             &extraction.document_symbols,
+            file_scope_key,
         )?;
 
         store
@@ -597,6 +740,9 @@ impl ExtractionPersister {
                             "reference_occurrences": summary.reference_occurrences,
                             "file_fallbacks": extraction.summary.file_fallbacks,
                             "skipped_external": extraction.summary.skipped_external,
+                            "skipped_missing_source_nodes": skipped_missing_source_nodes,
+                            "skipped_missing_target_nodes": skipped_missing_target_nodes,
+                            "skipped_missing_occurrence_files": skipped_missing_occurrence_files,
                         }),
                     })
                     .await
@@ -966,6 +1112,22 @@ impl ExtractionPersister {
             "callHierarchy/outgoingCalls",
             &extraction.document_symbols,
         )?;
+        self.persist_call_file_batch_for_file(
+            store,
+            workspace_root_uri,
+            &file_scope_key,
+            extraction,
+        )
+        .await
+    }
+
+    pub async fn persist_call_file_batch_for_file(
+        &self,
+        store: &WriteHandle,
+        workspace_root_uri: &str,
+        file_scope_key: &str,
+        extraction: &CallBatchExtraction,
+    ) -> ExtractResult<PersistenceSummary> {
         let workspace_id = self
             .existing_workspace_id(
                 store,
@@ -989,7 +1151,7 @@ impl ExtractionPersister {
                 store,
                 workspace_id,
                 run_id,
-                &file_scope_key,
+                file_scope_key,
                 extraction,
             )
             .await;
@@ -1241,28 +1403,37 @@ impl ExtractionPersister {
         file_scope_key: &str,
         extraction: &CallBatchExtraction,
     ) -> ExtractResult<PersistenceSummary> {
-        let file_ids = self
-            .existing_document_symbol_file_ids(
+        let file_id = self
+            .existing_file_id_for_uri(
                 store,
                 workspace_id,
                 extraction.provider.as_str(),
                 "callHierarchy/outgoingCalls",
-                &extraction.document_symbols,
+                file_scope_key,
             )
             .await?;
-        self.validate_call_nodes(store, workspace_id, extraction)
-            .await?;
-        let file_id = *file_ids.get(file_scope_key).ok_or_else(|| {
-            ExtractError::response_shape(
-                extraction.provider.as_str(),
-                "callHierarchy/outgoingCalls",
-                format!("source file {file_scope_key} is missing from the database"),
+        let (extraction, skipped_missing_caller_nodes, skipped_missing_callee_nodes) = self
+            .call_file_extraction_with_existing_nodes(
+                store,
+                workspace_id,
+                file_scope_key,
+                extraction,
             )
-        })?;
-        let file_content_hash = single_file_content_hash(
+            .await?;
+        let (extraction, file_ids, skipped_missing_occurrence_files) = self
+            .call_file_extraction_with_existing_files(
+                store,
+                workspace_id,
+                file_scope_key,
+                &extraction,
+            )
+            .await?;
+        let extraction = &extraction;
+        let file_content_hash = file_content_hash_for_scope_key(
             extraction.provider.as_str(),
             "callHierarchy/outgoingCalls",
             &extraction.document_symbols,
+            file_scope_key,
         )?;
 
         store
@@ -1311,6 +1482,9 @@ impl ExtractionPersister {
                             "skipped_external_targets": extraction.summary.skipped_external_targets,
                             "skipped_unresolved_targets": extraction.summary.skipped_unresolved_targets,
                             "skipped_non_callable_prepare_items": extraction.summary.skipped_non_callable_prepare_items,
+                            "skipped_missing_caller_nodes": skipped_missing_caller_nodes,
+                            "skipped_missing_callee_nodes": skipped_missing_callee_nodes,
+                            "skipped_missing_occurrence_files": skipped_missing_occurrence_files,
                         }),
                     })
                     .await
@@ -1621,6 +1795,263 @@ impl ExtractionPersister {
         Ok(file_ids)
     }
 
+    async fn existing_file_id_for_uri(
+        &self,
+        store: &WriteHandle,
+        workspace_id: i64,
+        provider: &str,
+        method: &str,
+        file_uri: &str,
+    ) -> ExtractResult<i64> {
+        store
+            .file_id(workspace_id, file_uri)
+            .await
+            .map_err(ExtractError::storage)?
+            .ok_or_else(|| {
+                ExtractError::response_shape(
+                    provider,
+                    method,
+                    format!(
+                        "source file {file_uri} is missing from the database; run rust-workspace-document-symbols first, run rust-file --symbols for one file, or use rust-workspace-all"
+                    ),
+                )
+            })
+    }
+
+    async fn reference_file_extraction_with_existing_nodes(
+        &self,
+        store: &WriteHandle,
+        workspace_id: i64,
+        file_scope_key: &str,
+        extraction: &ReferenceBatchExtraction,
+    ) -> ExtractResult<(ReferenceBatchExtraction, usize, usize)> {
+        let mut filtered = extraction.clone();
+        let mut references = Vec::new();
+        let mut skipped_missing_source_nodes = 0;
+        let mut skipped_missing_target_nodes = 0;
+
+        for reference in &extraction.references {
+            if !self
+                .node_exists_for_symbol(store, workspace_id, &reference.source_symbol_key)
+                .await?
+            {
+                if symbol_key_belongs_to_file(&reference.source_symbol_key, file_scope_key) {
+                    self.require_node(
+                        store,
+                        workspace_id,
+                        extraction.provider.as_str(),
+                        "textDocument/references",
+                        &reference.source_symbol_key,
+                    )
+                    .await?;
+                }
+
+                skipped_missing_source_nodes += 1;
+                continue;
+            }
+
+            if self
+                .node_exists_for_symbol(store, workspace_id, &reference.target_symbol_key)
+                .await?
+            {
+                references.push(reference.clone());
+            } else if symbol_key_belongs_to_file(&reference.target_symbol_key, file_scope_key) {
+                self.require_node(
+                    store,
+                    workspace_id,
+                    extraction.provider.as_str(),
+                    "textDocument/references",
+                    &reference.target_symbol_key,
+                )
+                .await?;
+            } else {
+                skipped_missing_target_nodes += 1;
+            }
+        }
+
+        filtered.references = references;
+        Ok((
+            filtered,
+            skipped_missing_source_nodes,
+            skipped_missing_target_nodes,
+        ))
+    }
+
+    async fn reference_file_extraction_with_existing_files(
+        &self,
+        store: &WriteHandle,
+        workspace_id: i64,
+        file_scope_key: &str,
+        extraction: &ReferenceBatchExtraction,
+    ) -> ExtractResult<(ReferenceBatchExtraction, HashMap<String, i64>, usize)> {
+        let mut file_ids = HashMap::new();
+        let file_id = self
+            .existing_file_id_for_uri(
+                store,
+                workspace_id,
+                extraction.provider.as_str(),
+                "textDocument/references",
+                file_scope_key,
+            )
+            .await?;
+        file_ids.insert(file_scope_key.to_string(), file_id);
+
+        let mut filtered = extraction.clone();
+        let mut references = Vec::new();
+        let mut skipped_missing_occurrence_files = 0;
+
+        for reference in &extraction.references {
+            let mut reference = reference.clone();
+            let mut occurrences = Vec::new();
+
+            for occurrence in &reference.occurrences {
+                if file_ids.contains_key(&occurrence.file_uri) {
+                    occurrences.push(occurrence.clone());
+                    continue;
+                }
+
+                match store
+                    .file_id(workspace_id, &occurrence.file_uri)
+                    .await
+                    .map_err(ExtractError::storage)?
+                {
+                    Some(file_id) => {
+                        file_ids.insert(occurrence.file_uri.clone(), file_id);
+                        occurrences.push(occurrence.clone());
+                    }
+                    None => {
+                        skipped_missing_occurrence_files += 1;
+                    }
+                }
+            }
+
+            reference.occurrences = occurrences;
+            if !reference.occurrences.is_empty() {
+                references.push(reference);
+            }
+        }
+
+        filtered.references = references;
+        Ok((filtered, file_ids, skipped_missing_occurrence_files))
+    }
+
+    async fn call_file_extraction_with_existing_nodes(
+        &self,
+        store: &WriteHandle,
+        workspace_id: i64,
+        file_scope_key: &str,
+        extraction: &CallBatchExtraction,
+    ) -> ExtractResult<(CallBatchExtraction, usize, usize)> {
+        let mut filtered = extraction.clone();
+        let mut calls = Vec::new();
+        let mut skipped_missing_caller_nodes = 0;
+        let mut skipped_missing_callee_nodes = 0;
+
+        for call in &extraction.calls {
+            if !self
+                .node_exists_for_symbol(store, workspace_id, &call.caller_symbol_key)
+                .await?
+            {
+                if symbol_key_belongs_to_file(&call.caller_symbol_key, file_scope_key) {
+                    self.require_node(
+                        store,
+                        workspace_id,
+                        extraction.provider.as_str(),
+                        "callHierarchy/outgoingCalls",
+                        &call.caller_symbol_key,
+                    )
+                    .await?;
+                }
+
+                skipped_missing_caller_nodes += 1;
+                continue;
+            }
+
+            if self
+                .node_exists_for_symbol(store, workspace_id, &call.callee_symbol_key)
+                .await?
+            {
+                calls.push(call.clone());
+            } else if symbol_key_belongs_to_file(&call.callee_symbol_key, file_scope_key) {
+                self.require_node(
+                    store,
+                    workspace_id,
+                    extraction.provider.as_str(),
+                    "callHierarchy/outgoingCalls",
+                    &call.callee_symbol_key,
+                )
+                .await?;
+            } else {
+                skipped_missing_callee_nodes += 1;
+            }
+        }
+
+        filtered.calls = calls;
+        Ok((
+            filtered,
+            skipped_missing_caller_nodes,
+            skipped_missing_callee_nodes,
+        ))
+    }
+
+    async fn call_file_extraction_with_existing_files(
+        &self,
+        store: &WriteHandle,
+        workspace_id: i64,
+        file_scope_key: &str,
+        extraction: &CallBatchExtraction,
+    ) -> ExtractResult<(CallBatchExtraction, HashMap<String, i64>, usize)> {
+        let mut file_ids = HashMap::new();
+        let file_id = self
+            .existing_file_id_for_uri(
+                store,
+                workspace_id,
+                extraction.provider.as_str(),
+                "callHierarchy/outgoingCalls",
+                file_scope_key,
+            )
+            .await?;
+        file_ids.insert(file_scope_key.to_string(), file_id);
+
+        let mut filtered = extraction.clone();
+        let mut calls = Vec::new();
+        let mut skipped_missing_occurrence_files = 0;
+
+        for call in &extraction.calls {
+            let mut call = call.clone();
+            let mut occurrences = Vec::new();
+
+            for occurrence in &call.occurrences {
+                if file_ids.contains_key(&occurrence.file_uri) {
+                    occurrences.push(occurrence.clone());
+                    continue;
+                }
+
+                match store
+                    .file_id(workspace_id, &occurrence.file_uri)
+                    .await
+                    .map_err(ExtractError::storage)?
+                {
+                    Some(file_id) => {
+                        file_ids.insert(occurrence.file_uri.clone(), file_id);
+                        occurrences.push(occurrence.clone());
+                    }
+                    None => {
+                        skipped_missing_occurrence_files += 1;
+                    }
+                }
+            }
+
+            call.occurrences = occurrences;
+            if !call.occurrences.is_empty() {
+                calls.push(call);
+            }
+        }
+
+        filtered.calls = calls;
+        Ok((filtered, file_ids, skipped_missing_occurrence_files))
+    }
+
     async fn validate_reference_nodes(
         &self,
         store: &WriteHandle,
@@ -1701,6 +2132,16 @@ impl ExtractionPersister {
                 "symbol node {symbol_key} is missing from the database; run rust-workspace-document-symbols first, run rust-file --symbols for one file, or use rust-workspace-all"
             ),
         ))
+    }
+
+    async fn node_exists_for_symbol(
+        &self,
+        store: &WriteHandle,
+        workspace_id: i64,
+        symbol_key: &str,
+    ) -> ExtractResult<bool> {
+        let id = node_id(workspace_id, "rust", symbol_key);
+        store.node_exists(&id).await.map_err(ExtractError::storage)
     }
 
     async fn persist_batch_after_run_started(
@@ -2154,24 +2595,32 @@ fn single_file_scope_key(
     }
 }
 
-fn single_file_content_hash(
+fn file_content_hash_for_scope_key(
     provider: &str,
     method: &str,
     extraction: &DocumentSymbolBatchExtraction,
+    file_scope_key: &str,
 ) -> ExtractResult<Option<String>> {
-    match extraction.extractions.as_slice() {
-        [file_extraction] => Ok(file_extraction.source_file.content_hash.clone()),
-        [] => Err(ExtractError::response_shape(
-            provider,
-            method,
-            "single-file relation extraction contained no document-symbol files",
-        )),
-        _ => Err(ExtractError::response_shape(
-            provider,
-            method,
-            "single-file relation extraction contained more than one document-symbol file",
-        )),
-    }
+    extraction
+        .extractions
+        .iter()
+        .find(|file_extraction| file_extraction.source_file.uri == file_scope_key)
+        .map(|file_extraction| file_extraction.source_file.content_hash.clone())
+        .ok_or_else(|| {
+            ExtractError::response_shape(
+                provider,
+                method,
+                format!("source file {file_scope_key} is missing from the relation context"),
+            )
+        })
+}
+
+fn symbol_key_belongs_to_file(symbol_key: &str, file_scope_key: &str) -> bool {
+    let file_node_key = format!("file:{file_scope_key}");
+    symbol_key == file_node_key
+        || symbol_key
+            .strip_prefix(file_scope_key)
+            .is_some_and(|suffix| suffix.starts_with('#'))
 }
 
 fn symbol_properties_json(symbol: &crate::model::ExtractedSymbol) -> Value {

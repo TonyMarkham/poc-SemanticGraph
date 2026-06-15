@@ -1,8 +1,8 @@
 use crate::{
-    CloseStaleRouteInput, DbManagerError, DbManagerResult, DemoSeedSummary, EdgeEvidenceInput,
-    EdgeInput, FileInput, NodeInput, OccurrenceInput, RouteObservationInput,
-    RouteStatusCompleteInput, RouteStatusFailInput, RouteStatusStartInput, WriteProgress,
-    WriteSummary, commands::Commands,
+    CloseStaleFileInput, CloseStaleRouteInput, DbManagerError, DbManagerResult, DemoSeedSummary,
+    EdgeEvidenceInput, EdgeInput, FileInput, NodeInput, OccurrenceInput, RouteObservationInput,
+    RouteStatusCompleteInput, RouteStatusFailInput, RouteStatusStartInput, StaleFileSummary,
+    WriteProgress, WriteSummary, commands::Commands,
 };
 
 use std::sync::Arc;
@@ -248,6 +248,20 @@ impl WriteHandle {
         let (response, receiver) = oneshot::channel();
         self.sender
             .send(Commands::CloseStaleEdgesForRoute {
+                input: input.into(),
+                response,
+            })
+            .await?;
+        receiver.await?
+    }
+
+    pub async fn close_stale_file(
+        &self,
+        input: CloseStaleFileInput<'_>,
+    ) -> DbManagerResult<StaleFileSummary> {
+        let (response, receiver) = oneshot::channel();
+        self.sender
+            .send(Commands::CloseStaleFile {
                 input: input.into(),
                 response,
             })
