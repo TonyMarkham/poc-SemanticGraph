@@ -1,10 +1,11 @@
-use crate::{CSharpConfig, DatabaseConfig, ExtractorConfig, WriterConfig};
+use crate::{CSharpConfig, DatabaseConfig, ExtractorConfig, QueryServiceConfig, WriterConfig};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
     database: DatabaseConfig,
     extractor: ExtractorConfig,
     writer: WriterConfig,
+    query_service: QueryServiceConfig,
     csharp: CSharpConfig,
 }
 
@@ -13,12 +14,14 @@ impl Config {
         database: DatabaseConfig,
         extractor: ExtractorConfig,
         writer: WriterConfig,
+        query_service: QueryServiceConfig,
         csharp: CSharpConfig,
     ) -> Self {
         Self {
             database,
             extractor,
             writer,
+            query_service,
             csharp,
         }
     }
@@ -33,6 +36,10 @@ impl Config {
 
     pub fn writer(&self) -> &WriterConfig {
         &self.writer
+    }
+
+    pub fn query_service(&self) -> &QueryServiceConfig {
+        &self.query_service
     }
 
     pub fn csharp(&self) -> &CSharpConfig {

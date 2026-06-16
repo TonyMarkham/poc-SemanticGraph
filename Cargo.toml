@@ -5,6 +5,7 @@ members = [
     "crates/semantic-graph-config",
     "crates/semantic-graph-db-manager",
     "crates/semantic-graph-extract",
+    "crates/semantic-graph-query",
     "crates/semantic-graph-smoke-tests",
     "crates/semantic-graph-store",
     "crates/semantic-graph-visualizer-server",
@@ -45,6 +46,7 @@ csharp-ls-lib             = { path = "crates/csharp-ls-lib" }
 semantic-graph-config     = { path = "crates/semantic-graph-config" }
 semantic-graph-db-manager = { path = "crates/semantic-graph-db-manager" }
 semantic-graph-extract    = { path = "crates/semantic-graph-extract" }
+semantic-graph-query      = { path = "crates/semantic-graph-query" }
 semantic-graph-store      = { path = "crates/semantic-graph-store" }
 
 ide                       = { path = "submodules/rust-analyzer/crates/ide" }

@@ -29,6 +29,14 @@ fn parses_valid_config() -> Result<(), Box<dyn Error>> {
     assert_eq!(config.writer().max_rows_per_commit(), 1000);
     assert_eq!(config.writer().max_millis_per_commit(), 250);
     assert_eq!(config.writer().busy_timeout_ms(), 5000);
+    assert_eq!(config.query_service().latest_run_limit(), 10);
+    assert_eq!(config.query_service().max_search_limit(), 50);
+    assert_eq!(config.query_service().max_projection_limit(), 1000);
+    assert_eq!(config.query_service().max_neighbors_limit(), 100);
+    assert_eq!(config.query_service().max_file_edge_limit(), 200);
+    assert_eq!(config.query_service().max_route_status_limit(), 200);
+    assert_eq!(config.query_service().max_shortest_path_depth(), 12);
+    assert_eq!(config.query_service().max_shortest_path_visited(), 5000);
     assert_eq!(config.csharp().binary(), &PathBuf::from("csharp-ls"));
     assert_eq!(config.csharp().solution(), None);
     assert_eq!(config.csharp().log_level(), "warning");
@@ -150,6 +158,71 @@ busy_timeout_ms = 2500
     assert_eq!(config.writer().max_rows_per_commit(), 64);
     assert_eq!(config.writer().max_millis_per_commit(), 50);
     assert_eq!(config.writer().busy_timeout_ms(), 2500);
+    Ok(())
+}
+
+#[test]
+fn parses_query_service_config() -> Result<(), Box<dyn Error>> {
+    let root = temp_dir("parses-query-service-config")?;
+    let config_dir = root.join(".refactor-radar");
+    fs::create_dir_all(&config_dir)?;
+    let config_path = config_dir.join("config.toml");
+    fs::write(
+        &config_path,
+        r#"
+[database]
+path = ".local/test.db"
+
+[query-service]
+latest_run_limit = 3
+max_search_limit = 4
+max_projection_limit = 5
+max_neighbors_limit = 6
+max_file_edge_limit = 7
+max_route_status_limit = 8
+max_shortest_path_depth = 9
+max_shortest_path_visited = 10
+"#,
+    )?;
+
+    let config = load_config(&config_path)?;
+
+    assert_eq!(config.query_service().latest_run_limit(), 3);
+    assert_eq!(config.query_service().max_search_limit(), 4);
+    assert_eq!(config.query_service().max_projection_limit(), 5);
+    assert_eq!(config.query_service().max_neighbors_limit(), 6);
+    assert_eq!(config.query_service().max_file_edge_limit(), 7);
+    assert_eq!(config.query_service().max_route_status_limit(), 8);
+    assert_eq!(config.query_service().max_shortest_path_depth(), 9);
+    assert_eq!(config.query_service().max_shortest_path_visited(), 10);
+    Ok(())
+}
+
+#[test]
+fn rejects_invalid_query_service_config() -> Result<(), Box<dyn Error>> {
+    let root = temp_dir("rejects-invalid-query-service-config")?;
+    let config_dir = root.join(".refactor-radar");
+    fs::create_dir_all(&config_dir)?;
+    let config_path = config_dir.join("config.toml");
+    fs::write(
+        &config_path,
+        r#"
+[database]
+path = ".local/test.db"
+
+[query-service]
+max_search_limit = 0
+"#,
+    )?;
+
+    let error = load_config(&config_path)
+        .err()
+        .ok_or("expected config error")?;
+
+    assert!(matches!(
+        error,
+        ConfigError::InvalidQueryServiceSetting { .. }
+    ));
     Ok(())
 }
 
@@ -418,7 +491,9 @@ fn creates_default_config_template_when_missing() -> Result<(), Box<dyn Error>> 
     let contents = fs::read_to_string(&config_path)?;
     assert!(contents.contains("[database]"));
     assert!(contents.contains("[writer]"));
+    assert!(contents.contains("[query-service]"));
     assert!(contents.contains("[csharp]"));
+    assert!(contents.contains("max_shortest_path_visited = 5000"));
     assert!(contents.contains("solution = \"SemanticGraph.Visualizer.slnx\""));
 
     let config = load_config(&config_path)?;

@@ -11,6 +11,16 @@ max_rows_per_commit = 1000
 max_millis_per_commit = 250
 busy_timeout_ms = 5000
 
+[query-service]
+latest_run_limit = 10
+max_search_limit = 50
+max_projection_limit = 1000
+max_neighbors_limit = 100
+max_file_edge_limit = 200
+max_route_status_limit = 200
+max_shortest_path_depth = 12
+max_shortest_path_visited = 5000
+
 [csharp]
 binary = "csharp-ls"
 solution = "SemanticGraph.Visualizer.slnx"

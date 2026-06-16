@@ -47,6 +47,13 @@ pub enum ConfigError {
         message: String,
         location: ErrorLocation,
     },
+
+    #[error("invalid query service setting setting={setting} at {location}: {message}")]
+    InvalidQueryServiceSetting {
+        setting: String,
+        message: String,
+        location: ErrorLocation,
+    },
 }
 
 impl ConfigError {
@@ -107,6 +114,18 @@ impl ConfigError {
         }
     }
 
+    #[track_caller]
+    pub fn invalid_query_service_setting(
+        setting: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self::InvalidQueryServiceSetting {
+            setting: setting.into(),
+            message: message.into(),
+            location: ErrorLocation::from(Location::caller()),
+        }
+    }
+
     pub fn message(&self) -> &'static str {
         match self {
             Self::Io { .. } => "io error",
@@ -115,6 +134,7 @@ impl ConfigError {
             Self::InvalidWriterSetting { .. } => "invalid writer setting",
             Self::InvalidExtractorSetting { .. } => "invalid extractor setting",
             Self::InvalidCSharpSetting { .. } => "invalid csharp setting",
+            Self::InvalidQueryServiceSetting { .. } => "invalid query service setting",
         }
     }
 
@@ -125,7 +145,8 @@ impl ConfigError {
             | Self::MissingDatabasePath { location, .. }
             | Self::InvalidWriterSetting { location, .. }
             | Self::InvalidExtractorSetting { location, .. }
-            | Self::InvalidCSharpSetting { location, .. } => *location,
+            | Self::InvalidCSharpSetting { location, .. }
+            | Self::InvalidQueryServiceSetting { location, .. } => *location,
         }
     }
 }

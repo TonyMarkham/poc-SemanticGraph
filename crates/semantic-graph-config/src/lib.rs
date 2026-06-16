@@ -5,10 +5,13 @@ mod error;
 mod extractor_config;
 mod extractor_mode;
 mod load_options;
+mod query_service_config;
+mod query_service_config_values;
 mod raw_config;
 mod raw_csharp_config;
 mod raw_database_config;
 mod raw_extractor_config;
+mod raw_query_service_config;
 mod raw_writer_config;
 mod resolved_database_path;
 mod resolved_database_path_source;
@@ -21,6 +24,7 @@ mod writer_config;
 pub(crate) use raw_csharp_config::RawCSharpConfig;
 pub(crate) use raw_database_config::RawDatabaseConfig;
 pub(crate) use raw_extractor_config::RawExtractorConfig;
+pub(crate) use raw_query_service_config::RawQueryServiceConfig;
 pub(crate) use raw_writer_config::RawWriterConfig;
 
 pub use config::Config;
@@ -30,6 +34,8 @@ pub use error::{ConfigError, ConfigResult};
 pub use extractor_config::ExtractorConfig;
 pub use extractor_mode::ExtractorMode;
 pub use load_options::LoadOptions;
+pub use query_service_config::QueryServiceConfig;
+pub use query_service_config_values::QueryServiceConfigValues;
 pub use raw_config::load_config;
 pub use resolved_database_path::ResolvedDatabasePath;
 pub use resolved_database_path_source::ResolvedDatabasePathSource;
@@ -51,6 +57,16 @@ queue_capacity = 4096
 max_rows_per_commit = 1000
 max_millis_per_commit = 250
 busy_timeout_ms = 5000
+
+[query-service]
+latest_run_limit = 10
+max_search_limit = 50
+max_projection_limit = 1000
+max_neighbors_limit = 100
+max_file_edge_limit = 200
+max_route_status_limit = 200
+max_shortest_path_depth = 12
+max_shortest_path_visited = 5000
 
 [csharp]
 binary = "csharp-ls"
