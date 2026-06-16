@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>GraphGenie | Project Settings &amp; Ingestion</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+        .glass-panel {
+            background: rgba(17, 19, 24, 0.7);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 4px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background: #3b494c;
+            border-radius: 10px;
+        }
+        .marching-ants {
+            background-size: 20px 20px;
+            background-image: linear-gradient(90deg, #00daf3 50%, transparent 50%);
+            height: 2px;
+            animation: ants 1s linear infinite;
+        }
+        @keyframes ants {
+            from { background-position: 0 0; }
+            to { background-position: 20px 0; }
+        }
+        .glow-hover:hover {
+            box-shadow: 0 0 12px rgba(0, 218, 243, 0.3);
+        }
+    </style>
+<script id="tailwind-config">
+        tailwind.config = {
+          darkMode: "class",
+          theme: {
+            extend: {
+              "colors": {
+                      "on-tertiary-fixed": "#00201c",
+                      "tertiary": "#95ffef",
+                      "secondary-container": "#602b9d",
+                      "outline": "#849396",
+                      "tertiary-fixed-dim": "#17deca",
+                      "on-tertiary": "#003731",
+                      "primary-container": "#00e5ff",
+                      "on-primary": "#00363d",
+                      "tertiary-fixed": "#4ffbe6",
+                      "inverse-surface": "#e2e2e8",
+                      "inverse-primary": "#006875",
+                      "surface": "#111318",
+                      "background": "#111318",
+                      "surface-variant": "#333539",
+                      "on-tertiary-container": "#00645a",
+                      "primary-fixed-dim": "#00daf3",
+                      "surface-container-highest": "#333539",
+                      "error-container": "#93000a",
+                      "surface-bright": "#37393e",
+                      "tertiary-container": "#30e8d4",
+                      "surface-container-low": "#1a1c20",
+                      "on-secondary": "#460283",
+                      "surface-tint": "#00daf3",
+                      "on-secondary-container": "#cfa7ff",
+                      "surface-container-high": "#282a2e",
+                      "on-primary-container": "#00626e",
+                      "surface-container-lowest": "#0c0e12",
+                      "on-error-container": "#ffdad6",
+                      "on-tertiary-fixed-variant": "#005048",
+                      "on-background": "#e2e2e8",
+                      "on-secondary-fixed": "#2a0053",
+                      "inverse-on-surface": "#2f3035",
+                      "on-error": "#690005",
+                      "on-surface": "#e2e2e8",
+                      "on-primary-fixed": "#001f24",
+                      "surface-dim": "#111318",
+                      "primary-fixed": "#9cf0ff",
+                      "primary": "#c3f5ff",
+                      "outline-variant": "#3b494c",
+                      "surface-container": "#1e2024",
+                      "error": "#ffb4ab",
+                      "secondary-fixed": "#eedbff",
+                      "secondary": "#dab9ff",
+                      "on-secondary-fixed-variant": "#5e289b",
+                      "on-surface-variant": "#bac9cc",
+                      "secondary-fixed-dim": "#dab9ff",
+                      "on-primary-fixed-variant": "#004f58"
+              },
+              "borderRadius": {
+                      "DEFAULT": "0.125rem",
+                      "lg": "0.25rem",
+                      "xl": "0.5rem",
+                      "full": "0.75rem"
+              },
+              "spacing": {
+                      "toolbar-height": "48px",
+                      "xl": "32px",
+                      "lg": "24px",
+                      "xs": "4px",
+                      "unit": "4px",
+                      "panel-width": "320px",
+                      "sm": "8px",
+                      "md": "16px"
+              },
+              "fontFamily": {
+                      "node-label": ["Inter"],
+                      "headline-md": ["Inter"],
+                      "headline-lg": ["Inter"],
+                      "body-md": ["Inter"],
+                      "code-sm": ["JetBrains Mono"],
+                      "label-caps": ["JetBrains Mono"]
+              },
+              "fontSize": {
+                      "node-label": ["12px", {"lineHeight": "1", "fontWeight": "500"}],
+                      "headline-md": ["24px", {"lineHeight": "1.3", "fontWeight": "600"}],
+                      "headline-lg": ["32px", {"lineHeight": "1.2", "letterSpacing": "-0.02em", "fontWeight": "600"}],
+                      "body-md": ["14px", {"lineHeight": "1.6", "fontWeight": "400"}],
+                      "code-sm": ["12px", {"lineHeight": "1.5", "fontWeight": "400"}],
+                      "label-caps": ["10px", {"lineHeight": "1", "letterSpacing": "0.1em", "fontWeight": "700"}]
+              }
+            },
+          },
+        }
+      </script>
+</head>
+<body class="bg-background text-on-surface font-body-md selection:bg-primary/30 overflow-hidden">
+<!-- SideNavBar (Rail) -->
+<aside class="h-screen w-[320px] fixed left-0 top-0 border-r border-outline-variant flex flex-col py-md bg-surface transition-all duration-200 ease-in-out">
+<div class="px-md mb-xl">
+<h1 class="font-headline-md text-headline-md font-bold text-primary">GraphGenie</h1>
+<p class="text-on-surface-variant font-code-sm text-xs opacity-60">V1.0.4</p>
+</div>
+<nav class="flex-grow space-y-unit">
+<div class="px-sm">
+<a class="flex items-center gap-md p-md rounded transition-all duration-200 ease-in-out hover:bg-surface-variant hover:text-on-surface text-on-surface-variant" href="#">
+<span class="material-symbols-outlined">account_tree</span>
+<span class="font-body-md">Explorer</span>
+</a>
+<a class="flex items-center gap-md p-md rounded transition-all duration-200 ease-in-out hover:bg-surface-variant hover:text-on-surface text-on-surface-variant" href="#">
+<span class="material-symbols-outlined">analytics</span>
+<span class="font-body-md">Dashboard</span>
+</a>
+<a class="flex items-center gap-md p-md rounded transition-all duration-200 ease-in-out hover:bg-surface-variant hover:text-on-surface text-on-surface-variant" href="#">
+<span class="material-symbols-outlined">troubleshoot</span>
+<span class="font-body-md">Inspector</span>
+</a>
+<a class="flex items-center gap-md p-md rounded transition-all duration-200 ease-in-out text-primary border-r-2 border-primary bg-primary/10" href="#">
+<span class="material-symbols-outlined">settings</span>
+<span class="font-body-md">Settings</span>
+</a>
+</div>
+</nav>
+<div class="mt-auto px-sm border-t border-outline-variant pt-md">
+<a class="flex items-center gap-md p-md rounded transition-all duration-200 ease-in-out hover:bg-surface-variant hover:text-on-surface text-on-surface-variant" href="#">
+<span class="material-symbols-outlined">help</span>
+<span class="font-body-md">Docs</span>
+</a>
+<div class="flex items-center gap-md p-md mt-sm">
+<div class="w-8 h-8 rounded-full bg-secondary-container flex items-center justify-center text-on-secondary-container">
+<span class="material-symbols-outlined text-sm">person</span>
+</div>
+<div class="flex flex-col">
+<span class="text-xs font-bold truncate">User Profile</span>
+<button class="text-primary text-[10px] flex items-center gap-xs uppercase font-bold tracking-widest">
+<span class="material-symbols-outlined text-xs">refresh</span> Syncing
+                    </button>
+</div>
+</div>
+</div>
+</aside>
+<!-- TopNavBar -->
+<header class="h-toolbar-height fixed top-0 right-0 left-[320px] border-b border-outline-variant bg-surface/80 backdrop-blur-xl flex items-center justify-between px-lg z-50">
+<div class="flex items-center gap-lg">
+<h2 class="font-headline-md text-on-surface text-lg">Graph Explorer</h2>
+<div class="flex items-center bg-surface-container-high rounded-sm px-md h-8 border border-outline-variant/30">
+<span class="material-symbols-outlined text-sm text-on-surface-variant mr-sm">search</span>
+<input class="bg-transparent border-none focus:ring-0 text-xs w-48 placeholder:text-on-surface-variant" placeholder="Search clusters..." type="text"/>
+</div>
+</div>
+<nav class="flex items-center gap-xl">
+<a class="font-label-caps text-label-caps uppercase text-on-surface-variant hover:text-primary transition-all" href="#">Cluster View</a>
+<a class="font-label-caps text-label-caps uppercase text-on-surface-variant hover:text-primary transition-all" href="#">Isolate Path</a>
+<a class="font-label-caps text-label-caps uppercase text-on-surface-variant hover:text-primary transition-all" href="#">Dependency Map</a>
+</nav>
+<div class="flex items-center gap-md">
+<button class="material-symbols-outlined text-on-surface-variant hover:text-primary transition-all scale-95 active:scale-90">notifications</button>
+<button class="material-symbols-outlined text-on-surface-variant hover:text-primary transition-all scale-95 active:scale-90">cloud_done</button>
+<button class="bg-primary text-on-primary px-md py-1 font-label-caps text-label-caps uppercase font-bold scale-95 active:scale-90 transition-all">Sync Graph</button>
+</div>
+</header>
+<!-- Main Content Canvas -->
+<main class="ml-[320px] pt-toolbar-height pb-8 h-screen overflow-y-auto custom-scrollbar bg-background">
+<div class="p-lg max-w-7xl mx-auto space-y-lg">
+<!-- Page Title -->
+<div class="flex justify-between items-end border-b border-outline-variant pb-md">
+<div>
+<h3 class="font-headline-lg text-headline-lg text-on-surface">Project Settings</h3>
+<p class="text-on-surface-variant">Configure data ingestion, AI backends, and graph generation parameters.</p>
+</div>
+<div class="flex gap-sm">
+<span class="bg-surface-container-high px-3 py-1 text-xs border border-outline-variant font-code-sm text-on-surface-variant">ID: PRJ-992-DELTA</span>
+<span class="bg-primary/10 text-primary px-3 py-1 text-xs border border-primary/20 font-code-sm">READY</span>
+</div>
+</div>
+<!-- Grid Layout -->
+<div class="grid grid-cols-12 gap-lg">
+<!-- Left Column: Repositories & Extraction -->
+<div class="col-span-12 lg:col-span-7 space-y-lg">
+<!-- Repositories -->
+<section class="glass-panel p-md">
+<div class="flex items-center justify-between mb-md">
+<h4 class="font-label-caps text-label-caps text-primary uppercase">Connected Repositories</h4>
+<button class="text-xs font-bold text-primary flex items-center gap-xs">
+<span class="material-symbols-outlined text-sm">add</span> ADD REPO
+                            </button>
+</div>
+<div class="space-y-sm">
+<div class="flex items-center justify-between p-sm bg-surface-container-low border border-outline-variant/20 hover:border-primary/40 transition-colors group">
+<div class="flex items-center gap-md">
+<span class="material-symbols-outlined text-on-surface-variant">folder_special</span>
+<div>
+<p class="text-sm font-bold">knowledge-base-v2</p>
+<p class="text-xs text-on-surface-variant">github.com/nodesynthesis/kb-v2</p>
+</div>
+</div>
+<div class="flex items-center gap-md">
+<span class="text-xs font-code-sm text-on-surface-variant">Last synced: 2m ago</span>
+<button class="material-symbols-outlined text-on-surface-variant hover:text-error opacity-0 group-hover:opacity-100 transition-opacity">delete</button>
+</div>
+</div>
+<div class="flex items-center justify-between p-sm bg-surface-container-low border border-outline-variant/20 hover:border-primary/40 transition-colors group">
+<div class="flex items-center gap-md">
+<span class="material-symbols-outlined text-on-surface-variant">cloud_download</span>
+<div>
+<p class="text-sm font-bold">internal-docs-bucket</p>
+<p class="text-xs text-on-surface-variant">S3://production/docs/archive</p>
+</div>
+</div>
+<div class="flex items-center gap-md">
+<span class="text-xs font-code-sm text-on-surface-variant">Last synced: 1h ago</span>
+<button class="material-symbols-outlined text-on-surface-variant hover:text-error opacity-0 group-hover:opacity-100 transition-opacity">delete</button>
+</div>
+</div>
+</div>
+</section>
+<!-- Ingest Config -->
+<section class="glass-panel p-md">
+<h4 class="font-label-caps text-label-caps text-primary uppercase mb-md">Ingest Configuration</h4>
+<div class="grid grid-cols-3 gap-md">
+<div class="p-md bg-surface-container-low border border-outline-variant/20 flex flex-col gap-md">
+<div class="flex justify-between items-start">
+<span class="material-symbols-outlined text-on-primary-container">picture_as_pdf</span>
+<label class="relative inline-flex items-center cursor-pointer">
+<input checked="" class="sr-only peer" type="checkbox"/>
+<div class="w-8 h-4 bg-surface-variant peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-primary"></div>
+</label>
+</div>
+<span class="font-bold text-sm">PDF Extraction</span>
+<p class="text-[10px] text-on-surface-variant leading-tight">OCR and semantic structural parsing of document layers.</p>
+</div>
+<div class="p-md bg-surface-container-low border border-outline-variant/20 flex flex-col gap-md">
+<div class="flex justify-between items-start">
+<span class="material-symbols-outlined text-on-primary-container">description</span>
+<label class="relative inline-flex items-center cursor-pointer">
+<input checked="" class="sr-only peer" type="checkbox"/>
+<div class="w-8 h-4 bg-surface-variant peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-primary"></div>
+</label>
+</div>
+<span class="font-bold text-sm">Office Files</span>
+<p class="text-[10px] text-on-surface-variant leading-tight">Direct parsing of .docx, .xlsx and .pptx metadata.</p>
+</div>
+<div class="p-md bg-surface-container-low border border-outline-variant/20 flex flex-col gap-md">
+<div class="flex justify-between items-start">
+<span class="material-symbols-outlined text-on-primary-container">movie</span>
+<label class="relative inline-flex items-center cursor-pointer">
+<input class="sr-only peer" type="checkbox"/>
+<div class="w-8 h-4 bg-surface-variant peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-primary"></div>
+</label>
+</div>
+<span class="font-bold text-sm">Video Transcription</span>
+<p class="text-[10px] text-on-surface-variant leading-tight">Whisper-v3 based audio to text processing.</p>
+</div>
+</div>
+</section>
+<!-- Rebuild Button Section -->
+<section class="space-y-sm">
+<button class="w-full bg-primary py-lg flex flex-col items-center justify-center gap-xs hover:bg-primary-container transition-all relative overflow-hidden group" id="rebuildBtn">
+<span class="font-bold text-on-primary text-xl tracking-tighter uppercase">Rebuild Knowledge Graph</span>
+<span class="text-on-primary/70 text-[10px] font-code-sm">Estimated Duration: 14m 32s</span>
+<div class="absolute bottom-0 left-0 h-1 bg-on-primary/30 w-0 transition-all duration-300" id="progressFill"></div>
+</button>
+<div class="flex justify-between font-code-sm text-[10px] text-on-surface-variant">
+<span>TASK: GENERATING EMBEDDINGS</span>
+<span id="progressText">0% COMPLETE</span>
+</div>
+</section>
+</div>
+<!-- Right Column: Backend & Editor -->
+<div class="col-span-12 lg:col-span-5 space-y-lg">
+<!-- Backend Selector -->
+<section class="glass-panel p-md">
+<h4 class="font-label-caps text-label-caps text-primary uppercase mb-md">Backend Orchestrator</h4>
+<div class="space-y-md">
+<div>
+<label class="text-[10px] font-bold text-on-surface-variant uppercase mb-xs block">AI Provider</label>
+<select class="w-full bg-surface-container-low border border-outline-variant p-sm text-sm focus:border-primary focus:ring-1 focus:ring-primary/20 outline-none">
+<option>Gemini 1.5 Pro (Flash High Density)</option>
+<option>Anthropic Claude 3.5 Sonnet</option>
+<option>Ollama (Local Llama 3 70B)</option>
+</select>
+</div>
+<div class="relative">
+<label class="text-[10px] font-bold text-on-surface-variant uppercase mb-xs block">API Key / Endpoint</label>
+<input class="w-full bg-surface-container-low border border-outline-variant p-sm text-sm focus:border-primary focus:ring-1 focus:ring-primary/20 outline-none font-code-sm" type="password" value="sk-proj-************************************"/>
+<span class="material-symbols-outlined absolute right-2 bottom-2 text-on-surface-variant cursor-pointer hover:text-on-surface">visibility</span>
+</div>
+<div class="flex items-center gap-md p-sm bg-tertiary/5 border border-tertiary/20 rounded-sm">
+<span class="material-symbols-outlined text-tertiary text-sm">verified</span>
+<p class="text-[10px] text-tertiary leading-tight">Connection successful. Latency: 42ms. Context window optimized for 128k tokens.</p>
+</div>
+</div>
+</section>
+<!-- .graphifyignore Editor -->
+<section class="glass-panel p-md flex flex-col h-[400px]">
+<div class="flex items-center justify-between mb-md">
+<div class="flex items-center gap-xs">
+<span class="material-symbols-outlined text-sm text-primary">data_object</span>
+<h4 class="font-label-caps text-label-caps text-primary uppercase">.graphifyignore</h4>
+</div>
+<span class="text-[10px] text-on-surface-variant font-code-sm">SYNTAX: GLOB PATTERNS</span>
+</div>
+<div class="flex-grow relative bg-surface-container-lowest border border-outline-variant overflow-hidden">
+<div class="absolute left-0 top-0 w-8 h-full bg-surface-container-low border-r border-outline-variant/30 flex flex-col items-center py-sm text-[10px] font-code-sm text-on-surface-variant select-none">
+<span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span><span>8</span><span>9</span><span>10</span>
+</div>
+<textarea class="absolute left-8 top-0 right-0 bottom-0 bg-transparent border-none focus:ring-0 p-sm text-xs font-code-sm leading-relaxed text-on-surface resize-none w-[calc(100%-32px)]" spellcheck="false"># Exclude system files
+node_modules/
+.git/
+.DS_Store
+
+# Exclude specific extensions
+*.log
+*.tmp
+*.bak
+
+# Skip large binary clusters
+/bin/dist/
+assets/raw_video/
+                            </textarea>
+</div>
+<div class="mt-sm flex justify-end">
+<button class="text-[10px] font-bold text-on-surface-variant hover:text-primary transition-colors">DISCARD CHANGES</button>
+<span class="mx-2 text-outline-variant">|</span>
+<button class="text-[10px] font-bold text-primary hover:underline transition-colors">SAVE CONFIG</button>
+</div>
+</section>
+</div>
+</div>
+</div>
+</main>
+<!-- Footer -->
+<footer class="fixed bottom-0 right-0 left-[320px] h-8 bg-surface-container-lowest border-t border-outline-variant flex items-center justify-between px-md w-full z-50">
+<div class="flex items-center gap-md opacity-80 hover:opacity-100 transition-all">
+<span class="font-code-sm text-code-sm text-tertiary">© 2024 NodeSynthesis Pro • Engine: Gemini-1.5-Pro</span>
+</div>
+<div class="flex items-center gap-lg">
+<span class="font-code-sm text-code-sm text-on-surface-variant hover:text-tertiary transition-all cursor-default">Nodes: 14.2k</span>
+<span class="font-code-sm text-code-sm text-on-surface-variant hover:text-tertiary transition-all cursor-default">Edges: 58.1k</span>
+<span class="font-code-sm text-code-sm text-on-surface-variant hover:text-tertiary transition-all cursor-default">RAM: 1.2GB</span>
+</div>
+</footer>
+<!-- Micro-interactions Script -->
+<script>
+        const rebuildBtn = document.getElementById('rebuildBtn');
+        const progressFill = document.getElementById('progressFill');
+        const progressText = document.getElementById('progressText');
+        
+        let rebuilding = false;
+        let progress = 0;
+
+        rebuildBtn.addEventListener('click', () => {
+            if (rebuilding) return;
+            rebuilding = true;
+            progress = 0;
+            
+            rebuildBtn.classList.add('opacity-80');
+            rebuildBtn.querySelector('span:first-child').innerText = 'BUILDING GRAPH...';
+            
+            const interval = setInterval(() => {
+                progress += Math.random() * 5;
+                if (progress >= 100) {
+                    progress = 100;
+                    clearInterval(interval);
+                    rebuilding = false;
+                    rebuildBtn.classList.remove('opacity-80');
+                    rebuildBtn.querySelector('span:first-child').innerText = 'REBUILD COMPLETE';
+                    setTimeout(() => {
+                        rebuildBtn.querySelector('span:first-child').innerText = 'REBUILD KNOWLEDGE GRAPH';
+                        progressFill.style.width = '0%';
+                        progressText.innerText = '0% COMPLETE';
+                    }, 3000);
+                }
+                progressFill.style.width = `${progress}%`;
+                progressText.innerText = `${Math.floor(progress)}% COMPLETE`;
+            }, 200);
+        });
+
+        // Toggle visibility micro-interaction
+        document.querySelectorAll('.material-symbols-outlined').forEach(icon => {
+            if (icon.innerText === 'visibility') {
+                icon.addEventListener('click', function() {
+                    const input = this.previousElementSibling;
+                    if (input.type === 'password') {
+                        input.type = 'text';
+                        this.innerText = 'visibility_off';
+                    } else {
+                        input.type = 'password';
+                        this.innerText = 'visibility';
+                    }
+                });
+            }
+        });
+    </script>
+</body></html>

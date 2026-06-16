@@ -1,0 +1,537 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>GraphGenie - Analysis Dashboard</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;700&amp;family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@100..900&amp;family=JetBrains+Mono:wght@100..900&amp;display=swap" rel="stylesheet"/>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+        .glass-panel {
+            background: rgba(17, 19, 24, 0.8);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        .node-glow {
+            box-shadow: 0 0 8px rgba(0, 218, 243, 0.4);
+        }
+        .marching-ants {
+            background-image: linear-gradient(90deg, #00daf3 50%, transparent 50%);
+            background-size: 8px 2px;
+            animation: move-ants 1s linear infinite;
+        }
+        @keyframes move-ants {
+            from { background-position: 0 0; }
+            to { background-position: 8px 0; }
+        }
+        ::-webkit-scrollbar {
+            width: 4px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #111318;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #3b494c;
+        }
+    </style>
+<script id="tailwind-config">
+        tailwind.config = {
+          darkMode: "class",
+          theme: {
+            extend: {
+              "colors": {
+                      "on-tertiary-fixed": "#00201c",
+                      "tertiary": "#95ffef",
+                      "secondary-container": "#602b9d",
+                      "outline": "#849396",
+                      "tertiary-fixed-dim": "#17deca",
+                      "on-tertiary": "#003731",
+                      "primary-container": "#00e5ff",
+                      "on-primary": "#00363d",
+                      "tertiary-fixed": "#4ffbe6",
+                      "inverse-surface": "#e2e2e8",
+                      "inverse-primary": "#006875",
+                      "surface": "#111318",
+                      "background": "#111318",
+                      "surface-variant": "#333539",
+                      "on-tertiary-container": "#00645a",
+                      "primary-fixed-dim": "#00daf3",
+                      "surface-container-highest": "#333539",
+                      "error-container": "#93000a",
+                      "surface-bright": "#37393e",
+                      "tertiary-container": "#30e8d4",
+                      "surface-container-low": "#1a1c20",
+                      "on-secondary": "#460283",
+                      "surface-tint": "#00daf3",
+                      "on-secondary-container": "#cfa7ff",
+                      "surface-container-high": "#282a2e",
+                      "on-primary-container": "#00626e",
+                      "surface-container-lowest": "#0c0e12",
+                      "on-error-container": "#ffdad6",
+                      "on-tertiary-fixed-variant": "#005048",
+                      "on-background": "#e2e2e8",
+                      "on-secondary-fixed": "#2a0053",
+                      "inverse-on-surface": "#2f3035",
+                      "on-error": "#690005",
+                      "on-surface": "#e2e2e8",
+                      "on-primary-fixed": "#001f24",
+                      "surface-dim": "#111318",
+                      "primary-fixed": "#9cf0ff",
+                      "primary": "#c3f5ff",
+                      "outline-variant": "#3b494c",
+                      "surface-container": "#1e2024",
+                      "error": "#ffb4ab",
+                      "secondary-fixed": "#eedbff",
+                      "secondary": "#dab9ff",
+                      "on-secondary-fixed-variant": "#5e289b",
+                      "on-surface-variant": "#bac9cc",
+                      "secondary-fixed-dim": "#dab9ff",
+                      "on-primary-fixed-variant": "#004f58"
+              },
+              "borderRadius": {
+                      "DEFAULT": "0.125rem",
+                      "lg": "0.25rem",
+                      "xl": "0.5rem",
+                      "full": "0.75rem"
+              },
+              "spacing": {
+                      "toolbar-height": "48px",
+                      "xl": "32px",
+                      "lg": "24px",
+                      "xs": "4px",
+                      "unit": "4px",
+                      "panel-width": "320px",
+                      "sm": "8px",
+                      "md": "16px"
+              },
+              "fontFamily": {
+                      "node-label": ["Inter"],
+                      "headline-md": ["Inter"],
+                      "headline-lg": ["Inter"],
+                      "body-md": ["Inter"],
+                      "code-sm": ["JetBrains Mono"],
+                      "label-caps": ["JetBrains Mono"]
+              },
+              "fontSize": {
+                      "node-label": ["12px", {"lineHeight": "1", "fontWeight": "500"}],
+                      "headline-md": ["24px", {"lineHeight": "1.3", "fontWeight": "600"}],
+                      "headline-lg": ["32px", {"lineHeight": "1.2", "letterSpacing": "-0.02em", "fontWeight": "600"}],
+                      "body-md": ["14px", {"lineHeight": "1.6", "fontWeight": "400"}],
+                      "code-sm": ["12px", {"lineHeight": "1.5", "fontWeight": "400"}],
+                      "label-caps": ["10px", {"lineHeight": "1", "letterSpacing": "0.1em", "fontWeight": "700"}]
+              }
+            },
+          },
+        }
+    </script>
+</head>
+<body class="bg-background text-on-surface selection:bg-primary/30">
+<!-- SIDEBAR NAVIGATION -->
+<aside class="h-screen w-[320px] fixed left-0 top-0 border-r border-outline-variant bg-surface flex flex-col py-md z-50">
+<div class="px-md mb-xl">
+<h1 class="font-headline-md text-headline-md font-bold text-primary">GraphGenie</h1>
+<p class="font-body-md text-body-md text-on-surface-variant opacity-60">V1.0.4</p>
+</div>
+<nav class="flex-1 space-y-xs px-sm">
+<a class="flex items-center gap-md px-md py-sm rounded transition-all duration-200 ease-in-out text-on-surface-variant hover:bg-surface-variant hover:text-on-surface" href="#">
+<span class="material-symbols-outlined">account_tree</span>
+<span class="font-body-md text-body-md">Explorer</span>
+</a>
+<!-- Active State: Dashboard -->
+<a class="flex items-center gap-md px-md py-sm rounded transition-all duration-200 ease-in-out text-primary border-r-2 border-primary bg-primary/10" href="#">
+<span class="material-symbols-outlined">analytics</span>
+<span class="font-body-md text-body-md">Dashboard</span>
+</a>
+<a class="flex items-center gap-md px-md py-sm rounded transition-all duration-200 ease-in-out text-on-surface-variant hover:bg-surface-variant hover:text-on-surface" href="#">
+<span class="material-symbols-outlined">troubleshoot</span>
+<span class="font-body-md text-body-md">Inspector</span>
+</a>
+<a class="flex items-center gap-md px-md py-sm rounded transition-all duration-200 ease-in-out text-on-surface-variant hover:bg-surface-variant hover:text-on-surface" href="#">
+<span class="material-symbols-outlined">settings</span>
+<span class="font-body-md text-body-md">Settings</span>
+</a>
+</nav>
+<div class="mt-auto px-sm pt-md border-t border-outline-variant">
+<a class="flex items-center gap-md px-md py-sm rounded transition-all duration-200 ease-in-out text-on-surface-variant hover:bg-surface-variant hover:text-on-surface" href="#">
+<span class="material-symbols-outlined">help</span>
+<span class="font-body-md text-body-md">Docs</span>
+</a>
+<div class="mt-md flex items-center gap-md px-md py-sm">
+<div class="w-8 h-8 bg-primary-container rounded-full overflow-hidden">
+<img alt="User Profile" class="w-full h-full object-cover" src="https://lh3.googleusercontent.com/aida-public/AB6AXuADRQS5LpxVYC8_V492T-MHxNE5rWKfc2O98KWXfRwu_pc1IsC8HToa_3M5_MHkDY6gx2IkxR04IdsrOJ8OuFLmevQkf6FAW13r66WLgM-CPhNeBfsuQVQpWC5xsYNQqlDB58ORn7qPOKkY0lkLhmjjqcga6NUhTzQpYJ3XXPliY6yNNw-r5YoXlkwJmXWd2sGv0aV9pKOPA-Q7_bxKROGfKRbJ0lj8H3k5OwBDx9vClwyS5I_RNEr-e-WbvXk4tgUB0R5M2YwlxZHt"/>
+</div>
+<div class="flex-1 overflow-hidden">
+<p class="font-label-caps text-label-caps truncate">ROOT_ADMIN</p>
+<p class="font-code-sm text-[10px] text-primary opacity-70">SESS: 8XJ-92</p>
+</div>
+<button class="material-symbols-outlined text-primary scale-95 active:scale-90">refresh</button>
+</div>
+</div>
+</aside>
+<!-- TOP APP BAR -->
+<header class="h-toolbar-height fixed top-0 right-0 left-[320px] bg-surface/80 backdrop-blur-xl flex items-center justify-between px-lg z-40 border-b border-outline-variant">
+<div class="flex items-center gap-xl">
+<span class="font-headline-md text-headline-md text-on-surface font-bold tracking-tight">Graph Explorer</span>
+<div class="flex items-center gap-lg">
+<a class="font-label-caps text-label-caps uppercase text-on-surface-variant hover:text-primary transition-all duration-200" href="#">Cluster View</a>
+<a class="font-label-caps text-label-caps uppercase text-on-surface-variant hover:text-primary transition-all duration-200" href="#">Isolate Path</a>
+<a class="font-label-caps text-label-caps uppercase text-primary font-bold border-b-2 border-primary transition-all duration-200" href="#">Dependency Map</a>
+</div>
+</div>
+<div class="flex items-center gap-md">
+<button class="flex items-center gap-sm bg-primary px-md py-1.5 text-on-primary font-label-caps text-label-caps uppercase rounded-none transition-all hover:brightness-110 active:scale-95">
+<span class="material-symbols-outlined !text-[16px]">sync</span>
+                Sync Graph
+            </button>
+<div class="flex items-center gap-sm text-on-surface-variant">
+<button class="material-symbols-outlined hover:text-primary transition-colors">notifications</button>
+<button class="material-symbols-outlined hover:text-primary transition-colors">cloud_done</button>
+<button class="material-symbols-outlined hover:text-primary transition-colors">account_circle</button>
+</div>
+</div>
+</header>
+<!-- MAIN CONTENT CANVAS -->
+<main class="ml-[320px] pt-toolbar-height pb-8 min-h-screen">
+<!-- Background Animation Overlay -->
+<div class="fixed inset-0 pointer-events-none z-[-1] opacity-20">
+
+</div>
+<div class="p-lg max-w-[1400px] mx-auto space-y-lg">
+<!-- Dashboard Hero: Summary & God Nodes -->
+<section class="space-y-md">
+<div class="flex items-end justify-between border-b border-outline-variant pb-xs">
+<div>
+<span class="font-label-caps text-label-caps text-primary uppercase">Executive Summary</span>
+<h2 class="font-headline-lg text-headline-lg">Network Topology Report</h2>
+</div>
+<div class="text-right">
+<span class="font-code-sm text-code-sm text-tertiary">STABILITY: 98.4%</span>
+</div>
+</div>
+<div class="grid grid-cols-1 md:grid-cols-4 gap-md">
+<!-- Stat Card -->
+<div class="glass-panel p-md flex flex-col justify-between h-32 relative overflow-hidden group">
+<div class="absolute -right-2 -top-2 opacity-10 group-hover:opacity-20 transition-opacity">
+<span class="material-symbols-outlined !text-7xl">hub</span>
+</div>
+<span class="font-label-caps text-label-caps text-on-surface-variant">TOTAL ENTITIES</span>
+<div class="flex items-baseline gap-xs">
+<span class="font-headline-lg text-headline-lg">14.2k</span>
+<span class="text-primary text-[12px] font-bold">+12%</span>
+</div>
+</div>
+<!-- Stat Card -->
+<div class="glass-panel p-md flex flex-col justify-between h-32 relative overflow-hidden group">
+<div class="absolute -right-2 -top-2 opacity-10 group-hover:opacity-20 transition-opacity text-secondary">
+<span class="material-symbols-outlined !text-7xl">conversion_path</span>
+</div>
+<span class="font-label-caps text-label-caps text-on-surface-variant">ACTIVE EDGES</span>
+<div class="flex items-baseline gap-xs">
+<span class="font-headline-lg text-headline-lg text-secondary">58.1k</span>
+<span class="text-secondary text-[12px] font-bold">STABLE</span>
+</div>
+</div>
+<!-- Stat Card -->
+<div class="glass-panel p-md flex flex-col justify-between h-32 relative overflow-hidden group">
+<div class="absolute -right-2 -top-2 opacity-10 group-hover:opacity-20 transition-opacity text-tertiary">
+<span class="material-symbols-outlined !text-7xl">bolt</span>
+</div>
+<span class="font-label-caps text-label-caps text-on-surface-variant">INFERENCE SPEED</span>
+<div class="flex items-baseline gap-xs">
+<span class="font-headline-lg text-headline-lg text-tertiary">42ms</span>
+<span class="text-tertiary text-[12px] font-bold">FAST</span>
+</div>
+</div>
+<!-- Stat Card -->
+<div class="glass-panel p-md flex flex-col justify-between h-32 relative overflow-hidden group">
+<div class="absolute -right-2 -top-2 opacity-10 group-hover:opacity-20 transition-opacity text-error">
+<span class="material-symbols-outlined !text-7xl">warning</span>
+</div>
+<span class="font-label-caps text-label-caps text-on-surface-variant">ANOMALY DETECTED</span>
+<div class="flex items-baseline gap-xs">
+<span class="font-headline-lg text-headline-lg text-error">04</span>
+<span class="text-error text-[12px] font-bold">HIGH</span>
+</div>
+</div>
+</div>
+</section>
+<!-- God Nodes Bento Grid -->
+<section class="grid grid-cols-12 gap-lg">
+<div class="col-span-12 lg:col-span-8 space-y-md">
+<div class="flex items-center gap-md">
+<h3 class="font-label-caps text-label-caps text-on-surface-variant tracking-widest">CRITICAL ENTITIES (GOD NODES)</h3>
+<div class="flex-1 h-px bg-outline-variant"></div>
+</div>
+<div class="grid grid-cols-1 md:grid-cols-3 gap-md">
+<!-- God Node Card -->
+<div class="glass-panel p-md space-y-sm hover:border-primary transition-colors cursor-pointer group">
+<div class="flex justify-between items-start">
+<div class="w-10 h-10 border border-primary flex items-center justify-center node-glow">
+<span class="material-symbols-outlined text-primary">psychology</span>
+</div>
+<span class="font-code-sm text-code-sm text-on-surface-variant">#GN-01</span>
+</div>
+<div>
+<h4 class="font-headline-md text-headline-md text-on-surface group-hover:text-primary transition-colors">Neural Core</h4>
+<p class="font-body-md text-body-md text-on-surface-variant line-clamp-2">Central hub for cross-domain synthesis and weight distribution across the main cluster.</p>
+</div>
+<div class="pt-sm border-t border-outline-variant flex justify-between items-center">
+<span class="font-label-caps text-label-caps">3.2k CONNECTIONS</span>
+<div class="flex -space-x-2">
+<div class="w-6 h-6 bg-tertiary/20 rounded-full border border-tertiary"></div>
+<div class="w-6 h-6 bg-secondary/20 rounded-full border border-secondary"></div>
+</div>
+</div>
+</div>
+<!-- God Node Card -->
+<div class="glass-panel p-md space-y-sm hover:border-secondary transition-colors cursor-pointer group">
+<div class="flex justify-between items-start">
+<div class="w-10 h-10 border border-secondary flex items-center justify-center">
+<span class="material-symbols-outlined text-secondary">database</span>
+</div>
+<span class="font-code-sm text-code-sm text-on-surface-variant">#GN-02</span>
+</div>
+<div>
+<h4 class="font-headline-md text-headline-md text-on-surface group-hover:text-secondary transition-colors">Global Registry</h4>
+<p class="font-body-md text-body-md text-on-surface-variant line-clamp-2">Authoritative index for all identified unique identifiers and immutable metadata.</p>
+</div>
+<div class="pt-sm border-t border-outline-variant flex justify-between items-center">
+<span class="font-label-caps text-label-caps">2.8k CONNECTIONS</span>
+<div class="flex -space-x-2">
+<div class="w-6 h-6 bg-primary/20 rounded-full border border-primary"></div>
+<div class="w-6 h-6 bg-error/20 rounded-full border border-error"></div>
+</div>
+</div>
+</div>
+<!-- God Node Card -->
+<div class="glass-panel p-md space-y-sm hover:border-tertiary transition-colors cursor-pointer group">
+<div class="flex justify-between items-start">
+<div class="w-10 h-10 border border-tertiary flex items-center justify-center">
+<span class="material-symbols-outlined text-tertiary">terminal</span>
+</div>
+<span class="font-code-sm text-code-sm text-on-surface-variant">#GN-03</span>
+</div>
+<div>
+<h4 class="font-headline-md text-headline-md text-on-surface group-hover:text-tertiary transition-colors">Flow Optimizer</h4>
+<p class="font-body-md text-body-md text-on-surface-variant line-clamp-2">Monitors and re-routes active paths to ensure minimal latency in graph traversal.</p>
+</div>
+<div class="pt-sm border-t border-outline-variant flex justify-between items-center">
+<span class="font-label-caps text-label-caps">1.5k CONNECTIONS</span>
+<div class="flex -space-x-2">
+<div class="w-6 h-6 bg-primary/20 rounded-full border border-primary"></div>
+<div class="w-6 h-6 bg-on-secondary/20 rounded-full border border-on-secondary"></div>
+</div>
+</div>
+</div>
+</div>
+<!-- Surprising Connections -->
+<div class="glass-panel p-lg space-y-md">
+<div class="flex items-center justify-between">
+<h3 class="font-label-caps text-label-caps text-on-surface-variant">SURPRISING CONNECTIONS</h3>
+<span class="material-symbols-outlined text-primary">auto_awesome</span>
+</div>
+<div class="space-y-sm">
+<!-- Connection Item -->
+<div class="flex items-center gap-md group cursor-pointer hover:bg-surface-variant/50 p-2">
+<div class="flex-1 flex items-center gap-sm">
+<span class="font-body-md text-body-md font-bold">Node.Alpha</span>
+<div class="flex-1 h-[1px] marching-ants opacity-50 group-hover:opacity-100 transition-opacity"></div>
+<span class="material-symbols-outlined text-tertiary text-[14px]">link</span>
+<div class="flex-1 h-[1px] marching-ants opacity-50 group-hover:opacity-100 transition-opacity"></div>
+<span class="font-body-md text-body-md font-bold">System.Omega</span>
+</div>
+<div class="w-24 text-right">
+<span class="font-code-sm text-code-sm text-primary">0.92 CONF</span>
+</div>
+</div>
+<!-- Connection Item -->
+<div class="flex items-center gap-md group cursor-pointer hover:bg-surface-variant/50 p-2">
+<div class="flex-1 flex items-center gap-sm">
+<span class="font-body-md text-body-md font-bold">Project_Zephyr</span>
+<div class="flex-1 h-[1px] border-b border-dashed border-outline-variant group-hover:border-secondary transition-colors"></div>
+<span class="material-symbols-outlined text-secondary text-[14px]">insights</span>
+<div class="flex-1 h-[1px] border-b border-dashed border-outline-variant group-hover:border-secondary transition-colors"></div>
+<span class="font-body-md text-body-md font-bold">Legacy_Storage</span>
+</div>
+<div class="w-24 text-right">
+<span class="font-code-sm text-code-sm text-secondary">0.68 CONF</span>
+</div>
+</div>
+<!-- Connection Item -->
+<div class="flex items-center gap-md group cursor-pointer hover:bg-surface-variant/50 p-2">
+<div class="flex-1 flex items-center gap-sm">
+<span class="font-body-md text-body-md font-bold">User_Admin_9</span>
+<div class="flex-1 h-[1px] marching-ants opacity-50 group-hover:opacity-100 transition-opacity"></div>
+<span class="material-symbols-outlined text-error text-[14px]">emergency_share</span>
+<div class="flex-1 h-[1px] marching-ants opacity-50 group-hover:opacity-100 transition-opacity"></div>
+<span class="font-body-md text-body-md font-bold">Isolated_Kernel</span>
+</div>
+<div class="w-24 text-right">
+<span class="font-code-sm text-code-sm text-error">CRITICAL</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div class="col-span-12 lg:col-span-4 space-y-lg">
+<!-- Confidence Distribution Chart (Simulated) -->
+<div class="glass-panel p-lg space-y-md h-full flex flex-col">
+<h3 class="font-label-caps text-label-caps text-on-surface-variant">CONFIDENCE DISTRIBUTION</h3>
+<div class="flex-1 flex flex-col justify-center items-center py-xl relative">
+<!-- Pseudo Pie Chart with SVG -->
+<svg class="w-48 h-48 -rotate-90" viewbox="0 0 100 100">
+<circle cx="50" cy="50" fill="transparent" r="40" stroke="#00e5ff" stroke-dasharray="160 251.2" stroke-width="12"></circle>
+<circle cx="50" cy="50" fill="transparent" r="40" stroke="#dab9ff" stroke-dasharray="60 251.2" stroke-dashoffset="-160" stroke-width="12"></circle>
+<circle cx="50" cy="50" fill="transparent" r="40" stroke="#333539" stroke-dasharray="31.2 251.2" stroke-dashoffset="-220" stroke-width="12"></circle>
+</svg>
+<div class="absolute flex flex-col items-center">
+<span class="font-headline-md text-headline-md">88.5</span>
+<span class="font-label-caps text-[8px] text-on-surface-variant">AVG SCORE</span>
+</div>
+</div>
+<div class="space-y-sm">
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-xs">
+<div class="w-2 h-2 bg-primary"></div>
+<span class="font-body-md text-body-md">Extracted</span>
+</div>
+<span class="font-code-sm text-code-sm">62%</span>
+</div>
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-xs">
+<div class="w-2 h-2 bg-secondary"></div>
+<span class="font-body-md text-body-md">Inferred</span>
+</div>
+<span class="font-code-sm text-code-sm">24%</span>
+</div>
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-xs">
+<div class="w-2 h-2 bg-surface-variant"></div>
+<span class="font-body-md text-body-md">Ambiguous</span>
+</div>
+<span class="font-code-sm text-code-sm">14%</span>
+</div>
+</div>
+</div>
+<!-- Suggested Questions -->
+<div class="glass-panel p-lg space-y-md">
+<h3 class="font-label-caps text-label-caps text-on-surface-variant">SUGGESTED QUERIES</h3>
+<div class="space-y-xs">
+<button class="w-full text-left p-sm border border-outline-variant/30 hover:border-primary hover:bg-primary/5 transition-all group flex items-center justify-between">
+<span class="font-body-md text-body-md text-on-surface-variant group-hover:text-on-surface">"Show bottlenecks in Cluster C-9"</span>
+<span class="material-symbols-outlined text-[16px] text-primary">arrow_forward</span>
+</button>
+<button class="w-full text-left p-sm border border-outline-variant/30 hover:border-primary hover:bg-primary/5 transition-all group flex items-center justify-between">
+<span class="font-body-md text-body-md text-on-surface-variant group-hover:text-on-surface">"Trace path from Root to Shadow_01"</span>
+<span class="material-symbols-outlined text-[16px] text-primary">arrow_forward</span>
+</button>
+<button class="w-full text-left p-sm border border-outline-variant/30 hover:border-primary hover:bg-primary/5 transition-all group flex items-center justify-between">
+<span class="font-body-md text-body-md text-on-surface-variant group-hover:text-on-surface">"Identify single points of failure"</span>
+<span class="material-symbols-outlined text-[16px] text-primary">arrow_forward</span>
+</button>
+</div>
+</div>
+</div>
+</section>
+<!-- Nodes Image Gallery/Status -->
+<section class="glass-panel overflow-hidden">
+<div class="p-md border-b border-outline-variant flex justify-between items-center">
+<span class="font-label-caps text-label-caps text-on-surface-variant">NODE VISUALIZER</span>
+<div class="flex gap-sm">
+<span class="w-2 h-2 rounded-full bg-primary animate-pulse"></span>
+<span class="font-code-sm text-[10px] text-primary uppercase">Live Stream</span>
+</div>
+</div>
+<div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 h-48">
+<div class="relative group cursor-crosshair">
+<img class="w-full h-full object-cover grayscale hover:grayscale-0 transition-all duration-500" data-alt="Close-up of a complex 3D wireframe mesh representing a digital node structure. The lines are thin and glowing electric blue against a deep black void. High technical detail, sharp focus, pro-tool aesthetic, dark mode styling." src="https://lh3.googleusercontent.com/aida-public/AB6AXuB4yFUq0BlX0fwlg5BVwlULPU79D8X9d12fkBwUmmZLu56rH7-gmUQUAm4fB_HgiYAZ3N0n6YOfPmlTaDQjsUCvOdlYo6ZfIuOk4itUhUqRfLXWsg7Qzm-h4he4p3vxkQPl7VsIa_7u6avn-uv1sBjZ6RSStJvBhAKZvP7yb1bMOWe_o3tjimqkkfSvVD95ex5N83ZRJuwUHMZn0Ymz64-zeoQqB-fP8UDouELOXNpgaIyPy5ILulO4wdTqyeELeV4bxd6kemSREVIn"/>
+<div class="absolute inset-0 bg-primary/20 opacity-0 group-hover:opacity-100 flex items-center justify-center pointer-events-none transition-opacity">
+<span class="font-code-sm text-[10px] bg-black px-1">SCAN_01</span>
+</div>
+</div>
+<div class="relative group cursor-crosshair">
+<img class="w-full h-full object-cover grayscale hover:grayscale-0 transition-all duration-500" data-alt="Abstract visualization of data flowing between points, represented by glowing particles and light trails in shades of cyan and magenta. The composition is cinematic with high contrast, minimal lighting, and a futuristic atmosphere." src="https://lh3.googleusercontent.com/aida-public/AB6AXuAxoUSddOTVsQbKj43wKqWhh3C7Hk0mSKpIOfqwKR17xJwKv5UDqL55myIebIIwD3sFqIlcK-5qVTm3xrp85qauhVuiKLFAXAwEJvsDh5drnX1zUfUm3ewOfnl4WP9yA0b0SXyNLQHerfZ7L8R9EMPUBhPynW0IMs6HIGpz3P4rKJszIRt45c_Qef0gsfVaiOAiWs3SaY-2EEzg8-2ARnucg_rgmkuhjEYYTitTKEE-dc4e3CwqezKYs6nipg4ylTQj5z5X7_1t65zs"/>
+<div class="absolute inset-0 bg-secondary/20 opacity-0 group-hover:opacity-100 flex items-center justify-center pointer-events-none transition-opacity">
+<span class="font-code-sm text-[10px] bg-black px-1">DATA_02</span>
+</div>
+</div>
+<div class="relative group cursor-crosshair">
+<img class="w-full h-full object-cover grayscale hover:grayscale-0 transition-all duration-500" data-alt="Highly detailed topographical map of a network cluster, rendered as a glowing 3D landscape of connected nodes. The lighting is low-key, emphasizing the structure through bright outlines. Precise, scientific, and analytical visual style." src="https://lh3.googleusercontent.com/aida-public/AB6AXuDVzm26F9PRUb7FO_bxKXcf5lHiEc6vtramJ28hTupDvWs7dOGmbegUKQa5njUic0PTENAjExybCauR99bRsPep4OW0nbL7dXB7A9-VX6vGEGWhUtPPpneJQXpU8inKZtDA2CjRiWz4mN2CT82TH1cA4wNu4uALQddJG1RP-3I_6DQzh_BJg8pFD2iklTcp9nIXZMzv6tGQc-T1OXRNuUMyckQEszrxIXW5mC0U1t8ttByCA-PLdoKsrp_REgccrhuMRGVPxM94uuEy"/>
+<div class="absolute inset-0 bg-tertiary/20 opacity-0 group-hover:opacity-100 flex items-center justify-center pointer-events-none transition-opacity">
+<span class="font-code-sm text-[10px] bg-black px-1">CORE_03</span>
+</div>
+</div>
+<div class="relative group cursor-crosshair">
+<img class="w-full h-full object-cover grayscale hover:grayscale-0 transition-all duration-500" data-alt="Macro view of a digital motherboard or logic board where connections are highlighted by thin neon lines. The color palette is restricted to blacks and deep blues with vivid cyan accents. Professional tech laboratory aesthetic." src="https://lh3.googleusercontent.com/aida-public/AB6AXuAQgmKoKjGBGlVTONESCoXvOk_R0LiIbJOm9y_LfGWDPNYTyYtVV7IJ5z6BcBwTeI9vfR3A8CezP9a79sxtK9fjnHskIpiG55WQCluZM7fxe_gc-4rtYlCLAxIqPcggD0tP8xTZTH8hoysjWCkwNNG3gANb4V7jQ9-YMyhbBZVHw7Le6E3rI59VWLfNzWrcJW7fYIYCjGTb8CUwsCiCbXlU9ZHUT8DNJLxy8UlZZYRmCmYhhgYgNNJNe1TBVAOsr9C8Eawuc87nK1yd"/>
+<div class="absolute inset-0 bg-primary/20 opacity-0 group-hover:opacity-100 flex items-center justify-center pointer-events-none transition-opacity">
+<span class="font-code-sm text-[10px] bg-black px-1">LGC_04</span>
+</div>
+</div>
+<div class="relative group cursor-crosshair">
+<img class="w-full h-full object-cover grayscale hover:grayscale-0 transition-all duration-500" data-alt="Digital art representing a cloud of connected information nodes. The connections are translucent and layered, creating a sense of depth and complexity. Sophisticated lighting with soft glowing highlights and sharp edges." src="https://lh3.googleusercontent.com/aida-public/AB6AXuCLyprRqlmn2CqFb3TUFI_2pBnKUPNA-gqepjlK0MpPM7k5nEAY4mhUFHR2vaxyWfziormHfmerJUfqFKvkfmOA96jNZb_qVvE3_v2MkfB2lBPcArKH4fxU83QbaF5luq4zQ0w66hrSkbiwRuWdpFu-5wO4FhHxpltgv0KRxss4Ag5q8uirrl2Tktxv_SMp6lk1jke5lYCX67LTh4OcKVP8xhgq9WbUPmaDRgzdvZmZVA1yTe-wMXqAgjbXbm3kDCY79taRDH6h9CR3"/>
+<div class="absolute inset-0 bg-secondary/20 opacity-0 group-hover:opacity-100 flex items-center justify-center pointer-events-none transition-opacity">
+<span class="font-code-sm text-[10px] bg-black px-1">NET_05</span>
+</div>
+</div>
+<div class="relative group cursor-crosshair">
+<img class="w-full h-full object-cover grayscale hover:grayscale-0 transition-all duration-500" data-alt="Clean, minimalist interface elements showing various data graphs and node-link diagrams. The style is strictly pro-tool, with high information density, monochromatic color schemes, and bright status indicators in neon colors." src="https://lh3.googleusercontent.com/aida-public/AB6AXuBR0HoaeAdd9NFOZiw9FnnTSAHunbCvTjroHpMtA8hoCQQBthniquPEONVAHlejbP5eqDGA065kV9zo_-u-H2fBqK1Ux0xx4_9dOWHzAZUWqWKioMJDOLBZ5z7nxa0bpdYcRi5e6fhO0PgZaUQlQhvEEJwAxWKw2KUBj5bkhym5rsOCxGTmmOBGwqCtLJH8JyxWctuJBJA3YtxYSs_bcgHAxEYS2FboPgaEpil6ueFklvuK3iGJs542F6LDXr3HQ8eQ2Q9yh9ydUwH0"/>
+<div class="absolute inset-0 bg-tertiary/20 opacity-0 group-hover:opacity-100 flex items-center justify-center pointer-events-none transition-opacity">
+<span class="font-code-sm text-[10px] bg-black px-1">OUT_06</span>
+</div>
+</div>
+</div>
+</section>
+</div>
+</main>
+<!-- FOOTER STATUS BAR -->
+<footer class="fixed bottom-0 right-0 left-[320px] h-8 bg-surface-container-lowest border-t border-outline-variant flex items-center justify-between px-md w-full z-50">
+<div class="flex items-center gap-lg">
+<span class="font-bold text-primary font-code-sm text-code-sm">NodeSynthesis Pro</span>
+<div class="flex items-center gap-md font-code-sm text-code-sm text-on-surface-variant opacity-80">
+<span class="hover:text-tertiary transition-colors cursor-default">Nodes: 14.2k</span>
+<span class="hover:text-tertiary transition-colors cursor-default">Edges: 58.1k</span>
+<span class="hover:text-tertiary transition-colors cursor-default">RAM: 1.2GB</span>
+</div>
+</div>
+<div class="flex items-center gap-sm">
+<span class="font-code-sm text-code-sm text-on-surface-variant opacity-80">© 2024 NodeSynthesis Pro • Engine: Gemini-1.5-Pro</span>
+<div class="w-2 h-2 rounded-full bg-tertiary shadow-[0_0_4px_rgba(23,222,202,0.8)]"></div>
+</div>
+</footer>
+<!-- INTERACTION SCRIPTS -->
+<script>
+        // Micro-interaction: Update memory usage randomly for "live" feel
+        const ramCounter = document.querySelector('span:contains("RAM:")');
+        if (ramCounter) {
+            setInterval(() => {
+                const ram = (1.1 + Math.random() * 0.2).toFixed(1);
+                ramCounter.innerText = `RAM: ${ram}GB`;
+            }, 5000);
+        }
+
+        // Custom selector for containing text (Polyfill-like for small scripts)
+        document.querySelectorAll('.font-code-sm').forEach(el => {
+            if (el.innerText.includes('RAM:')) {
+                setInterval(() => {
+                    const ram = (1.1 + Math.random() * 0.2).toFixed(1);
+                    el.innerText = `RAM: ${ram}GB`;
+                }, 5000);
+            }
+        });
+
+        // Simple Hover Glow effect for the cards
+        document.querySelectorAll('.glass-panel').forEach(card => {
+            card.addEventListener('mouseenter', () => {
+                card.style.boxShadow = '0 0 15px rgba(0, 218, 243, 0.05)';
+            });
+            card.addEventListener('mouseleave', () => {
+                card.style.boxShadow = 'none';
+            });
+        });
+    </script>
+</body></html>
