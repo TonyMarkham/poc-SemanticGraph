@@ -40,7 +40,8 @@ before extraction starts.
 
 Resolution precedence is:
 
-1. explicit CLI database path, such as `--db` or visualizer `--database-path`;
+1. explicit CLI database path, such as `--db`, visualizer `--database-path`,
+   or MCP server `--database-path`;
 2. `--config <path>`;
 3. discovered `.refactor-radar/config.toml`, searching upward from
    `--workspace-root` when a command has one, otherwise from the current
@@ -52,19 +53,60 @@ that should ignore the configured database.
 
 ## Build The Release CLIs
 
-Build the Rust command-line tools before running extraction, storage, or
-visualizer backend examples:
+Build the Rust command-line tools before running extraction, storage, MCP
+server, or visualizer backend examples:
 
 ```sh
 cargo build --release \
   -p semantic-graph-extract \
   -p semantic-graph-store \
+  -p semantic-graph-mcp-server \
   -p semantic-graph-visualizer-server
 ```
 
 Run the resulting binaries directly. This keeps long-running workspace
 extraction easier to monitor and avoids the debug-profile overhead of
 `cargo run`.
+
+## Run The MCP Server
+
+The MCP server reads an existing SemanticGraph SQLite database through the
+same config discovery described above. Communication is always stdio, and the
+server is read-only: it exposes graph query tools and resources but does not
+run extractors or mutate the graph.
+
+Start it from config:
+
+```sh
+./target/release/semantic-graph-mcp-server
+```
+
+Start it with a temporary database override:
+
+```sh
+./target/release/semantic-graph-mcp-server \
+  --database-path .local/rust-workspace-extract.db
+```
+
+Example MCP-compatible host registration:
+
+```toml
+[mcp_servers.semantic_graph]
+command = "/path/to/poc-SemanticGraph/target/release/semantic-graph-mcp-server"
+args = []
+```
+
+Use `--database-path` in host config only when that launch should ignore
+`.refactor-radar/config.toml` discovery:
+
+```toml
+[mcp_servers.semantic_graph]
+command = "/path/to/poc-SemanticGraph/target/release/semantic-graph-mcp-server"
+args = ["--database-path", "/path/to/poc-SemanticGraph/.local/rust-workspace-extract.db"]
+```
+
+These examples are host configuration snippets only; the server does not
+install itself or generate Codex config.
 
 ## Extract One Rust File
 

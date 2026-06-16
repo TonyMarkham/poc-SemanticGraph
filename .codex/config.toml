@@ -32,3 +32,11 @@ Respect scope boundaries. Planning, reviewing, auditing, optimizing, or explaini
 
 When challenged, do not defend the prior answer. Return to the exact question or directive, state the corrected answer, identify the mismatch, and correct course with the smallest necessary change.
 """
+
+[mcp_servers.semantic_graph]
+command = "./target/release/semantic-graph-mcp-server"
+args = []
+enabled = true
+required = true
+startup_timeout_sec = 10
+tool_timeout_sec = 60
