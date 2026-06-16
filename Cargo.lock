@@ -2554,6 +2554,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "semantic-graph-cli"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "error-location",
+ "semantic-graph-agent-assets",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror",
+ "toml",
+]
+
+[[package]]
 name = "semantic-graph-config"
 version = "0.1.0"
 dependencies = [

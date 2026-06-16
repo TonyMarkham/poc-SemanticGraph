@@ -17,11 +17,13 @@ Is `--workspace-root <WORKSPACE_ROOT>  [default: .]` actually necessary
 ---
 
 ```text
-Create VS-1300.md as the implementation plan for Phase 3 from the VS-100.md being sure to use the directions stated in VS1000.md where appropriate
+Create VS-1400.md as the implementation plan for Phase 4 from the VS-100.md being sure to use the directions stated in VS1000.md where appropriate
 
 - Include a `Measurement Of Done` section with `- [ ]` style checkboxes as a final evaluation checklist.
 
 ## Measure Of Done Section Addendum
+- Rust Code: Zero usage of `std::result::Result` for any return value. Custom {custom}Result<T> is acceptable in error modules.
+- Rust Code: MUST only contain 1 type per file.
 - `cargo fmt` has been run
 - `cargo check` is clean: no errors or warnings
 - `cargo clippy` is clean: no errors or warnings
@@ -33,7 +35,7 @@ Create VS-1300.md as the implementation plan for Phase 3 from the VS-100.md bein
 ---
 
 ```text
-/goal VS-1200.md
+/goal VS-1400.md
 ```
 
 ---

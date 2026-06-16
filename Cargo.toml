@@ -6,6 +6,7 @@ members = [
     "crates/semantic-graph-db-manager",
     "crates/semantic-graph-extract",
     "crates/semantic-graph-agent-assets",
+    "crates/semantic-graph-cli",
     "crates/semantic-graph-mcp-server",
     "crates/semantic-graph-query",
     "crates/semantic-graph-smoke-tests",
@@ -51,6 +52,7 @@ semantic-graph-config       = { path = "crates/semantic-graph-config" }
 semantic-graph-db-manager   = { path = "crates/semantic-graph-db-manager" }
 semantic-graph-extract      = { path = "crates/semantic-graph-extract" }
 semantic-graph-agent-assets = { path = "crates/semantic-graph-agent-assets" }
+semantic-graph-cli          = { path = "crates/semantic-graph-cli" }
 semantic-graph-mcp-server   = { path = "crates/semantic-graph-mcp-server" }
 semantic-graph-query        = { path = "crates/semantic-graph-query" }
 semantic-graph-store        = { path = "crates/semantic-graph-store" }
