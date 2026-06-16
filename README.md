@@ -182,8 +182,7 @@ mode=deleted file=crates/wip/src/foo.rs workspace=1 run=4 routes_complete=3 stal
 ## Extract A Rust Crate Or Workspace
 
 The ergonomic crate and workspace commands use the same in-process
-`rust-analyzer-lib` extraction path as the legacy `rust-workspace-all` command,
-with a single worker-pool knob:
+`rust-analyzer-lib` extraction path, with a single worker-pool knob:
 
 ```sh
 ./target/release/semantic-graph-extract rust-crate \
@@ -213,31 +212,6 @@ combinable:
 and require the symbol graph for the selected files to already exist in the
 target database unless `--symbols` is selected in the same invocation.
 
-## Deprecated: Extract Rust Crate Document Symbols
-
-Prefer `rust-crate --symbols`. The legacy
-`rust-crate-document-symbols` command is retained for compatibility.
-
-Use this when you want to extract every Rust source file that `rust-analyzer`
-indexes for a package path:
-
-```sh
-./target/release/semantic-graph-extract rust-crate-document-symbols \
-  --db .local/rust-crate-extract-wip.db \
-  --workspace-root . \
-  --package-path crates/wip
-```
-
-The crate route loads the workspace through `rust-analyzer-lib`, discovers Rust
-source files for the package path, then extracts hierarchical document-symbol
-data for each discovered file in one extraction run.
-
-Example successful output for `crates/wip`:
-
-```text
-workspace=1 run=1 files=4 nodes=57 edges=53 occurrences=53 evidence=53
-```
-
 Inspect the result:
 
 ```sh
@@ -249,40 +223,15 @@ Expected shape:
 
 ```text
 workspaces=1
-extraction_runs=1
+extraction_runs=3
 files=4
 nodes=57
-edges=53
-occurrences=53
-edge_evidence=53
+edges=<contains+references+calls>
+occurrences=<definitions+references+calls>
+edge_evidence=<definitions+references+calls>
 ```
 
-## Deprecated: Extract Rust Workspace Document Symbols
-
-Prefer `rust-workspace --symbols`. The legacy
-`rust-workspace-document-symbols` command is retained for compatibility.
-
-Use this when you want to extract every Rust source file that `rust-analyzer`
-indexes for the workspace rooted at `--workspace-root`:
-
-```sh
-./target/release/semantic-graph-extract rust-workspace-document-symbols \
-  --db .local/rust-workspace-extract.db \
-  --workspace-root .
-```
-
-The workspace route uses the same `rust-analyzer-lib` source discovery path, but
-treats the workspace root as the extraction boundary. In this repo, that
-excludes `submodules/` because those crates are not part of the root Cargo
-workspace.
-
-Example successful output for the current repo workspace:
-
-```text
-workspace=1 run=1 files=172 nodes=1611 edges=1439 occurrences=1439 evidence=1439
-```
-
-Inspect the result:
+Inspect a workspace extraction:
 
 ```sh
 ./target/release/semantic-graph-store stats \
@@ -293,140 +242,12 @@ Expected shape:
 
 ```text
 workspaces=1
-extraction_runs=1
-files=172
-nodes=1611
-edges=1439
-occurrences=1439
-edge_evidence=1439
-```
-
-## Deprecated: Extract Rust Workspace References
-
-Prefer `rust-workspace --references`. The legacy
-`rust-workspace-references` command is retained for compatibility.
-
-Use this after `rust-workspace --symbols` when you want to add or refresh only
-Rust `references` edges in an existing workspace graph:
-
-```sh
-./target/release/semantic-graph-extract rust-workspace \
-  --db .local/rust-workspace-references.db \
-  --symbols
-```
-
-```sh
-./target/release/semantic-graph-extract rust-workspace-references \
-  --db .local/rust-workspace-references.db \
-  --workspace-root .
-```
-
-The references command requires the document-symbol graph to already exist in
-the target database. It queries `rust-analyzer` references for eligible
-workspace symbols, then stores directed `source --references--> target` edges
-with occurrence and edge evidence proof.
-
-Example successful output shape:
-
-```text
-workspace=1 run=2 targets=<targets> references_edges=3135 reference_occurrences=3829 evidence=3829 stale_edges_closed=0
-```
-
-Expected shape:
-
-```text
-workspaces=1
-extraction_runs=2
-files=172
-nodes=1611
-edges=4574
-occurrences=5268
-edge_evidence=5268
-```
-
-## Deprecated: Extract Rust Workspace Calls
-
-Prefer `rust-workspace --calls`. The legacy `rust-workspace-calls` command is
-retained for compatibility.
-
-Use this after `rust-workspace --symbols` when you want to add or refresh only
-Rust `calls` edges in an existing workspace graph:
-
-```sh
-./target/release/semantic-graph-extract rust-workspace \
-  --db .local/rust-workspace-calls.db \
-  --symbols
-```
-
-```sh
-./target/release/semantic-graph-extract rust-workspace-calls \
-  --db .local/rust-workspace-calls.db \
-  --workspace-root .
-```
-
-The calls command requires the document-symbol graph to already exist in the
-target database. It queries `rust-analyzer` outgoing call hierarchy for callable
-workspace symbols, then stores directed `caller --calls--> callee` edges with
-call occurrence and edge evidence proof. External and unresolved targets are
-counted and skipped.
-
-Example successful output shape:
-
-```text
-workspace=1 run=2 callable_nodes=<callable_nodes> calls_edges=243 call_occurrences=278 evidence=278 skipped_external_targets=<skipped_external_targets> skipped_unresolved_targets=<skipped_unresolved_targets> stale_edges_closed=0
-```
-
-Expected shape:
-
-```text
-workspaces=1
-extraction_runs=2
-files=172
-nodes=1611
-edges=1682
-occurrences=1717
-edge_evidence=1717
-```
-
-## Deprecated: Extract A Complete Rust Workspace
-
-Prefer `rust-workspace`. The legacy `rust-workspace-all` command is retained
-for compatibility.
-
-Use this when you want a fresh complete SQLite graph with document symbols,
-references, and calls in one CLI invocation:
-
-```sh
-./target/release/semantic-graph-extract rust-workspace-all --workspace-root .
-```
-
-The all-in-one command persists the document-symbol graph first, then refreshes
-the references and calls routes in the same database.
-
-To override the configured path for a one-off run:
-
-```sh
-./target/release/semantic-graph-extract rust-workspace-all \
-  --db /tmp/rust-workspace-scratch.db \
-  --workspace-root .
-```
-
-Example successful output for the current repo workspace:
-
-```text
-workspace=1 document_run=1 reference_run=2 call_run=3 files=172 nodes=1611 contains_edges=1439 references_edges=3135 reference_occurrences=3829 calls_edges=243 call_occurrences=278 evidence=5546 routes_complete=174 stale_nodes_closed=0 stale_edges_closed=0
-```
-
-Expected shape:
-
-```text
-workspaces=1
 extraction_runs=3
-files=172
-nodes=1611
-edges=4817
-occurrences=5546
-edge_evidence=5546
+files=<workspace_rust_files>
+nodes=<files+symbols>
+edges=<contains+references+calls>
+occurrences=<definitions+references+calls>
+edge_evidence=<definitions+references+calls>
 ```
 
 ## Visualize A Rust Workspace
@@ -520,8 +341,8 @@ Crate and workspace smoke routes:
 ```sh
 just rust-crate-extract-smoke
 just rust-workspace-extract-smoke
-just rust-workspace-references-smoke
-just rust-workspace-calls-smoke
+just rust-workspace-reference-route-smoke
+just rust-workspace-call-route-smoke
 just rust-workspace-smoke
 ```
 

@@ -1,7 +1,7 @@
 use crate::{
     model::DocumentSymbolBatchRequest,
     providers::rust_analyzer::RustAnalyzerProvider,
-    workspace_all::{ThreadedWorkspaceAllConfig, ThreadedWorkspaceAllRunner},
+    workspace_extraction::{ThreadedWorkspaceExtractionConfig, ThreadedWorkspaceExtractionRunner},
 };
 
 use semantic_graph_db_manager::WriteManager;
@@ -20,20 +20,21 @@ use tokio::runtime::Builder;
 static RUST_ANALYZER_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
-fn threaded_workspace_all_streams_relation_writes() -> std::result::Result<(), Box<dyn Error>> {
+fn threaded_workspace_extraction_streams_relation_writes() -> std::result::Result<(), Box<dyn Error>>
+{
     run_with_rust_analyzer(async {
         let repo_root = repo_root()?;
         let provider = RustAnalyzerProvider::new();
-        let request = workspace_all_request(&provider, &repo_root)?;
+        let request = workspace_extraction_request(&provider, &repo_root)?;
         let db_path = temp_db_path()?;
         let writer = WriteManager::start(&db_path).await?;
         writer.migrate().await?;
 
-        let summary = ThreadedWorkspaceAllRunner::run(
+        let summary = ThreadedWorkspaceExtractionRunner::run(
             &writer,
             &provider,
             request,
-            ThreadedWorkspaceAllConfig::new(1, 1, 1, 0, 0),
+            ThreadedWorkspaceExtractionConfig::new(1, 1, 1, 0, 0),
         )
         .await?;
         writer.shutdown().await?;
@@ -77,7 +78,7 @@ fn threaded_workspace_all_streams_relation_writes() -> std::result::Result<(), B
     })
 }
 
-fn workspace_all_request(
+fn workspace_extraction_request(
     provider: &RustAnalyzerProvider,
     repo_root: &Path,
 ) -> std::result::Result<DocumentSymbolBatchRequest, Box<dyn Error>> {
@@ -105,7 +106,7 @@ fn repo_root() -> std::result::Result<PathBuf, Box<dyn Error>> {
 fn temp_db_path() -> std::result::Result<PathBuf, Box<dyn Error>> {
     let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
     Ok(env::temp_dir().join(format!(
-        "poc-semanticgraph-threaded-workspace-all-{}-{stamp}.db",
+        "poc-semanticgraph-threaded-workspace-extraction-{}-{stamp}.db",
         std::process::id()
     )))
 }

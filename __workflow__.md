@@ -16,7 +16,7 @@ Is `--workspace-root <WORKSPACE_ROOT>  [default: .]` actually necessary
 
 ```text
 The latest commands that I added were `rust-file [OPTIONS] <PATH>` and `rust-file-deleted [OPTIONS] <PATH>`.
-I like the command structure of those but the execution structure of the exiting `rust-workspace-all` command.
+I like the command structure of those but the execution structure of the existing threaded workspace runner.
 I want to keep all of the current commands for now, but I feel the new structure is more ergonomic.
 
 **Add these Commands**
@@ -25,25 +25,25 @@ I want to keep all of the current commands for now, but I feel the new structure
 - --db <DB> | Use value from config if omitted
 - --workspace-root <WORKSPACE_ROOT>  [default: .]
 - --analysis-workers <ANALYSIS_WORKERS> | Use value from config if omitted
-- --calls                            
-- --references                       
+- --calls
+- --references
 - --symbols
 
 ### NOTES
 - If no `--symbols`, `--calls` or `--references`, extract all 3
-- Use existing `rust-workspace-all` command as inspiration for threading and extraction thoroughness.
+- Use the existing threaded workspace runner as inspiration for threading and extraction thoroughness.
 
 ## `rust-workspace [OPTIONS]`
 - --db <DB> | Use value from config if omitted
 - --workspace-root <WORKSPACE_ROOT>  [default: .]
 - --analysis-workers <ANALYSIS_WORKERS> | Use value from config if omitted
-- --calls                            
-- --references                       
+- --calls
+- --references
 - --symbols
 
 ### NOTES
 - If no `--symbols`, `--calls` or `--references`, extract all 3
-- Use existing `rust-workspace-all` command as inspiration for threading and extraction thoroughness.
+- Use the existing threaded workspace runner as inspiration for threading and extraction thoroughness.
 ```
 
 ---

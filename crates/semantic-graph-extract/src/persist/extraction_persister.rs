@@ -1,5 +1,6 @@
 use crate::{
     ExtractError, ExtractResult,
+    cli::symbol_key_belongs_to_file,
     document_symbols::paths::basename_from_relative_path,
     model::{
         CallBatchExtraction, DocumentSymbolBatchExtraction, DocumentSymbolExtraction,
@@ -1759,7 +1760,7 @@ impl ExtractionPersister {
                     provider,
                     method,
                     format!(
-                        "workspace {workspace_root_uri} is missing; run rust-workspace-document-symbols first, run rust-file --symbols for one file, or use rust-workspace-all"
+                        "workspace {workspace_root_uri} is missing; run rust-workspace --symbols, rust-crate --symbols, or rust-file --symbols first"
                     ),
                 )
             })
@@ -1784,7 +1785,7 @@ impl ExtractionPersister {
                         provider,
                         method,
                         format!(
-                            "source file {} is missing from the database; run rust-workspace-document-symbols first, run rust-file --symbols for one file, or use rust-workspace-all",
+                            "source file {} is missing from the database; run rust-workspace --symbols, rust-crate --symbols, or rust-file --symbols first",
                             file_extraction.source_file.uri
                         ),
                     )
@@ -1812,7 +1813,7 @@ impl ExtractionPersister {
                     provider,
                     method,
                     format!(
-                        "source file {file_uri} is missing from the database; run rust-workspace-document-symbols first, run rust-file --symbols for one file, or use rust-workspace-all"
+                        "source file {file_uri} is missing from the database; run rust-workspace --symbols, rust-crate --symbols, or rust-file --symbols first"
                     ),
                 )
             })
@@ -2129,7 +2130,7 @@ impl ExtractionPersister {
             provider,
             method,
             format!(
-                "symbol node {symbol_key} is missing from the database; run rust-workspace-document-symbols first, run rust-file --symbols for one file, or use rust-workspace-all"
+                "symbol node {symbol_key} is missing from the database; run rust-workspace --symbols, rust-crate --symbols, or rust-file --symbols first"
             ),
         ))
     }
@@ -2613,14 +2614,6 @@ fn file_content_hash_for_scope_key(
                 format!("source file {file_scope_key} is missing from the relation context"),
             )
         })
-}
-
-fn symbol_key_belongs_to_file(symbol_key: &str, file_scope_key: &str) -> bool {
-    let file_node_key = format!("file:{file_scope_key}");
-    symbol_key == file_node_key
-        || symbol_key
-            .strip_prefix(file_scope_key)
-            .is_some_and(|suffix| suffix.starts_with('#'))
 }
 
 fn symbol_properties_json(symbol: &crate::model::ExtractedSymbol) -> Value {

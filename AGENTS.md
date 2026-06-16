@@ -55,6 +55,12 @@ Language intelligence:
   and runs file-scoped stale closing. `--symbols`, `--references`, and `--calls`
   are special route-only modes; `--references` and `--calls` require the file's
   symbol graph to already exist in the database.
+- The `rust-crate` and `rust-workspace` commands are the crate/workspace refresh
+  paths. With no mode flag, they extract symbols, references, and calls using
+  the threaded in-process `rust-analyzer-lib` worker-pool path. `--symbols`,
+  `--references`, and `--calls` are combinable route selectors; relation-only
+  runs require the selected files' symbol graph to already exist in the
+  database.
 - The `rust-file-deleted` command is the file-watcher remove-event path. It
   accepts a deleted Rust file path that may no longer exist on disk, defaults
   `--workspace-root` to `.`, records file-scoped document-symbol/reference/call
@@ -251,7 +257,7 @@ Validation:
 
 ```sh
 git submodule status
-rg -n "rust-analyzer-lib|rust-file|rust-file-deleted|rust-workspace-document-symbols|rust-workspace-references|rust-workspace-calls|rust-workspace-all|document_symbol|references|calls" crates
+rg -n "rust-analyzer-lib|rust-file|rust-file-deleted|rust-crate|rust-workspace|document_symbol|references|calls" crates
 rg -n "semantic-graph-smoke-tests|workspace.persistence|workspace.references|workspace.calls|crate.persistence" README.md crates
 rg -n "anyhow|error-location|ExtractError|GraphStoreError|RustAnalyzerLibError" crates Cargo.toml
 rg -n "use super|::\\*|pub use .*::\\*" crates

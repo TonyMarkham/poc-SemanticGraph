@@ -5,7 +5,7 @@ use crate::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorkspaceAllSummary {
+pub struct WorkspaceExtractionSummary {
     pub benchmark: BenchmarkSummary,
     pub document_summary: PersistenceSummary,
     pub reference_summary: PersistenceSummary,

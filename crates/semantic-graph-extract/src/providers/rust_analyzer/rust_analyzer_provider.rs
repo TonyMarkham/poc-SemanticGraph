@@ -1,17 +1,14 @@
 use crate::{
     ExtractError, ExtractResult,
     document_symbols::mapper::text_range_from_lsp,
-    document_symbols::paths::{
-        validate_document_symbol_batch_request, validate_document_symbol_request,
-    },
+    document_symbols::paths::validate_document_symbol_batch_request,
     model::{
         CallBatchExtraction, CallBatchRequest, CallOccurrence, CallRouteSummary,
-        DocumentSymbolBatchExtraction, DocumentSymbolBatchRequest, DocumentSymbolExtraction,
-        DocumentSymbolRequest, ExtractedCall, ExtractedReference, ExtractedSymbol, GraphLanguage,
-        ProviderId, ReferenceBatchExtraction, ReferenceBatchRequest, ReferenceOccurrence,
+        DocumentSymbolBatchExtraction, DocumentSymbolBatchRequest, DocumentSymbolRequest,
+        ExtractedCall, ExtractedReference, ExtractedSymbol, GraphLanguage, ProviderId,
+        ReferenceBatchExtraction, ReferenceBatchRequest, ReferenceOccurrence,
         ReferenceRouteSummary, RouteName, SourceFile,
     },
-    provider::DocumentSymbolProvider,
     providers::rust_analyzer::RustDocumentSymbolMapper,
 };
 
@@ -30,8 +27,12 @@ impl RustAnalyzerProvider {
         Self
     }
 
-    pub fn with_binary(_binary: impl Into<String>) -> Self {
-        Self
+    pub fn provider_id(&self) -> ProviderId {
+        ProviderId::rust_analyzer()
+    }
+
+    pub fn language(&self) -> GraphLanguage {
+        GraphLanguage::Rust
     }
 
     pub async fn extract_document_symbol_batch(
@@ -39,14 +40,6 @@ impl RustAnalyzerProvider {
         request: DocumentSymbolBatchRequest,
     ) -> ExtractResult<DocumentSymbolBatchExtraction> {
         self.run_batch(request).await
-    }
-
-    pub fn extract_document_symbol_batch_with_analysis(
-        &self,
-        analysis: &rust_analyzer_lib::LoadedAnalysis,
-        request: DocumentSymbolBatchRequest,
-    ) -> ExtractResult<DocumentSymbolBatchExtraction> {
-        self.run_batch_with_analysis(analysis, request)
     }
 
     pub fn map_document_symbol_items(
@@ -123,25 +116,6 @@ impl RustAnalyzerProvider {
         Ok(files)
     }
 
-    async fn run(&self, request: DocumentSymbolRequest) -> ExtractResult<DocumentSymbolExtraction> {
-        let request = validate_document_symbol_request(request)?;
-        let mut batch = self
-            .run_batch(DocumentSymbolBatchRequest {
-                workspace_root: request.workspace_root,
-                package_path: request.package_path,
-                file_paths: vec![request.file_path],
-            })
-            .await?;
-
-        batch.extractions.pop().ok_or_else(|| {
-            ExtractError::response_shape(
-                self.provider_id().as_str(),
-                "textDocument/documentSymbol",
-                "single-file document symbol extraction returned no files",
-            )
-        })
-    }
-
     async fn run_batch(
         &self,
         request: DocumentSymbolBatchRequest,
@@ -152,17 +126,6 @@ impl RustAnalyzerProvider {
             .map_err(|source| facade_error("rust-analyzer-lib load analysis", source))?;
 
         self.map_document_symbols(&analysis, request, provider_version)
-    }
-
-    fn run_batch_with_analysis(
-        &self,
-        analysis: &rust_analyzer_lib::LoadedAnalysis,
-        request: DocumentSymbolBatchRequest,
-    ) -> ExtractResult<DocumentSymbolBatchExtraction> {
-        let request = validate_document_symbol_batch_request(request)?;
-        let provider_version = rust_analyzer_lib::provider_version();
-
-        self.map_document_symbols(analysis, request, provider_version)
     }
 
     fn map_document_symbols(
@@ -605,23 +568,6 @@ impl RustAnalyzerProvider {
 impl Default for RustAnalyzerProvider {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-impl DocumentSymbolProvider for RustAnalyzerProvider {
-    fn provider_id(&self) -> ProviderId {
-        ProviderId::rust_analyzer()
-    }
-
-    fn language(&self) -> GraphLanguage {
-        GraphLanguage::Rust
-    }
-
-    async fn extract_document_symbols(
-        &self,
-        request: DocumentSymbolRequest,
-    ) -> ExtractResult<DocumentSymbolExtraction> {
-        self.run(request).await
     }
 }
 

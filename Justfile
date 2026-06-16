@@ -95,32 +95,32 @@ rust-workspace-extract-smoke:
     cargo run -p {{package}} -- stats --db .local/rust-workspace-extract.db
 
 # Exercise workspace-scoped rust-analyzer reference extraction.
-rust-workspace-references-smoke:
+rust-workspace-reference-route-smoke:
     mkdir -p {{local_dir}}
-    rm -f .local/rust-workspace-references.db
+    rm -f .local/rust-workspace-reference-route.db
     cargo run -p {{extract_package}} -- rust-workspace \
-      --db .local/rust-workspace-references.db \
+      --db .local/rust-workspace-reference-route.db \
       --workspace-root . \
       --symbols
     cargo run -p {{extract_package}} -- rust-workspace \
-      --db .local/rust-workspace-references.db \
+      --db .local/rust-workspace-reference-route.db \
       --workspace-root . \
       --references
-    cargo run -p {{package}} -- stats --db .local/rust-workspace-references.db
+    cargo run -p {{package}} -- stats --db .local/rust-workspace-reference-route.db
 
 # Exercise workspace-scoped rust-analyzer call extraction.
-rust-workspace-calls-smoke:
+rust-workspace-call-route-smoke:
     mkdir -p {{local_dir}}
-    rm -f .local/rust-workspace-calls.db
+    rm -f .local/rust-workspace-call-route.db
     cargo run -p {{extract_package}} -- rust-workspace \
-      --db .local/rust-workspace-calls.db \
+      --db .local/rust-workspace-call-route.db \
       --workspace-root . \
       --symbols
     cargo run -p {{extract_package}} -- rust-workspace \
-      --db .local/rust-workspace-calls.db \
+      --db .local/rust-workspace-call-route.db \
       --workspace-root . \
       --calls
-    cargo run -p {{package}} -- stats --db .local/rust-workspace-calls.db
+    cargo run -p {{package}} -- stats --db .local/rust-workspace-call-route.db
 
 # Exercise complete workspace extraction as part of confidence checks.
 confidence-rust-workspace:

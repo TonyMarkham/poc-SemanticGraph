@@ -1,7 +1,7 @@
-use crate::workspace_all::WorkspaceExtractionRoutes;
+use crate::workspace_extraction::WorkspaceExtractionRoutes;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ThreadedWorkspaceAllConfig {
+pub struct ThreadedWorkspaceExtractionConfig {
     reference_jobs: usize,
     call_jobs: usize,
     analysis_workers: usize,
@@ -10,7 +10,7 @@ pub struct ThreadedWorkspaceAllConfig {
     routes: WorkspaceExtractionRoutes,
 }
 
-impl ThreadedWorkspaceAllConfig {
+impl ThreadedWorkspaceExtractionConfig {
     pub fn new(
         reference_jobs: usize,
         call_jobs: usize,

@@ -7,11 +7,10 @@ use crate::{
         ReferenceRouteSummary, RouteName, RouteScope,
     },
     persist::{ExtractionPersister, PersistenceSummary},
-    provider::DocumentSymbolProvider,
     providers::rust_analyzer::RustAnalyzerProvider,
-    workspace_all::{
+    workspace_extraction::{
         FileRelationContext, FileRelationRouteStart, FileRelationWorkerSummary,
-        ThreadedWorkspaceAllConfig, WorkspaceAllSummary, WorkspaceExtractionRoutes,
+        ThreadedWorkspaceExtractionConfig, WorkspaceExtractionRoutes, WorkspaceExtractionSummary,
     },
 };
 
@@ -31,15 +30,15 @@ use std::{
 };
 use tokio::{sync::Mutex, task::JoinError};
 
-pub struct ThreadedWorkspaceAllRunner;
+pub struct ThreadedWorkspaceExtractionRunner;
 
-impl ThreadedWorkspaceAllRunner {
+impl ThreadedWorkspaceExtractionRunner {
     pub async fn run(
         store: &WriteHandle,
         provider: &RustAnalyzerProvider,
         document_request: DocumentSymbolBatchRequest,
-        config: ThreadedWorkspaceAllConfig,
-    ) -> ExtractResult<WorkspaceAllSummary> {
+        config: ThreadedWorkspaceExtractionConfig,
+    ) -> ExtractResult<WorkspaceExtractionSummary> {
         let total_timer = Stopwatch::start_new();
         let mut benchmark = BenchmarkSummary::new();
         let analysis_worker_count = effective_analysis_worker_count(&config);
@@ -240,7 +239,7 @@ impl ThreadedWorkspaceAllRunner {
             let analysis_worker = worker_handles.first().cloned().ok_or_else(|| {
                 ExtractError::response_shape(
                     "rust-analyzer",
-                    "rust-workspace-all",
+                    "rust-workspace",
                     "analysis pool contained no workers",
                 )
             })?;
@@ -317,7 +316,7 @@ impl ThreadedWorkspaceAllRunner {
 
         benchmark.insert_duration_ms("threaded.total", total_timer.elapsed());
 
-        Ok(WorkspaceAllSummary {
+        Ok(WorkspaceExtractionSummary {
             benchmark,
             document_summary,
             reference_summary,
@@ -700,7 +699,7 @@ async fn file_ids_for_document_symbols(
             .ok_or_else(|| {
                 ExtractError::response_shape(
                     document_symbols.provider.as_str(),
-                    "rust-workspace-all",
+                    "rust-workspace",
                     format!(
                         "source file {} was not persisted before threaded relation extraction",
                         extraction.source_file.uri
@@ -728,7 +727,7 @@ async fn existing_workspace_id(
                 provider,
                 method,
                 format!(
-                    "workspace {workspace_root_uri} is missing; run rust-workspace --symbols, rust-crate --symbols, rust-workspace-document-symbols, rust-file --symbols, or rust-workspace-all first"
+                    "workspace {workspace_root_uri} is missing; run rust-workspace --symbols, rust-crate --symbols, or rust-file --symbols first"
                 ),
             )
         })
@@ -754,7 +753,7 @@ fn execution_mode_label() -> &'static str {
     "file_grained_analysis_worker_pool"
 }
 
-fn effective_analysis_worker_count(config: &ThreadedWorkspaceAllConfig) -> usize {
+fn effective_analysis_worker_count(config: &ThreadedWorkspaceExtractionConfig) -> usize {
     let split_workers = config.reference_analysis_workers() + config.call_analysis_workers();
     if split_workers == 0 {
         config.analysis_workers()
