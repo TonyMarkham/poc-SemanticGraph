@@ -15,35 +15,14 @@ Is `--workspace-root <WORKSPACE_ROOT>  [default: .]` actually necessary
 ```
 
 ```text
-The latest commands that I added were `rust-file [OPTIONS] <PATH>` and `rust-file-deleted [OPTIONS] <PATH>`.
-I like the command structure of those but the execution structure of the existing threaded workspace runner.
-I want to keep all of the current commands for now, but I feel the new structure is more ergonomic.
+- Read `VS-10.md`
+- Audit the current `semantic-graph-extract` CLI commands and make sure that the plan aligns to the existing shape.
 
-**Add these Commands**
-
-## `rust-crate [OPTIONS] <PATH> PATH`
-- --db <DB> | Use value from config if omitted
-- --workspace-root <WORKSPACE_ROOT>  [default: .]
-- --analysis-workers <ANALYSIS_WORKERS> | Use value from config if omitted
-- --calls
-- --references
-- --symbols
-
-### NOTES
-- If no `--symbols`, `--calls` or `--references`, extract all 3
-- Use the existing threaded workspace runner as inspiration for threading and extraction thoroughness.
-
-## `rust-workspace [OPTIONS]`
-- --db <DB> | Use value from config if omitted
-- --workspace-root <WORKSPACE_ROOT>  [default: .]
-- --analysis-workers <ANALYSIS_WORKERS> | Use value from config if omitted
-- --calls
-- --references
-- --symbols
-
-### NOTES
-- If no `--symbols`, `--calls` or `--references`, extract all 3
-- Use the existing threaded workspace runner as inspiration for threading and extraction thoroughness.
+I am assuming:
+- rust-workspace > csharp-solution
+- rust-crate > csharp-project
+- rust-file > csharp-file
+- rust-file-deleted > csharp-file-deleted 
 ```
 
 ---
