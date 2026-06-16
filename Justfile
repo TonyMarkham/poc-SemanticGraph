@@ -60,71 +60,77 @@ confidence:
     SQLX_OFFLINE=true cargo build
     SQLX_OFFLINE=true cargo build --release
     SQLX_OFFLINE=true cargo test
-    just --justfile {{justfile()}} confidence-rust-workspace-all
+    just --justfile {{justfile()}} confidence-rust-workspace
 
 # Exercise rust-analyzer document-symbol extraction against crates/wip.
 rust-extract-smoke:
     mkdir -p {{local_dir}}
     rm -f .local/rust-extract-wip.db
-    cargo run -p {{extract_package}} -- rust-document-symbols \
+    cargo run -p {{extract_package}} -- rust-file \
       --db .local/rust-extract-wip.db \
       --workspace-root . \
-      --package-path crates/wip \
-      --file crates/wip/src/lib.rs
+      --symbols \
+      crates/wip/src/lib.rs
     cargo run -p {{package}} -- stats --db .local/rust-extract-wip.db
 
 # Exercise crate-scoped rust-analyzer document-symbol extraction against crates/wip.
 rust-crate-extract-smoke:
     mkdir -p {{local_dir}}
     rm -f .local/rust-crate-extract-wip.db
-    cargo run -p {{extract_package}} -- rust-crate-document-symbols \
+    cargo run -p {{extract_package}} -- rust-crate \
       --db .local/rust-crate-extract-wip.db \
       --workspace-root . \
-      --package-path crates/wip
+      --symbols \
+      crates/wip
     cargo run -p {{package}} -- stats --db .local/rust-crate-extract-wip.db
 
 # Exercise workspace-scoped rust-analyzer document-symbol extraction.
 rust-workspace-extract-smoke:
     mkdir -p {{local_dir}}
     rm -f .local/rust-workspace-extract.db
-    cargo run -p {{extract_package}} -- rust-workspace-document-symbols \
+    cargo run -p {{extract_package}} -- rust-workspace \
       --db .local/rust-workspace-extract.db \
-      --workspace-root .
+      --workspace-root . \
+      --symbols
     cargo run -p {{package}} -- stats --db .local/rust-workspace-extract.db
 
 # Exercise workspace-scoped rust-analyzer reference extraction.
 rust-workspace-references-smoke:
     mkdir -p {{local_dir}}
     rm -f .local/rust-workspace-references.db
-    cargo run -p {{extract_package}} -- rust-workspace-document-symbols \
+    cargo run -p {{extract_package}} -- rust-workspace \
       --db .local/rust-workspace-references.db \
-      --workspace-root .
-    cargo run -p {{extract_package}} -- rust-workspace-references \
+      --workspace-root . \
+      --symbols
+    cargo run -p {{extract_package}} -- rust-workspace \
       --db .local/rust-workspace-references.db \
-      --workspace-root .
+      --workspace-root . \
+      --references
     cargo run -p {{package}} -- stats --db .local/rust-workspace-references.db
 
 # Exercise workspace-scoped rust-analyzer call extraction.
 rust-workspace-calls-smoke:
     mkdir -p {{local_dir}}
     rm -f .local/rust-workspace-calls.db
-    cargo run -p {{extract_package}} -- rust-workspace-document-symbols \
+    cargo run -p {{extract_package}} -- rust-workspace \
       --db .local/rust-workspace-calls.db \
-      --workspace-root .
-    cargo run -p {{extract_package}} -- rust-workspace-calls \
+      --workspace-root . \
+      --symbols
+    cargo run -p {{extract_package}} -- rust-workspace \
       --db .local/rust-workspace-calls.db \
-      --workspace-root .
+      --workspace-root . \
+      --calls
     cargo run -p {{package}} -- stats --db .local/rust-workspace-calls.db
 
 # Exercise complete workspace extraction as part of confidence checks.
-confidence-rust-workspace-all:
-    ./target/release/semantic-graph-extract rust-workspace-all --workspace-root .
+confidence-rust-workspace:
+    ./target/release/semantic-graph-extract rust-workspace
 
 # Exercise complete workspace-scoped rust-analyzer extraction in one CLI call.
-rust-workspace-all-smoke:
+rust-workspace-smoke:
     mkdir -p {{local_dir}}
     rm -f .local/rust-workspace-extract.db
-    cargo run -p {{extract_package}} -- rust-workspace-all \
+    cargo run -p {{extract_package}} -- rust-workspace \
       --db .local/rust-workspace-extract.db \
       --workspace-root .
     cargo run -p {{package}} -- stats --db .local/rust-workspace-extract.db

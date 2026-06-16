@@ -4,6 +4,7 @@ mod file_relation_worker_summary;
 mod threaded_workspace_all_config;
 mod threaded_workspace_all_runner;
 mod workspace_all_summary;
+mod workspace_extraction_routes;
 
 // ---------------------------------------------------------------------------------------------- //
 
@@ -13,3 +14,4 @@ pub(crate) use file_relation_worker_summary::FileRelationWorkerSummary;
 pub use threaded_workspace_all_config::ThreadedWorkspaceAllConfig;
 pub use threaded_workspace_all_runner::ThreadedWorkspaceAllRunner;
 pub use workspace_all_summary::WorkspaceAllSummary;
+pub use workspace_extraction_routes::WorkspaceExtractionRoutes;

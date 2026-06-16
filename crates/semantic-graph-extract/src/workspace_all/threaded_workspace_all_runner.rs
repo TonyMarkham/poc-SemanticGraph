@@ -11,7 +11,7 @@ use crate::{
     providers::rust_analyzer::RustAnalyzerProvider,
     workspace_all::{
         FileRelationContext, FileRelationRouteStart, FileRelationWorkerSummary,
-        ThreadedWorkspaceAllConfig, WorkspaceAllSummary,
+        ThreadedWorkspaceAllConfig, WorkspaceAllSummary, WorkspaceExtractionRoutes,
     },
 };
 
@@ -43,7 +43,9 @@ impl ThreadedWorkspaceAllRunner {
         let total_timer = Stopwatch::start_new();
         let mut benchmark = BenchmarkSummary::new();
         let analysis_worker_count = effective_analysis_worker_count(&config);
+        let routes = config.routes();
         benchmark.insert_label("threaded.actual_execution_mode", execution_mode_label());
+        benchmark.insert_label("threaded.routes", routes.label());
         benchmark.insert_count("threaded.reference_jobs", config.reference_jobs());
         benchmark.insert_count("threaded.call_jobs", config.call_jobs());
         benchmark.insert_count("threaded.analysis_workers", config.analysis_workers());
@@ -54,6 +56,18 @@ impl ThreadedWorkspaceAllRunner {
         benchmark.insert_count(
             "threaded.call_analysis_workers",
             config.call_analysis_workers(),
+        );
+        benchmark.insert_count(
+            "threaded.extract_symbols",
+            usize::from(routes.includes_symbols()),
+        );
+        benchmark.insert_count(
+            "threaded.extract_references",
+            usize::from(routes.includes_references()),
+        );
+        benchmark.insert_count(
+            "threaded.extract_calls",
+            usize::from(routes.includes_calls()),
         );
         benchmark.insert_count("threaded.effective_analysis_workers", analysis_worker_count);
         benchmark.insert_count("threaded.input_files", document_request.file_paths.len());
@@ -109,9 +123,20 @@ impl ThreadedWorkspaceAllRunner {
         );
 
         let document_symbols_persist_timer = Stopwatch::start_new();
-        let document_summary = ExtractionPersister
-            .persist_document_symbol_batch(store, &workspace_root_uri, &document_symbols)
+        let document_summary = if routes.includes_symbols() {
+            ExtractionPersister
+                .persist_document_symbol_batch(store, &workspace_root_uri, &document_symbols)
+                .await?
+        } else {
+            let workspace_id = existing_workspace_id(
+                store,
+                &workspace_root_uri,
+                provider.provider_id().as_str(),
+                "rust-workspace route-only extraction",
+            )
             .await?;
+            empty_summary(workspace_id, 0)
+        };
         benchmark.insert_duration_ms(
             "threaded.document_symbols_persist",
             document_symbols_persist_timer.elapsed(),
@@ -131,10 +156,16 @@ impl ThreadedWorkspaceAllRunner {
         );
 
         let targets_timer = Stopwatch::start_new();
-        let reference_targets = provider
-            .reference_targets_for_document_symbols(&document_request, &document_symbols)?;
-        let call_targets =
-            provider.call_targets_for_document_symbols(&document_request, &document_symbols)?;
+        let reference_targets = if routes.includes_references() {
+            provider.reference_targets_for_document_symbols(&document_request, &document_symbols)?
+        } else {
+            Vec::new()
+        };
+        let call_targets = if routes.includes_calls() {
+            provider.call_targets_for_document_symbols(&document_request, &document_symbols)?
+        } else {
+            Vec::new()
+        };
         benchmark.insert_count("threaded.reference_targets", reference_targets.len());
         benchmark.insert_count("threaded.call_targets", call_targets.len());
         benchmark.insert_duration_ms("threaded.targets_build", targets_timer.elapsed());
@@ -144,24 +175,32 @@ impl ThreadedWorkspaceAllRunner {
         benchmark.insert_count("threaded.file_work_items", file_work_items.len());
         benchmark.insert_duration_ms("threaded.file_work_build", file_work_timer.elapsed());
 
-        let reference_run_id = store
-            .start_run(
-                workspace_id,
-                provider.provider_id().as_str(),
-                document_symbols.provider_version.as_deref(),
-                None,
-            )
-            .await
-            .map_err(ExtractError::storage)?;
-        let call_run_id = store
-            .start_run(
-                workspace_id,
-                provider.provider_id().as_str(),
-                document_symbols.provider_version.as_deref(),
-                None,
-            )
-            .await
-            .map_err(ExtractError::storage)?;
+        let reference_run_id = if routes.includes_references() {
+            store
+                .start_run(
+                    workspace_id,
+                    provider.provider_id().as_str(),
+                    document_symbols.provider_version.as_deref(),
+                    None,
+                )
+                .await
+                .map_err(ExtractError::storage)?
+        } else {
+            0
+        };
+        let call_run_id = if routes.includes_calls() {
+            store
+                .start_run(
+                    workspace_id,
+                    provider.provider_id().as_str(),
+                    document_symbols.provider_version.as_deref(),
+                    None,
+                )
+                .await
+                .map_err(ExtractError::storage)?
+        } else {
+            0
+        };
         let route_start = FileRelationRouteStart {
             store,
             workspace_id,
@@ -172,49 +211,99 @@ impl ThreadedWorkspaceAllRunner {
             analysis_workers: analysis_worker_count,
             file_work_items: file_work_items.len(),
         };
-        start_relation_route(
-            &route_start,
-            RouteName::RUST_REFERENCES.as_str(),
-            reference_run_id,
-            config.reference_jobs(),
-        )
-        .await?;
-        start_relation_route(
-            &route_start,
-            RouteName::RUST_CALLS.as_str(),
-            call_run_id,
-            config.call_jobs(),
-        )
-        .await?;
-
-        let worker_handles = analysis_pool.worker_handles();
-        let analysis_worker = worker_handles.first().cloned().ok_or_else(|| {
-            ExtractError::response_shape(
-                "rust-analyzer",
-                "rust-workspace-all",
-                "analysis pool contained no workers",
+        if routes.includes_references() {
+            start_relation_route(
+                &route_start,
+                RouteName::RUST_REFERENCES.as_str(),
+                reference_run_id,
+                config.reference_jobs(),
             )
-        })?;
-        let relation_context = FileRelationContext {
-            store: store.clone(),
-            provider: provider.clone(),
-            analysis_worker,
-            document_request,
-            document_symbols,
-            file_ids,
-            workspace_id,
-            workspace_root_uri,
-            workspace_fingerprint,
-            reference_run_id,
-            call_run_id,
-            analysis_worker_count,
-        };
+            .await?;
+        }
+        if routes.includes_calls() {
+            start_relation_route(
+                &route_start,
+                RouteName::RUST_CALLS.as_str(),
+                call_run_id,
+                config.call_jobs(),
+            )
+            .await?;
+        }
 
-        let relations_timer = Stopwatch::start_new();
-        let relation_result =
-            run_file_relation_workers(relation_context.clone(), file_work_items, worker_handles)
-                .await;
-        benchmark.insert_duration_ms("threaded.file_relations", relations_timer.elapsed());
+        let mut reference_summary = empty_summary(workspace_id, reference_run_id);
+        let mut call_summary = empty_summary(workspace_id, call_run_id);
+        let mut reference_route_summary = empty_reference_route_summary();
+        let mut call_route_summary = empty_call_route_summary();
+
+        if routes.includes_relations() {
+            let worker_handles = analysis_pool.worker_handles();
+            let analysis_worker = worker_handles.first().cloned().ok_or_else(|| {
+                ExtractError::response_shape(
+                    "rust-analyzer",
+                    "rust-workspace-all",
+                    "analysis pool contained no workers",
+                )
+            })?;
+            let relation_context = FileRelationContext {
+                store: store.clone(),
+                provider: provider.clone(),
+                analysis_worker,
+                document_request,
+                document_symbols,
+                file_ids,
+                workspace_id,
+                workspace_root_uri,
+                workspace_fingerprint,
+                reference_run_id,
+                call_run_id,
+                analysis_worker_count,
+            };
+
+            let relations_timer = Stopwatch::start_new();
+            let relation_result = run_file_relation_workers(
+                relation_context.clone(),
+                file_work_items,
+                worker_handles,
+            )
+            .await;
+            benchmark.insert_duration_ms("threaded.file_relations", relations_timer.elapsed());
+
+            match relation_result {
+                Ok(mut summary) => {
+                    if routes.includes_references() {
+                        complete_reference_route(
+                            &relation_context,
+                            &mut summary.reference_persistence,
+                            &summary.reference_route,
+                        )
+                        .await?;
+                        summary.reference_persistence.routes_complete = 1;
+                        reference_summary = summary.reference_persistence;
+                        reference_route_summary = summary.reference_route;
+                    }
+                    if routes.includes_calls() {
+                        complete_call_route(
+                            &relation_context,
+                            &mut summary.call_persistence,
+                            &summary.call_route,
+                        )
+                        .await?;
+                        summary.call_persistence.routes_complete = 1;
+                        call_summary = summary.call_persistence;
+                        call_route_summary = summary.call_route;
+                    }
+                }
+                Err(error) => {
+                    fail_file_relation_routes(&relation_context, routes, &error).await?;
+                    return Err(error);
+                }
+            }
+        } else {
+            benchmark.insert_duration_ms(
+                "threaded.file_relations",
+                std::time::Duration::from_millis(0),
+            );
+        }
 
         let analysis_pool_shutdown_timer = Stopwatch::start_new();
         analysis_pool
@@ -226,36 +315,6 @@ impl ThreadedWorkspaceAllRunner {
             analysis_pool_shutdown_timer.elapsed(),
         );
 
-        let (mut reference_summary, reference_route_summary, mut call_summary, call_route_summary) =
-            match relation_result {
-                Ok(mut summary) => {
-                    complete_reference_route(
-                        &relation_context,
-                        &mut summary.reference_persistence,
-                        &summary.reference_route,
-                    )
-                    .await?;
-                    complete_call_route(
-                        &relation_context,
-                        &mut summary.call_persistence,
-                        &summary.call_route,
-                    )
-                    .await?;
-                    (
-                        summary.reference_persistence,
-                        summary.reference_route,
-                        summary.call_persistence,
-                        summary.call_route,
-                    )
-                }
-                Err(error) => {
-                    fail_file_relation_routes(&relation_context, &error).await?;
-                    return Err(error);
-                }
-            };
-
-        reference_summary.routes_complete = 1;
-        call_summary.routes_complete = 1;
         benchmark.insert_duration_ms("threaded.total", total_timer.elapsed());
 
         Ok(WorkspaceAllSummary {
@@ -566,28 +625,35 @@ async fn complete_call_route(
 
 async fn fail_file_relation_routes(
     context: &FileRelationContext,
+    routes: WorkspaceExtractionRoutes,
     error: &ExtractError,
 ) -> ExtractResult<()> {
-    fail_relation_route(
-        &context.store,
-        context.workspace_id,
-        context.reference_run_id,
-        &context.workspace_root_uri,
-        context.provider.provider_id().as_str(),
-        RouteName::RUST_REFERENCES.as_str(),
-        error,
-    )
-    .await?;
-    fail_relation_route(
-        &context.store,
-        context.workspace_id,
-        context.call_run_id,
-        &context.workspace_root_uri,
-        context.provider.provider_id().as_str(),
-        RouteName::RUST_CALLS.as_str(),
-        error,
-    )
-    .await
+    if routes.includes_references() {
+        fail_relation_route(
+            &context.store,
+            context.workspace_id,
+            context.reference_run_id,
+            &context.workspace_root_uri,
+            context.provider.provider_id().as_str(),
+            RouteName::RUST_REFERENCES.as_str(),
+            error,
+        )
+        .await?;
+    }
+    if routes.includes_calls() {
+        fail_relation_route(
+            &context.store,
+            context.workspace_id,
+            context.call_run_id,
+            &context.workspace_root_uri,
+            context.provider.provider_id().as_str(),
+            RouteName::RUST_CALLS.as_str(),
+            error,
+        )
+        .await?;
+    }
+
+    Ok(())
 }
 
 async fn fail_relation_route(
@@ -645,6 +711,27 @@ async fn file_ids_for_document_symbols(
     }
 
     Ok(file_ids)
+}
+
+async fn existing_workspace_id(
+    store: &WriteHandle,
+    workspace_root_uri: &str,
+    provider: &str,
+    method: &str,
+) -> ExtractResult<i64> {
+    store
+        .workspace_id(workspace_root_uri)
+        .await
+        .map_err(ExtractError::storage)?
+        .ok_or_else(|| {
+            ExtractError::response_shape(
+                provider,
+                method,
+                format!(
+                    "workspace {workspace_root_uri} is missing; run rust-workspace --symbols, rust-crate --symbols, rust-workspace-document-symbols, rust-file --symbols, or rust-workspace-all first"
+                ),
+            )
+        })
 }
 
 fn execution_diagnostics(
@@ -774,6 +861,27 @@ fn empty_summary(workspace_id: i64, run_id: i64) -> PersistenceSummary {
         routes_complete: 0,
         stale_nodes_closed: 0,
         stale_edges_closed: 0,
+    }
+}
+
+fn empty_reference_route_summary() -> ReferenceRouteSummary {
+    ReferenceRouteSummary {
+        targets_queried: 0,
+        reference_edges: 0,
+        reference_occurrences: 0,
+        file_fallbacks: 0,
+        skipped_external: 0,
+    }
+}
+
+fn empty_call_route_summary() -> CallRouteSummary {
+    CallRouteSummary {
+        callable_nodes: 0,
+        call_edges: 0,
+        call_occurrences: 0,
+        skipped_external_targets: 0,
+        skipped_unresolved_targets: 0,
+        skipped_non_callable_prepare_items: 0,
     }
 }
 

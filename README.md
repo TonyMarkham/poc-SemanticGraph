@@ -179,7 +179,44 @@ Example successful output:
 mode=deleted file=crates/wip/src/foo.rs workspace=1 run=4 routes_complete=3 stale_nodes_closed=5 stale_edges_closed=4
 ```
 
-## Extract A Rust Crate
+## Extract A Rust Crate Or Workspace
+
+The ergonomic crate and workspace commands use the same in-process
+`rust-analyzer-lib` extraction path as the legacy `rust-workspace-all` command,
+with a single worker-pool knob:
+
+```sh
+./target/release/semantic-graph-extract rust-crate \
+  --db .local/rust-crate-extract-wip.db \
+  crates/wip
+```
+
+```sh
+./target/release/semantic-graph-extract rust-workspace \
+  --db .local/rust-workspace-extract.db
+```
+
+Both commands default `--workspace-root` to `.` and resolve
+`--analysis-workers` from config when omitted. If no route selector is passed,
+they extract document symbols, references, and calls. The route selectors are
+combinable:
+
+```sh
+./target/release/semantic-graph-extract rust-crate crates/wip --symbols
+./target/release/semantic-graph-extract rust-crate crates/wip --references
+./target/release/semantic-graph-extract rust-workspace --symbols --references
+./target/release/semantic-graph-extract rust-workspace --calls
+```
+
+`--symbols` refreshes document symbols for the selected crate or workspace.
+`--references` and `--calls` refresh only those workspace-scoped relation routes
+and require the symbol graph for the selected files to already exist in the
+target database unless `--symbols` is selected in the same invocation.
+
+## Deprecated: Extract Rust Crate Document Symbols
+
+Prefer `rust-crate --symbols`. The legacy
+`rust-crate-document-symbols` command is retained for compatibility.
 
 Use this when you want to extract every Rust source file that `rust-analyzer`
 indexes for a package path:
@@ -220,7 +257,10 @@ occurrences=53
 edge_evidence=53
 ```
 
-## Extract A Rust Workspace
+## Deprecated: Extract Rust Workspace Document Symbols
+
+Prefer `rust-workspace --symbols`. The legacy
+`rust-workspace-document-symbols` command is retained for compatibility.
 
 Use this when you want to extract every Rust source file that `rust-analyzer`
 indexes for the workspace rooted at `--workspace-root`:
@@ -261,15 +301,18 @@ occurrences=1439
 edge_evidence=1439
 ```
 
-## Extract Rust Workspace References
+## Deprecated: Extract Rust Workspace References
 
-Use this after `rust-workspace-document-symbols` when you want to add or
-refresh only Rust `references` edges in an existing workspace graph:
+Prefer `rust-workspace --references`. The legacy
+`rust-workspace-references` command is retained for compatibility.
+
+Use this after `rust-workspace --symbols` when you want to add or refresh only
+Rust `references` edges in an existing workspace graph:
 
 ```sh
-./target/release/semantic-graph-extract rust-workspace-document-symbols \
+./target/release/semantic-graph-extract rust-workspace \
   --db .local/rust-workspace-references.db \
-  --workspace-root .
+  --symbols
 ```
 
 ```sh
@@ -301,15 +344,18 @@ occurrences=5268
 edge_evidence=5268
 ```
 
-## Extract Rust Workspace Calls
+## Deprecated: Extract Rust Workspace Calls
 
-Use this after `rust-workspace-document-symbols` when you want to add or
-refresh only Rust `calls` edges in an existing workspace graph:
+Prefer `rust-workspace --calls`. The legacy `rust-workspace-calls` command is
+retained for compatibility.
+
+Use this after `rust-workspace --symbols` when you want to add or refresh only
+Rust `calls` edges in an existing workspace graph:
 
 ```sh
-./target/release/semantic-graph-extract rust-workspace-document-symbols \
+./target/release/semantic-graph-extract rust-workspace \
   --db .local/rust-workspace-calls.db \
-  --workspace-root .
+  --symbols
 ```
 
 ```sh
@@ -342,7 +388,10 @@ occurrences=1717
 edge_evidence=1717
 ```
 
-## Extract A Complete Rust Workspace
+## Deprecated: Extract A Complete Rust Workspace
+
+Prefer `rust-workspace`. The legacy `rust-workspace-all` command is retained
+for compatibility.
 
 Use this when you want a fresh complete SQLite graph with document symbols,
 references, and calls in one CLI invocation:
@@ -390,8 +439,7 @@ the legacy default `.local/rust-workspace-extract.db`.
 Create or refresh that fixture from the current workspace:
 
 ```sh
-./target/release/semantic-graph-extract rust-workspace-all \
-  --workspace-root .
+./target/release/semantic-graph-extract rust-workspace
 ```
 
 Start the local JSON-RPC backend:
@@ -474,7 +522,7 @@ just rust-crate-extract-smoke
 just rust-workspace-extract-smoke
 just rust-workspace-references-smoke
 just rust-workspace-calls-smoke
-just rust-workspace-all-smoke
+just rust-workspace-smoke
 ```
 
 The smoke-test crate also prints a route-level report:

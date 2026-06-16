@@ -13,7 +13,10 @@ use semantic_graph_extract::{
     persist::{ExtractionPersister, PersistenceSummary},
     provider::DocumentSymbolProvider,
     providers::rust_analyzer::RustAnalyzerProvider,
-    workspace_all::{ThreadedWorkspaceAllConfig, ThreadedWorkspaceAllRunner},
+    workspace_all::{
+        ThreadedWorkspaceAllConfig, ThreadedWorkspaceAllRunner, WorkspaceAllSummary,
+        WorkspaceExtractionRoutes,
+    },
 };
 
 use semantic_graph_config::{
@@ -63,7 +66,42 @@ enum Command {
         #[arg(value_name = "FILE")]
         file: PathBuf,
     },
-    #[command(name = "rust-document-symbols")]
+    #[command(name = "rust-crate")]
+    RustCrate {
+        #[arg(long)]
+        db: Option<PathBuf>,
+        #[arg(long, value_name = "WORKSPACE_ROOT", default_value = ".")]
+        workspace_root: PathBuf,
+        #[arg(long)]
+        analysis_workers: Option<usize>,
+        #[arg(long)]
+        calls: bool,
+        #[arg(long)]
+        references: bool,
+        #[arg(long)]
+        symbols: bool,
+        #[arg(value_name = "PATH")]
+        package_path: PathBuf,
+    },
+    #[command(name = "rust-workspace")]
+    RustWorkspace {
+        #[arg(long)]
+        db: Option<PathBuf>,
+        #[arg(long, value_name = "WORKSPACE_ROOT", default_value = ".")]
+        workspace_root: PathBuf,
+        #[arg(long)]
+        analysis_workers: Option<usize>,
+        #[arg(long)]
+        calls: bool,
+        #[arg(long)]
+        references: bool,
+        #[arg(long)]
+        symbols: bool,
+    },
+    #[command(
+        name = "rust-document-symbols",
+        about = "Deprecated: use rust-file --symbols instead"
+    )]
     SingleFile {
         #[arg(long)]
         db: Option<PathBuf>,
@@ -74,7 +112,10 @@ enum Command {
         #[arg(long)]
         file: PathBuf,
     },
-    #[command(name = "rust-crate-document-symbols")]
+    #[command(
+        name = "rust-crate-document-symbols",
+        about = "Deprecated: use rust-crate --symbols instead"
+    )]
     CrateBatch {
         #[arg(long)]
         db: Option<PathBuf>,
@@ -83,28 +124,40 @@ enum Command {
         #[arg(long)]
         package_path: PathBuf,
     },
-    #[command(name = "rust-workspace-document-symbols")]
+    #[command(
+        name = "rust-workspace-document-symbols",
+        about = "Deprecated: use rust-workspace --symbols instead"
+    )]
     WorkspaceBatch {
         #[arg(long)]
         db: Option<PathBuf>,
         #[arg(long)]
         workspace_root: PathBuf,
     },
-    #[command(name = "rust-workspace-references")]
+    #[command(
+        name = "rust-workspace-references",
+        about = "Deprecated: use rust-workspace --references instead"
+    )]
     WorkspaceReferences {
         #[arg(long)]
         db: Option<PathBuf>,
         #[arg(long)]
         workspace_root: PathBuf,
     },
-    #[command(name = "rust-workspace-calls")]
+    #[command(
+        name = "rust-workspace-calls",
+        about = "Deprecated: use rust-workspace --calls instead"
+    )]
     WorkspaceCalls {
         #[arg(long)]
         db: Option<PathBuf>,
         #[arg(long)]
         workspace_root: PathBuf,
     },
-    #[command(name = "rust-workspace-all")]
+    #[command(
+        name = "rust-workspace-all",
+        about = "Deprecated: use rust-workspace instead"
+    )]
     WorkspaceAll {
         #[arg(long)]
         db: Option<PathBuf>,
@@ -183,6 +236,10 @@ fn print_error(error: &dyn Error) {
     }
 }
 
+fn print_deprecated_command_warning(command: &str, replacement: &str) {
+    eprintln!("warning: `{command}` is deprecated; use `{replacement}` instead");
+}
+
 async fn run() -> ExtractResult<()> {
     let cli = Cli::parse();
     let config = cli.config;
@@ -237,12 +294,84 @@ async fn run() -> ExtractResult<()> {
 
             print_rust_file_deleted_summary(&relative_path, &summary);
         }
+        Command::RustCrate {
+            db,
+            workspace_root,
+            analysis_workers,
+            calls,
+            references,
+            symbols,
+            package_path,
+        } => {
+            let routes = resolve_rust_workspace_routes(calls, references, symbols);
+            let provider = RustAnalyzerProvider::new();
+
+            let discovery_timer = Stopwatch::start_new();
+            let file_paths = provider.discover_rust_source_files(&workspace_root, &package_path)?;
+            let discovery_elapsed = discovery_timer.elapsed();
+
+            let document_request =
+                validate_document_symbol_batch_request(DocumentSymbolBatchRequest {
+                    workspace_root,
+                    package_path,
+                    file_paths,
+                })?;
+            let summary = run_threaded_rust_route_batch(
+                &config,
+                db,
+                &provider,
+                document_request,
+                routes,
+                analysis_workers,
+                Some(("discovery", discovery_elapsed)),
+            )
+            .await?;
+
+            print_rust_route_batch_summary("crate", routes, &summary);
+            print_benchmark_summary(&summary.benchmark);
+        }
+        Command::RustWorkspace {
+            db,
+            workspace_root,
+            analysis_workers,
+            calls,
+            references,
+            symbols,
+        } => {
+            let routes = resolve_rust_workspace_routes(calls, references, symbols);
+            let provider = RustAnalyzerProvider::new();
+
+            let discovery_timer = Stopwatch::start_new();
+            let file_paths = provider.discover_rust_workspace_source_files(&workspace_root)?;
+            let discovery_elapsed = discovery_timer.elapsed();
+
+            let document_request =
+                validate_document_symbol_batch_request(DocumentSymbolBatchRequest {
+                    package_path: workspace_root.clone(),
+                    workspace_root,
+                    file_paths,
+                })?;
+            let summary = run_threaded_rust_route_batch(
+                &config,
+                db,
+                &provider,
+                document_request,
+                routes,
+                analysis_workers,
+                Some(("discovery", discovery_elapsed)),
+            )
+            .await?;
+
+            print_rust_route_batch_summary("workspace", routes, &summary);
+            print_benchmark_summary(&summary.benchmark);
+        }
         Command::SingleFile {
             db,
             workspace_root,
             package_path,
             file,
         } => {
+            print_deprecated_command_warning("rust-document-symbols", "rust-file --symbols");
             let request = validate_document_symbol_request(DocumentSymbolRequest {
                 workspace_root,
                 package_path,
@@ -275,6 +404,7 @@ async fn run() -> ExtractResult<()> {
             workspace_root,
             package_path,
         } => {
+            print_deprecated_command_warning("rust-crate-document-symbols", "rust-crate --symbols");
             let provider = RustAnalyzerProvider::new();
             let file_paths = provider.discover_rust_source_files(&workspace_root, &package_path)?;
             let request = validate_document_symbol_batch_request(DocumentSymbolBatchRequest {
@@ -304,6 +434,10 @@ async fn run() -> ExtractResult<()> {
             );
         }
         Command::WorkspaceBatch { db, workspace_root } => {
+            print_deprecated_command_warning(
+                "rust-workspace-document-symbols",
+                "rust-workspace --symbols",
+            );
             let provider = RustAnalyzerProvider::new();
             let file_paths = provider.discover_rust_workspace_source_files(&workspace_root)?;
             let request = validate_document_symbol_batch_request(DocumentSymbolBatchRequest {
@@ -333,6 +467,10 @@ async fn run() -> ExtractResult<()> {
             );
         }
         Command::WorkspaceReferences { db, workspace_root } => {
+            print_deprecated_command_warning(
+                "rust-workspace-references",
+                "rust-workspace --references",
+            );
             let provider = RustAnalyzerProvider::new();
             let file_paths = provider.discover_rust_workspace_source_files(&workspace_root)?;
             let document_request =
@@ -369,6 +507,7 @@ async fn run() -> ExtractResult<()> {
             );
         }
         Command::WorkspaceCalls { db, workspace_root } => {
+            print_deprecated_command_warning("rust-workspace-calls", "rust-workspace --calls");
             let provider = RustAnalyzerProvider::new();
             let file_paths = provider.discover_rust_workspace_source_files(&workspace_root)?;
             let document_request =
@@ -417,6 +556,7 @@ async fn run() -> ExtractResult<()> {
             call_analysis_workers,
             serial,
         } => {
+            print_deprecated_command_warning("rust-workspace-all", "rust-workspace");
             let total_timer = Stopwatch::start_new();
             let mut benchmark = BenchmarkSummary::new();
             let provider = RustAnalyzerProvider::new();
@@ -1080,6 +1220,153 @@ fn print_rust_file_deleted_summary(relative_path: &str, summary: &PersistenceSum
     );
 }
 
+fn resolve_rust_workspace_routes(
+    calls: bool,
+    references: bool,
+    symbols: bool,
+) -> WorkspaceExtractionRoutes {
+    WorkspaceExtractionRoutes::from_selectors(symbols, references, calls)
+}
+
+async fn run_threaded_rust_route_batch(
+    config: &Option<PathBuf>,
+    db: Option<PathBuf>,
+    provider: &RustAnalyzerProvider,
+    document_request: DocumentSymbolBatchRequest,
+    routes: WorkspaceExtractionRoutes,
+    analysis_workers: Option<usize>,
+    discovery_metric: Option<(&str, std::time::Duration)>,
+) -> ExtractResult<WorkspaceAllSummary> {
+    let total_timer = Stopwatch::start_new();
+    let mut benchmark = BenchmarkSummary::new();
+
+    if let Some((name, elapsed)) = discovery_metric {
+        benchmark.insert_duration_ms(name, elapsed);
+    }
+    benchmark.insert_count("files_discovered", document_request.file_paths.len());
+
+    let writer_ready_timer = Stopwatch::start_new();
+    let db = resolve_cli_database_path(db, config, &document_request.workspace_root)?;
+    let store = start_writer(db, config, &document_request.workspace_root).await?;
+    benchmark.insert_duration_ms("writer_ready", writer_ready_timer.elapsed());
+
+    let extractor_plan_timer = Stopwatch::start_new();
+    let analysis_worker_count = resolve_threaded_route_analysis_workers(
+        config,
+        &document_request.workspace_root,
+        analysis_workers,
+    )?;
+    let reference_jobs = if routes.includes_references() {
+        analysis_worker_count
+    } else {
+        0
+    };
+    let call_jobs = if routes.includes_calls() {
+        analysis_worker_count
+    } else {
+        0
+    };
+    benchmark.insert_duration_ms("extractor_plan", extractor_plan_timer.elapsed());
+    benchmark.insert_label("mode", "threaded");
+    benchmark.insert_label("routes", routes.label());
+    benchmark.insert_count("analysis_workers", analysis_worker_count);
+    benchmark.insert_count("reference_jobs", reference_jobs);
+    benchmark.insert_count("call_jobs", call_jobs);
+
+    let threaded_timer = Stopwatch::start_new();
+    let summary = ThreadedWorkspaceAllRunner::run(
+        &store,
+        provider,
+        document_request,
+        ThreadedWorkspaceAllConfig::with_routes(
+            reference_jobs,
+            call_jobs,
+            analysis_worker_count,
+            0,
+            0,
+            routes,
+        ),
+    )
+    .await;
+    benchmark.insert_duration_ms("threaded_runner", threaded_timer.elapsed());
+
+    let writer_shutdown_timer = Stopwatch::start_new();
+    shutdown_writer(&store).await?;
+    benchmark.insert_duration_ms("writer_shutdown", writer_shutdown_timer.elapsed());
+    let mut summary = summary?;
+    benchmark.extend_from(&summary.benchmark);
+    benchmark.insert_duration_ms("total", total_timer.elapsed());
+    summary.benchmark = benchmark;
+
+    Ok(summary)
+}
+
+fn resolve_threaded_route_analysis_workers(
+    config: &Option<PathBuf>,
+    workspace_root: &Path,
+    analysis_workers: Option<usize>,
+) -> ExtractResult<usize> {
+    let extractor_config = resolve_cli_extractor_config(config, workspace_root)?;
+    let analysis_workers = analysis_workers
+        .or_else(|| extractor_config.analysis_workers())
+        .unwrap_or(1);
+    validate_single_route_jobs("--analysis-workers", analysis_workers)?;
+    Ok(analysis_workers)
+}
+
+fn print_rust_route_batch_summary(
+    scope: &str,
+    routes: WorkspaceExtractionRoutes,
+    summary: &WorkspaceAllSummary,
+) {
+    let contains_edges = summary.document_summary.edges;
+    println!(
+        "scope={} mode={} workspace={} last_run={} files={} nodes={} contains_edges={} references_edges={} reference_occurrences={} calls_edges={} call_occurrences={} evidence={} routes_complete={} stale_nodes_closed={} stale_edges_closed={}",
+        scope,
+        routes.label(),
+        summary.document_summary.workspace_id,
+        selected_route_last_run(routes, summary),
+        summary.document_summary.files,
+        summary.document_summary.nodes,
+        contains_edges,
+        summary.reference_summary.reference_edges,
+        summary.reference_summary.reference_occurrences,
+        summary.call_summary.call_edges,
+        summary.call_summary.call_occurrences,
+        summary.document_summary.evidence
+            + summary.reference_summary.evidence
+            + summary.call_summary.evidence,
+        summary.document_summary.routes_complete
+            + summary.reference_summary.routes_complete
+            + summary.call_summary.routes_complete,
+        summary.document_summary.stale_nodes_closed,
+        summary.document_summary.stale_edges_closed
+            + summary.reference_summary.stale_edges_closed
+            + summary.call_summary.stale_edges_closed
+    );
+}
+
+fn selected_route_last_run(
+    routes: WorkspaceExtractionRoutes,
+    summary: &WorkspaceAllSummary,
+) -> i64 {
+    [
+        routes
+            .includes_symbols()
+            .then_some(summary.document_summary.run_id),
+        routes
+            .includes_references()
+            .then_some(summary.reference_summary.run_id),
+        routes
+            .includes_calls()
+            .then_some(summary.call_summary.run_id),
+    ]
+    .into_iter()
+    .flatten()
+    .max()
+    .unwrap_or(0)
+}
+
 fn resolve_cli_extractor_plan(
     options: CliExtractorPlanOptions,
 ) -> ExtractResult<ResolvedExtractorPlan> {
@@ -1295,8 +1582,8 @@ fn resolve_cli_database_path(
 #[cfg(test)]
 mod cli_tests {
     use crate::{
-        Cli, Command, RustFileMode, resolve_cli_database_path, resolve_rust_file_mode,
-        validate_deleted_rust_file_request,
+        Cli, Command, RustFileMode, WorkspaceExtractionRoutes, resolve_cli_database_path,
+        resolve_rust_file_mode, resolve_rust_workspace_routes, validate_deleted_rust_file_request,
     };
     use clap::Parser;
     use std::{
@@ -1449,6 +1736,113 @@ mod cli_tests {
         }
 
         Ok(())
+    }
+
+    #[test]
+    fn rust_crate_defaults_workspace_root_and_routes() -> Result<(), Box<dyn Error>> {
+        let cli = Cli::try_parse_from(["semantic-graph-extract", "rust-crate", "crates/wip"])?;
+
+        match cli.command {
+            Command::RustCrate {
+                db,
+                workspace_root,
+                analysis_workers,
+                calls,
+                references,
+                symbols,
+                package_path,
+            } => {
+                assert_eq!(db, None);
+                assert_eq!(workspace_root, PathBuf::from("."));
+                assert_eq!(analysis_workers, None);
+                assert!(!calls);
+                assert!(!references);
+                assert!(!symbols);
+                assert_eq!(package_path, PathBuf::from("crates/wip"));
+            }
+            _ => return Err("expected rust-crate command".into()),
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn rust_crate_accepts_analysis_workers_and_combined_routes() -> Result<(), Box<dyn Error>> {
+        let cli = Cli::try_parse_from([
+            "semantic-graph-extract",
+            "rust-crate",
+            "--workspace-root",
+            ".",
+            "--analysis-workers",
+            "3",
+            "--symbols",
+            "--references",
+            "crates/wip",
+        ])?;
+
+        match cli.command {
+            Command::RustCrate {
+                workspace_root,
+                analysis_workers,
+                calls,
+                references,
+                symbols,
+                package_path,
+                ..
+            } => {
+                assert_eq!(workspace_root, PathBuf::from("."));
+                assert_eq!(analysis_workers, Some(3));
+                assert!(!calls);
+                assert!(references);
+                assert!(symbols);
+                assert_eq!(package_path, PathBuf::from("crates/wip"));
+            }
+            _ => return Err("expected rust-crate command".into()),
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn rust_workspace_defaults_workspace_root_and_routes() -> Result<(), Box<dyn Error>> {
+        let cli = Cli::try_parse_from(["semantic-graph-extract", "rust-workspace"])?;
+
+        match cli.command {
+            Command::RustWorkspace {
+                db,
+                workspace_root,
+                analysis_workers,
+                calls,
+                references,
+                symbols,
+            } => {
+                assert_eq!(db, None);
+                assert_eq!(workspace_root, PathBuf::from("."));
+                assert_eq!(analysis_workers, None);
+                assert!(!calls);
+                assert!(!references);
+                assert!(!symbols);
+            }
+            _ => return Err("expected rust-workspace command".into()),
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn rust_workspace_routes_default_to_all_and_allow_combinations() {
+        assert_eq!(
+            resolve_rust_workspace_routes(false, false, false),
+            WorkspaceExtractionRoutes::all()
+        );
+        assert_eq!(
+            resolve_rust_workspace_routes(true, true, false).label(),
+            "references+calls"
+        );
+        assert_eq!(
+            resolve_rust_workspace_routes(false, false, true).label(),
+            "symbols"
+        );
     }
 
     #[test]
