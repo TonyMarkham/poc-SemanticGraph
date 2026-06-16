@@ -19,3 +19,6 @@
 [submodule "submodules/tauri"]
 	path = submodules/tauri
 	url = https://github.com/tauri-apps/tauri.git
+[submodule "submodules/gpui-component"]
+	path = submodules/gpui-component
+	url = https://github.com/longbridge/gpui-component.git
