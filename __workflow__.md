@@ -15,14 +15,9 @@ Is `--workspace-root <WORKSPACE_ROOT>  [default: .]` actually necessary
 ```
 
 ```text
-- Read `VS-10.md`
-- Audit the current `semantic-graph-extract` CLI commands and make sure that the plan aligns to the existing shape.
+Create VS-1100.md as the implementation plan for Phase 1 from the VS-100.md being sure to use the directions stated in VS1000.md where appropriate
 
-I am assuming:
-- rust-workspace > csharp-solution
-- rust-crate > csharp-project
-- rust-file > csharp-file
-- rust-file-deleted > csharp-file-deleted 
+Include a `Measurement Of Done` section with `- [ ]` style checkboxes as a final evaluation checklist.
 ```
 
 ---
