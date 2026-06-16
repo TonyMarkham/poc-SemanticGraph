@@ -1,0 +1,14 @@
+[package]
+name = "semantic-graph-agent-assets"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+clap           = { workspace = true }
+error-location = { workspace = true }
+serde          = { workspace = true }
+thiserror      = { workspace = true }
+toml           = { workspace = true }
+
+[lints]
+workspace = true

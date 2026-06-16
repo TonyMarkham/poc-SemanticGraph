@@ -1,0 +1,119 @@
+[host]
+name = "codex"
+
+[paths]
+expected_root = "agent-assets/expected/codex"
+fragment_root = "agent-assets/fragments"
+
+[skill]
+name = "semantic-graph"
+description = "Use SemanticGraph MCP tools and extraction route knowledge for code relationship, reference, call graph, provenance, route freshness, and graph refresh planning work."
+output_path = ".agents/skills/semantic-graph/SKILL.md"
+fragments = [
+  "common/semantic-graph-purpose.md",
+  "codex/skill-workflow.md",
+]
+
+[[references]]
+name = "mcp-tools"
+title = "MCP Tools And Resources"
+output_path = ".agents/skills/semantic-graph/references/mcp-tools.md"
+fragments = [
+  "common/mcp-tools.md",
+]
+
+[[references]]
+name = "rust-extraction"
+title = "Rust Extraction"
+output_path = ".agents/skills/semantic-graph/references/rust-extraction.md"
+fragments = [
+  "common/rust-extraction.md",
+]
+
+[[references]]
+name = "csharp-extraction"
+title = "CSharp Extraction"
+output_path = ".agents/skills/semantic-graph/references/csharp-extraction.md"
+fragments = [
+  "common/csharp-extraction.md",
+]
+
+[[references]]
+name = "local-testbeds"
+title = "Local Testbeds"
+output_path = ".agents/skills/semantic-graph/references/local-testbeds.md"
+fragments = [
+  "codex/local-testbeds.md",
+]
+
+[[references]]
+name = "agent-handoffs"
+title = "Agent Handoffs"
+output_path = ".agents/skills/semantic-graph/references/agent-handoffs.md"
+fragments = [
+  "codex/agent-handoffs.md",
+]
+
+[[references]]
+name = "troubleshooting"
+title = "Troubleshooting"
+output_path = ".agents/skills/semantic-graph/references/troubleshooting.md"
+fragments = [
+  "common/troubleshooting.md",
+]
+
+[[custom_agents]]
+name = "semantic-graph-explorer"
+description = "Use SemanticGraph MCP tools to answer code relationship questions with graph evidence."
+output_path = ".codex/agents/semantic-graph-explorer.toml"
+fragments = [
+  "agents/explorer.md",
+]
+
+[[custom_agents]]
+name = "semantic-graph-route-verifier"
+description = "Verify SemanticGraph route freshness, stale state, and evidence coverage for selected files or workspaces."
+output_path = ".codex/agents/semantic-graph-route-verifier.toml"
+fragments = [
+  "agents/route-verifier.md",
+]
+
+[[custom_agents]]
+name = "semantic-graph-rust-refresh"
+description = "Plan and run approved Rust SemanticGraph refresh commands, then report route summaries and validation."
+output_path = ".codex/agents/semantic-graph-rust-refresh.toml"
+fragments = [
+  "agents/rust-refresh.md",
+]
+
+[[custom_agents]]
+name = "semantic-graph-csharp-refresh"
+description = "Plan and run approved C# SemanticGraph refresh commands, then report route summaries and validation."
+output_path = ".codex/agents/semantic-graph-csharp-refresh.toml"
+fragments = [
+  "agents/csharp-refresh.md",
+]
+
+[[custom_agents]]
+name = "semantic-graph-plan-auditor"
+description = "Audit implementation plans against SemanticGraph evidence, route freshness, and repository constraints."
+output_path = ".codex/agents/semantic-graph-plan-auditor.toml"
+fragments = [
+  "agents/plan-auditor.md",
+]
+
+[mcp_server]
+table_name = "semantic_graph"
+command = ".refactor-radar/bin/semantic-graph-mcp-server"
+args = []
+enabled = true
+required = false
+startup_timeout_sec = 10
+tool_timeout_sec = 60
+output_path = ".codex/config.semantic-graph.toml"
+
+[readme]
+output_path = ".codex/semantic-graph/README.md"
+fragments = [
+  "codex/generated-readme.md",
+]
