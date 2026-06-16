@@ -11,9 +11,13 @@ impl PathValidator {
                 "path must not be empty",
             ));
         }
+        let mut has_normal_component = false;
         for component in path.components() {
             match component {
-                Component::Normal(_) | Component::CurDir => {}
+                Component::Normal(_) => {
+                    has_normal_component = true;
+                }
+                Component::CurDir => {}
                 Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
                     return Err(SemanticGraphCliError::invalid_install_path(
                         path.to_path_buf(),
@@ -21,6 +25,12 @@ impl PathValidator {
                     ));
                 }
             }
+        }
+        if !has_normal_component {
+            return Err(SemanticGraphCliError::invalid_install_path(
+                path.to_path_buf(),
+                "path must include a file name",
+            ));
         }
         Ok(())
     }

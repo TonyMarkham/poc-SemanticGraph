@@ -4,6 +4,10 @@ mod checksum;
 mod codex_install_plan;
 mod codex_install_report;
 mod codex_installer;
+mod codex_uninstall_plan;
+mod codex_uninstall_report;
+mod codex_uninstaller;
+mod directory_cleanup;
 mod file_action;
 mod file_action_kind;
 mod install_manifest;
@@ -15,14 +19,16 @@ mod path_validator;
 mod project_root;
 
 pub(crate) use crate::install::{
-    atomic_file_writer::AtomicFileWriter, manifest_writer::ManifestWriter,
-    path_validator::PathValidator,
+    atomic_file_writer::AtomicFileWriter, directory_cleanup::DirectoryCleanup,
+    manifest_writer::ManifestWriter, path_validator::PathValidator,
 };
 
 pub use crate::install::{
     asset_source::AssetSource, checksum::Checksum, codex_install_plan::CodexInstallPlan,
     codex_install_report::CodexInstallReport, codex_installer::CodexInstaller,
-    file_action::FileAction, file_action_kind::FileActionKind, install_manifest::InstallManifest,
-    install_manifest_mode::InstallManifestMode, managed_file::ManagedFile,
-    managed_file_manifest_entry::ManagedFileManifestEntry, project_root::ProjectRoot,
+    codex_uninstall_plan::CodexUninstallPlan, codex_uninstall_report::CodexUninstallReport,
+    codex_uninstaller::CodexUninstaller, file_action::FileAction, file_action_kind::FileActionKind,
+    install_manifest::InstallManifest, install_manifest_mode::InstallManifestMode,
+    managed_file::ManagedFile, managed_file_manifest_entry::ManagedFileManifestEntry,
+    project_root::ProjectRoot,
 };

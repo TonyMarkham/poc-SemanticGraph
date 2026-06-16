@@ -1,4 +1,4 @@
-use crate::install::CodexInstallReport;
+use crate::install::{CodexInstallReport, CodexUninstallReport};
 use error_location::ErrorLocation;
 use std::{panic::Location, path::PathBuf};
 use thiserror::Error;
@@ -42,6 +42,19 @@ pub enum SemanticGraphCliError {
         location: ErrorLocation,
     },
 
+    #[error("missing install manifest at {location}: {path}")]
+    MissingManifest {
+        path: PathBuf,
+        location: ErrorLocation,
+    },
+
+    #[error("invalid install manifest at {location}: {path}")]
+    InvalidManifest {
+        path: PathBuf,
+        message: String,
+        location: ErrorLocation,
+    },
+
     #[error("io error during {operation} at {location}")]
     Io {
         operation: &'static str,
@@ -67,6 +80,12 @@ pub enum SemanticGraphCliError {
     #[error("install refused writes at {location}")]
     RefusedWrites {
         report: Box<CodexInstallReport>,
+        location: ErrorLocation,
+    },
+
+    #[error("uninstall refused changes at {location}")]
+    RefusedUninstall {
+        report: Box<CodexUninstallReport>,
         location: ErrorLocation,
     },
 }
@@ -115,6 +134,23 @@ impl SemanticGraphCliError {
     }
 
     #[track_caller]
+    pub fn missing_manifest(path: PathBuf) -> Self {
+        Self::MissingManifest {
+            path,
+            location: ErrorLocation::from(Location::caller()),
+        }
+    }
+
+    #[track_caller]
+    pub fn invalid_manifest(path: PathBuf, message: impl Into<String>) -> Self {
+        Self::InvalidManifest {
+            path,
+            message: message.into(),
+            location: ErrorLocation::from(Location::caller()),
+        }
+    }
+
+    #[track_caller]
     pub fn io(operation: &'static str, path: Option<PathBuf>, source: std::io::Error) -> Self {
         Self::Io {
             operation,
@@ -149,16 +185,26 @@ impl SemanticGraphCliError {
         }
     }
 
+    #[track_caller]
+    pub fn refused_uninstall(report: CodexUninstallReport) -> Self {
+        Self::RefusedUninstall {
+            report: Box::new(report),
+            location: ErrorLocation::from(Location::caller()),
+        }
+    }
+
     pub fn exit_code(&self) -> i32 {
         match self {
             Self::AgentAssets { .. } => 2,
             Self::ConfigTomlParse { .. }
             | Self::ConfigTomlSerialize { .. }
             | Self::ManifestParse { .. }
-            | Self::ManifestSerialize { .. } => 3,
+            | Self::ManifestSerialize { .. }
+            | Self::MissingManifest { .. }
+            | Self::InvalidManifest { .. } => 3,
             Self::Io { .. } => 1,
             Self::InvalidProject { .. } | Self::InvalidInstallPath { .. } => 4,
-            Self::RefusedWrites { .. } => 5,
+            Self::RefusedWrites { .. } | Self::RefusedUninstall { .. } => 5,
         }
     }
 
@@ -171,6 +217,15 @@ impl SemanticGraphCliError {
             Self::ConfigTomlSerialize { .. } => "failed to serialize Codex config TOML".to_string(),
             Self::ManifestParse { path, source, .. } => {
                 format!("failed to parse {}: {source}", path.display())
+            }
+            Self::MissingManifest { path, .. } => {
+                format!("missing SemanticGraph install manifest: {}", path.display())
+            }
+            Self::InvalidManifest { path, message, .. } => {
+                format!(
+                    "invalid SemanticGraph install manifest {}: {message}",
+                    path.display()
+                )
             }
             Self::ManifestSerialize { .. } => {
                 "failed to serialize SemanticGraph install manifest".to_string()
@@ -186,6 +241,7 @@ impl SemanticGraphCliError {
                 format!("invalid install path {}: {message}", path.display())
             }
             Self::RefusedWrites { report, .. } => report.lines().join("\n"),
+            Self::RefusedUninstall { report, .. } => report.lines().join("\n"),
         }
     }
 }

@@ -1,25 +1,18 @@
-use crate::{args::McpInstallMode, install::FileAction};
+use crate::install::{FileAction, FileActionKind};
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CodexInstallReport {
+pub struct CodexUninstallReport {
     project_root: PathBuf,
     dry_run: bool,
-    mcp_mode: McpInstallMode,
     actions: Vec<FileAction>,
 }
 
-impl CodexInstallReport {
-    pub fn new(
-        project_root: PathBuf,
-        dry_run: bool,
-        mcp_mode: McpInstallMode,
-        actions: Vec<FileAction>,
-    ) -> Self {
+impl CodexUninstallReport {
+    pub fn new(project_root: PathBuf, dry_run: bool, actions: Vec<FileAction>) -> Self {
         Self {
             project_root,
             dry_run,
-            mcp_mode,
             actions,
         }
     }
@@ -31,7 +24,7 @@ impl CodexInstallReport {
     pub fn has_refusals(&self) -> bool {
         self.actions
             .iter()
-            .any(|action| action.kind() == crate::install::FileActionKind::Refuse)
+            .any(|action| action.kind() == FileActionKind::Refuse)
     }
 
     pub fn project_root(&self) -> &Path {
@@ -42,15 +35,13 @@ impl CodexInstallReport {
         let mut lines = Vec::new();
         if self.dry_run {
             lines.push(format!(
-                "semantic-graph install codex dry-run for {} (mcp: {}; no files written or deleted)",
-                self.project_root.display(),
-                self.mcp_mode
+                "semantic-graph uninstall codex dry-run for {} (no files written or deleted)",
+                self.project_root.display()
             ));
         } else {
             lines.push(format!(
-                "semantic-graph install codex for {} (mcp: {})",
-                self.project_root.display(),
-                self.mcp_mode
+                "semantic-graph uninstall codex for {}",
+                self.project_root.display()
             ));
         }
         for action in &self.actions {

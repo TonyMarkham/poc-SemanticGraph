@@ -17,7 +17,7 @@ Is `--workspace-root <WORKSPACE_ROOT>  [default: .]` actually necessary
 ---
 
 ```text
-Create VS-1400.md as the implementation plan for Phase 4 from the VS-100.md being sure to use the directions stated in VS1000.md where appropriate
+Create VS-1500.md as the implementation plan for Phase 5 from the VS-100.md being sure to use the directions stated in VS1000.md where appropriate
 
 - Include a `Measurement Of Done` section with `- [ ]` style checkboxes as a final evaluation checklist.
 
@@ -35,7 +35,8 @@ Create VS-1400.md as the implementation plan for Phase 4 from the VS-100.md bein
 ---
 
 ```text
-/goal VS-1400.md
+/goal VS-1500.md
 ```
 
 ---
+investigate

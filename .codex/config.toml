@@ -1,6 +1,3 @@
-# Project-local Codex configuration for coach-saas.
-# Codex loads this file only when the project is trusted.
-
 developer_instructions = """
 Correctness is more important than speed.
 

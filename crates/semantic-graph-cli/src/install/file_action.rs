@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 pub struct FileAction {
     kind: FileActionKind,
     relative_path: PathBuf,
+    reason: Option<String>,
 }
 
 impl FileAction {
@@ -12,6 +13,15 @@ impl FileAction {
         Self {
             kind,
             relative_path,
+            reason: None,
+        }
+    }
+
+    pub fn refused(relative_path: PathBuf, reason: impl Into<String>) -> Self {
+        Self {
+            kind: FileActionKind::Refuse,
+            relative_path,
+            reason: Some(reason.into()),
         }
     }
 
@@ -23,7 +33,18 @@ impl FileAction {
         &self.relative_path
     }
 
+    pub fn reason(&self) -> Option<&str> {
+        self.reason.as_deref()
+    }
+
     pub fn line(&self) -> String {
-        format!("{}: {}", self.kind.label(), self.relative_path.display())
+        match &self.reason {
+            Some(reason) => format!(
+                "{}: {} ({reason})",
+                self.kind.label(),
+                self.relative_path.display()
+            ),
+            None => format!("{}: {}", self.kind.label(), self.relative_path.display()),
+        }
     }
 }

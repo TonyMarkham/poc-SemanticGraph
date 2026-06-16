@@ -7,15 +7,15 @@ mod install;
 
 pub use crate::{
     args::{
-        CodexInstallArgs, InstallArgs, InstallCommand, McpInstallMode, SemanticGraphArgs,
-        SemanticGraphCommand,
+        CodexInstallArgs, CodexUninstallArgs, InstallArgs, InstallCommand, McpInstallMode,
+        SemanticGraphArgs, SemanticGraphCommand, UninstallArgs, UninstallCommand,
     },
     command_output::CommandOutput,
     error::{SemanticGraphCliError, SemanticGraphCliResult},
     install::{
-        AssetSource, Checksum, CodexInstallPlan, CodexInstallReport, CodexInstaller, FileAction,
-        FileActionKind, InstallManifest, InstallManifestMode, ManagedFile,
-        ManagedFileManifestEntry, ProjectRoot,
+        AssetSource, Checksum, CodexInstallPlan, CodexInstallReport, CodexInstaller,
+        CodexUninstallPlan, CodexUninstallReport, CodexUninstaller, FileAction, FileActionKind,
+        InstallManifest, InstallManifestMode, ManagedFile, ManagedFileManifestEntry, ProjectRoot,
     },
 };
 
@@ -35,11 +35,21 @@ pub fn run_with_args(args: SemanticGraphArgs) -> SemanticGraphCliResult<CommandO
                     SemanticGraphCliError::io("resolve current directory", None, source)
                 })?;
                 let repo_root = workspace_repo_root();
-                CodexInstaller::new(repo_root).install(&codex_args, &current_dir)
+                CodexInstaller::new(repo_root)
+                    .install(&codex_args, &current_dir)
+                    .map(CommandOutput::InstallCodex)
+            }
+        },
+        SemanticGraphCommand::Uninstall(uninstall_args) => match uninstall_args.command {
+            UninstallCommand::Codex(codex_args) => {
+                let current_dir = env::current_dir().map_err(|source| {
+                    SemanticGraphCliError::io("resolve current directory", None, source)
+                })?;
+                CodexUninstaller::uninstall(&codex_args, &current_dir)
+                    .map(CommandOutput::UninstallCodex)
             }
         },
     }
-    .map(CommandOutput::InstallCodex)
 }
 
 fn workspace_repo_root() -> std::path::PathBuf {

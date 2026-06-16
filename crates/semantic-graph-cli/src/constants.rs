@@ -2,6 +2,7 @@ pub mod cli {
     pub const CODEX_COMMAND_NAME: &str = "codex";
     pub const COMMAND_NAME: &str = "semantic-graph";
     pub const INSTALL_COMMAND_NAME: &str = "install";
+    pub const UNINSTALL_COMMAND_NAME: &str = "uninstall";
 }
 
 pub mod codex_paths {

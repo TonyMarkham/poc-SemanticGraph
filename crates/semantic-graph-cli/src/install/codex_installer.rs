@@ -4,14 +4,17 @@ use crate::{
     codex_config::CodexConfigMerger,
     constants::codex_paths::CONFIG,
     install::{
-        AtomicFileWriter, Checksum, CodexInstallPlan, CodexInstallReport, FileAction,
-        FileActionKind, InstallManifest, ManagedFile, ManifestWriter, ProjectRoot,
+        AtomicFileWriter, Checksum, CodexInstallPlan, CodexInstallReport, DirectoryCleanup,
+        FileAction, FileActionKind, InstallManifest, ManagedFile, ManifestWriter, ProjectRoot,
     },
 };
 use semantic_graph_agent_assets::{
     AssetManifest, AssetRenderer, constants::generated_paths::CONFIG_SNIPPET,
 };
-use std::path::{Path, PathBuf};
+use std::{
+    collections::BTreeSet,
+    path::{Path, PathBuf},
+};
 
 pub struct CodexInstaller {
     repo_root: PathBuf,
@@ -136,6 +139,20 @@ impl CodexInstaller {
                 self.plan_file_action(plan.project_root(), file, existing_manifest, force, false)?;
             actions.push(action);
         }
+        if let Some(manifest) = existing_manifest {
+            let current_paths = plan
+                .managed_files()
+                .iter()
+                .map(|file| file.relative_path().to_path_buf())
+                .collect::<BTreeSet<_>>();
+            for entry in &manifest.managed_files {
+                let relative_path = PathBuf::from(&entry.path);
+                if !current_paths.contains(&relative_path) {
+                    actions.push(self.plan_stale_file_action(plan.project_root(), entry, force)?);
+                }
+            }
+        }
+        actions.extend(DirectoryCleanup::plan(plan.project_root(), &actions));
         Ok(actions)
     }
 
@@ -199,9 +216,9 @@ impl CodexInstaller {
                     file.relative_path().to_path_buf(),
                 ))
             }
-            Ok(_) => Ok(FileAction::new(
-                FileActionKind::Refuse,
+            Ok(_) => Ok(FileAction::refused(
                 file.relative_path().to_path_buf(),
+                "checksum mismatch or unowned existing file; use --force to replace",
             )),
             Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(FileAction::new(
                 FileActionKind::Create,
@@ -209,6 +226,34 @@ impl CodexInstaller {
             )),
             Err(source) => Err(SemanticGraphCliError::io(
                 "read install target",
+                Some(target),
+                source,
+            )),
+        }
+    }
+
+    fn plan_stale_file_action(
+        &self,
+        project_root: &ProjectRoot,
+        entry: &crate::install::ManagedFileManifestEntry,
+        force: bool,
+    ) -> SemanticGraphCliResult<FileAction> {
+        let relative_path = PathBuf::from(&entry.path);
+        project_root.validate_existing_path(&relative_path)?;
+        let target = project_root.target_path(&relative_path)?;
+        match std::fs::read(&target) {
+            Ok(existing) if force || entry.sha256 == Checksum::sha256_hex(&existing) => {
+                Ok(FileAction::new(FileActionKind::Delete, relative_path))
+            }
+            Ok(_) => Ok(FileAction::refused(
+                relative_path,
+                "stale managed file checksum mismatch; use --force to delete",
+            )),
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
+                Ok(FileAction::new(FileActionKind::Missing, relative_path))
+            }
+            Err(source) => Err(SemanticGraphCliError::io(
+                "read stale install target",
                 Some(target),
                 source,
             )),
@@ -239,6 +284,11 @@ impl CodexInstaller {
         manifest_file: &ManagedFile,
         actions: &[FileAction],
     ) -> SemanticGraphCliResult<()> {
+        for action in actions {
+            if action.kind().deletes_file() {
+                self.remove_file(project_root, action.relative_path())?;
+            }
+        }
         for file in managed_files {
             if self.action_for(actions, file.relative_path()).writes_file() {
                 AtomicFileWriter::write(project_root, file.relative_path(), file.content())?;
@@ -255,6 +305,27 @@ impl CodexInstaller {
             )?;
         }
         Ok(())
+    }
+
+    fn remove_file(
+        &self,
+        project_root: &ProjectRoot,
+        relative_path: &Path,
+    ) -> SemanticGraphCliResult<()> {
+        project_root.validate_existing_path(relative_path)?;
+        let target = project_root.target_path(relative_path)?;
+        match std::fs::remove_file(&target) {
+            Ok(()) => {
+                DirectoryCleanup::cleanup_after_file_delete(project_root, relative_path);
+                Ok(())
+            }
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(source) => Err(SemanticGraphCliError::io(
+                "delete stale install target",
+                Some(target),
+                source,
+            )),
+        }
     }
 
     fn action_for(&self, actions: &[FileAction], relative_path: &Path) -> FileActionKind {
