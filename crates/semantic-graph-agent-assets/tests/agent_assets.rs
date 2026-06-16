@@ -183,7 +183,7 @@ fn mcp_config_snippet_parses_and_uses_semantic_graph_table() -> TestResult {
             .and_then(toml::Value::as_bool)
     );
     assert_eq!(
-        Some(false),
+        Some(true),
         server
             .get(toml_fields::REQUIRED)
             .and_then(toml::Value::as_bool)
@@ -215,6 +215,11 @@ fn generated_skill_contains_trigger_guidance_and_references() -> TestResult {
     assert!(
         skill
             .content()
+            .contains("first search choice must always be the SemanticGraph MCP server")
+    );
+    assert!(
+        !skill
+            .content()
             .contains("Do not claim every task must query the graph first")
     );
     assert!(
@@ -228,7 +233,6 @@ fn generated_skill_contains_trigger_guidance_and_references() -> TestResult {
     assert!(skill.content().contains("references/local-testbeds.md"));
     assert!(skill.content().contains("references/agent-handoffs.md"));
     assert!(skill.content().contains("references/troubleshooting.md"));
-    assert!(!skill.content().contains("Always query the graph first"));
     Ok(())
 }
 

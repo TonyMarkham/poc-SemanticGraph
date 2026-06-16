@@ -7,7 +7,7 @@ fragment_root = "agent-assets/fragments"
 
 [skill]
 name = "semantic-graph"
-description = "Use SemanticGraph MCP tools and extraction route knowledge for code relationship, reference, call graph, provenance, route freshness, and graph refresh planning work."
+description = "Use SemanticGraph MCP tools as the first semantic repo search and code-navigation surface for files, symbols, modules, relationships, references, call graphs, provenance, route freshness, and graph refresh planning work."
 output_path = ".agents/skills/semantic-graph/SKILL.md"
 fragments = [
   "common/semantic-graph-purpose.md",
@@ -64,7 +64,7 @@ fragments = [
 
 [[custom_agents]]
 name = "semantic-graph-explorer"
-description = "Use SemanticGraph MCP tools to answer code relationship questions with graph evidence."
+description = "Use SemanticGraph MCP tools first for semantic repo search, code navigation, and graph-evidence questions."
 output_path = ".codex/agents/semantic-graph-explorer.toml"
 fragments = [
   "agents/explorer.md",
@@ -107,7 +107,7 @@ table_name = "semantic_graph"
 command = ".refactor-radar/bin/semantic-graph-mcp-server"
 args = []
 enabled = true
-required = false
+required = true
 startup_timeout_sec = 10
 tool_timeout_sec = 60
 output_path = ".codex/config.semantic-graph.toml"

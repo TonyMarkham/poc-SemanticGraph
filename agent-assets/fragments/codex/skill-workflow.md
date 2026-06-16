@@ -2,11 +2,12 @@
 
 1. Resolve the database path from the configured MCP server or the existing SemanticGraph configuration behavior.
 2. Check graph availability with `graph_stats`.
-3. Search relevant nodes before broad source inspection when the task is about relationships, references, calls, provenance, route freshness, query surfaces, or graph refresh.
-4. Use node details, edge details, occurrences, and edge evidence to ground findings.
-5. Check route freshness when current behavior, recently changed files, or refresh validity matter.
-6. Refresh the graph only when the user asked for implementation, refresh, or validation work that requires current graph facts.
-7. Cite source files or graph evidence and label uncertain inferences.
+3. Use MCP as the first semantic search path: `graph_search_nodes`, `graph_file_summary`, `graph_route_status`, `graph_neighbors`, or `graph_projection` before broad shell or text search.
+4. Fall back to `rg`, `find`, `grep`, `git grep`, or direct file reads only when MCP is unavailable, returns no useful result, route coverage is stale or missing, or exact source text is needed after MCP identifies candidate files.
+5. Use node details, edge details, occurrences, and edge evidence to ground findings.
+6. Check route freshness when current behavior, recently changed files, or refresh validity matter.
+7. Refresh the graph only when the user asked for implementation, refresh, or validation work that requires current graph facts.
+8. Cite source files or graph evidence and label uncertain inferences.
 
 ## Boundaries
 

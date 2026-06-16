@@ -11,3 +11,9 @@ obj/
 # IDE
 .idea/
 .zed/
+
+# Codex
+.agents/
+.codex/*
+!.codex/
+!.codex/config.toml

@@ -6,6 +6,7 @@ local_dir := ".local"
 demo_db := ".local/semantic-graph-store-demo.db"
 sqlx_db := ".local/sqlx-prepare.db"
 sqlx_migrations := "crates/semantic-graph-store/migrations"
+refactor_bin_dir := ".refactor-radar/bin"
 
 # Show available recipes.
 default:
@@ -60,8 +61,18 @@ confidence:
     cargo build
     cargo build --release
     cargo test
+    just --justfile {{justfile()}} copy-release-bins
     just --justfile {{justfile()}} confidence-rust-workspace
     just --justfile {{justfile()}} confidence-csharp-solution
+
+# Copy release binaries into the project-local Refactor Radar bin directory.
+copy-release-bins:
+    mkdir -p {{refactor_bin_dir}}
+    cp -f target/release/semantic-graph {{refactor_bin_dir}}/
+    cp -f target/release/semantic-graph-agent-assets {{refactor_bin_dir}}/
+    cp -f target/release/semantic-graph-extract {{refactor_bin_dir}}/
+    cp -f target/release/semantic-graph-mcp-server {{refactor_bin_dir}}/
+    cp -f target/release/semantic-graph-store {{refactor_bin_dir}}/
 
 # Exercise rust-analyzer document-symbol extraction against crates/wip.
 rust-extract-smoke:

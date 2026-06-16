@@ -350,12 +350,18 @@ fn install_preserves_unrelated_codex_config_content() -> TestResult {
     fs::create_dir_all(project.join(".codex"))?;
     fs::write(
         project.join(".codex/config.toml"),
-        r#"model = "gpt-5"
+        r#"# keep this leading comment
+model = "gpt-5"
+developer_instructions = """
+custom instructions stay byte-for-byte outside managed tables
+"""
 
+# keep this server comment
 [mcp_servers.other]
 command = "other-server"
 enabled = true
 
+# keep this managed table heading comment
 [mcp_servers.semantic_graph]
 command = "old"
 custom = "keep-me"
@@ -388,6 +394,13 @@ custom = "keep-me"
         Some("keep-me"),
         server.get("custom").and_then(toml::Value::as_str)
     );
+    let source = fs::read_to_string(project.join(".codex/config.toml"))?;
+    assert!(source.contains("# keep this leading comment\nmodel = \"gpt-5\""));
+    assert!(source.contains(
+        "developer_instructions = \"\"\"\ncustom instructions stay byte-for-byte outside managed tables\n\"\"\""
+    ));
+    assert!(source.contains("# keep this server comment\n[mcp_servers.other]"));
+    assert!(source.contains("# keep this managed table heading comment"));
     cleanup(&project)?;
     Ok(())
 }

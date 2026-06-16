@@ -21,6 +21,10 @@
 
 ## Query Guidance
 
-Use `graph_search_nodes` before broad source inspection when the request names symbols, files, modules, or relationships. Use `graph_node_details` and `graph_edge_details` when the answer needs occurrences or edge evidence. Use `graph_route_status` or `graph_file_summary` before claiming a route is current.
+Use `graph_search_nodes` as the first semantic repo search before broad source inspection when the request names symbols, files, modules, ownership, behavior, or relationships. Use `graph_file_summary`, `graph_route_status`, `graph_neighbors`, and `graph_projection` before falling back to shell or text search for semantic navigation.
+
+Do not start semantic repo search with `rg`, `find`, `grep`, `git grep`, or IDE search. Fall back to those tools only when MCP is unavailable, returns no useful graph result, route coverage is stale or missing, or MCP has identified candidate files that still need exact source text inspection.
+
+Use `graph_node_details` and `graph_edge_details` when the answer needs occurrences or edge evidence. Use `graph_route_status` or `graph_file_summary` before claiming a route is current.
 
 The MCP surface is read-only. It does not expose SQL, shell execution, arbitrary file reads, hard deletes, stale closing, reset operations, or extraction tools.

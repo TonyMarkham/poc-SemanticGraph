@@ -1,8 +1,10 @@
 ## When To Use This Skill
 
-Use this skill when the user's task is about code relationships, references, call graphs, source provenance, evidence, route freshness, stale graph facts, SemanticGraph MCP query work, or planning and validating SemanticGraph refreshes.
+Use this skill when the user's task needs semantic repo search, code navigation, source ownership, symbol or file discovery, code relationships, references, call graphs, source provenance, evidence, route freshness, stale graph facts, SemanticGraph MCP query work, or planning and validating SemanticGraph refreshes.
 
-Do not claim every task must query the graph first. For unrelated formatting, copy edits, build failures, or ordinary local code changes, use the graph only when relationship, provenance, freshness, or graph-refresh facts matter.
+For semantic repo search, the first search choice must always be the SemanticGraph MCP server. Use shell or text search tools such as `rg`, `find`, `grep`, `git grep`, or IDE search only after MCP is unavailable, returns no useful graph result, has stale or missing route coverage, or identifies candidate files that still need exact source text inspection.
+
+If you fall back from MCP to shell or text search, state the fallback reason in the work notes or final answer.
 
 ## SemanticGraph Facts
 
