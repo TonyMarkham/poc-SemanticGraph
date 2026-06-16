@@ -250,6 +250,78 @@ occurrences=<definitions+references+calls>
 edge_evidence=<definitions+references+calls>
 ```
 
+## Extract C# Files, Projects, Or Solutions
+
+C# extraction uses an installed `csharp-ls` process and persists graph rows under
+the resolved solution's durable workspace identity. Resolve the solution with
+`--solution <SLN_OR_SLNX>`, `[csharp].solution` in config, or by running from a
+directory containing one `.slnx` or `.sln`.
+
+Run the local fixture solution:
+
+```sh
+./target/release/semantic-graph-extract csharp-solution \
+  --db .local/csharp-solution-extract.db \
+  --solution __SmokeTestAssets__/csharp-wip/CSharpWip.sln
+```
+
+Run one C# file:
+
+```sh
+./target/release/semantic-graph-extract csharp-file \
+  --db .local/csharp-file-extract.db \
+  --solution __SmokeTestAssets__/csharp-wip/CSharpWip.sln \
+  __SmokeTestAssets__/csharp-wip/Project/Worker.cs
+```
+
+Run one project boundary:
+
+```sh
+./target/release/semantic-graph-extract csharp-project \
+  --db .local/csharp-project-extract.db \
+  --solution __SmokeTestAssets__/csharp-wip/CSharpWip.sln \
+  __SmokeTestAssets__/csharp-wip/Project/Project.csproj
+```
+
+`csharp-file` supports one route selector at a time:
+
+```sh
+./target/release/semantic-graph-extract csharp-file \
+  --solution __SmokeTestAssets__/csharp-wip/CSharpWip.sln \
+  --symbols \
+  __SmokeTestAssets__/csharp-wip/Project/Worker.cs
+
+./target/release/semantic-graph-extract csharp-file \
+  --solution __SmokeTestAssets__/csharp-wip/CSharpWip.sln \
+  --references \
+  __SmokeTestAssets__/csharp-wip/Project/Worker.cs
+
+./target/release/semantic-graph-extract csharp-file \
+  --solution __SmokeTestAssets__/csharp-wip/CSharpWip.sln \
+  --calls \
+  __SmokeTestAssets__/csharp-wip/Project/Worker.cs
+```
+
+`csharp-project` and `csharp-solution` use combinable `--symbols`,
+`--references`, and `--calls` selectors. Relation-only runs require the selected
+files' symbol graph to already exist in the target database unless `--symbols`
+is selected in the same invocation. Use `--process-workers <N>` to start more
+than one `csharp-ls` worker process for project or solution batches.
+
+Mark a removed C# file stale without starting `csharp-ls`:
+
+```sh
+./target/release/semantic-graph-extract csharp-file-deleted \
+  --db .local/csharp-file-extract.db \
+  --solution __SmokeTestAssets__/csharp-wip/CSharpWip.sln \
+  Project/Worker.cs
+```
+
+The deleted-file path may be absolute, relative to the current directory, or
+relative to the resolved solution directory. The command records completed
+file-scoped `csharp.document_symbols`, `csharp.references`, and `csharp.calls`
+routes with zero observations and soft-closes active graph facts for that file.
+
 ## Visualize A Rust Workspace
 
 The visualizer reads an existing SQLite graph and renders a bounded read-only
@@ -346,6 +418,16 @@ just rust-workspace-call-route-smoke
 just rust-workspace-smoke
 ```
 
+C# smoke routes require `csharp-ls` on `PATH`:
+
+```sh
+just csharp-solution-smoke
+just csharp-solution-reference-route-smoke
+just csharp-solution-call-route-smoke
+just csharp-file-smoke
+just csharp-file-deleted-smoke
+```
+
 The smoke-test crate also prints a route-level report:
 
 ```sh
@@ -355,16 +437,20 @@ cargo build --release -p semantic-graph-smoke-tests
 
 That report exercises the `rust-analyzer-lib` facade, the extractor crate route,
 the extractor workspace route, the workspace references route, and the
-workspace calls route. The full-workspace references and calls unit tests are
-ignored by default because they are expensive semantic smoke tests; run them
-explicitly when you need route confidence:
+workspace calls route. It also exercises the local C# fixture through
+`csharp-ls-lib`, including solution symbols, references, incoming calls, and
+persistence. The full-workspace Rust references and calls unit tests and the
+live `csharp-ls-lib` facade tests are ignored by default because they are
+semantic smoke tests; run them explicitly when you need route confidence:
 
 ```sh
 SQLX_OFFLINE=true cargo test -p semantic-graph-smoke-tests -- --ignored
+SQLX_OFFLINE=true cargo test -p csharp-ls-lib -- --ignored
 ```
 
 The report prints headline fields in this shape; exact counts depend on the
-current workspace contents:
+current Rust workspace contents, while the C# fixture counts should remain
+stable:
 
 ```text
 crate.persistence.files=4
@@ -417,6 +503,32 @@ workspace.calls.route.evidence=<call_occurrences>
 workspace.calls.route.routes_complete=1
 workspace.calls.route.stale_nodes_closed=0
 workspace.calls.route.stale_edges_closed=0
+csharp.solution.discovery.count=1
+csharp.solution.discovery.file=Project/Worker.cs
+csharp.solution.symbols.files=1
+csharp.solution.symbols.nodes=6
+csharp.solution.references.targets=6
+csharp.solution.references.edges=5
+csharp.solution.references.occurrences=5
+csharp.solution.references.file_fallbacks=0
+csharp.solution.references.skipped_external=0
+csharp.solution.calls.callable_nodes=3
+csharp.solution.calls.edges=2
+csharp.solution.calls.occurrences=2
+csharp.solution.calls.skipped_external_targets=0
+csharp.solution.calls.skipped_unresolved_targets=0
+csharp.solution.calls.skipped_non_callable_prepare_items=0
+csharp.solution.persistence.files=1
+csharp.solution.persistence.nodes=7
+csharp.solution.persistence.contains_edges=6
+csharp.solution.persistence.occurrences=6
+csharp.solution.persistence.evidence=6
+csharp.solution.references.route.references_edges=5
+csharp.solution.references.route.reference_occurrences=5
+csharp.solution.references.route.routes_complete=1
+csharp.solution.calls.route.calls_edges=2
+csharp.solution.calls.route.call_occurrences=2
+csharp.solution.calls.route.routes_complete=1
 ```
 
 ## Storage CLI
@@ -467,6 +579,7 @@ SQLX_OFFLINE=true cargo check -p semantic-graph-extract
 SQLX_OFFLINE=true cargo test -p semantic-graph-extract
 SQLX_OFFLINE=true cargo clippy -p semantic-graph-extract --all-targets -- -D warnings
 SQLX_OFFLINE=true cargo test -p semantic-graph-smoke-tests
+SQLX_OFFLINE=true cargo test -p csharp-ls-lib -- --ignored
 cargo build --release -p semantic-graph-smoke-tests
 ./target/release/semantic-graph-smoke-tests
 cargo check -p semantic-graph-visualizer-server
@@ -477,14 +590,18 @@ dotnet build SemanticGraph.Visualizer.slnx
 ## What Exists
 
 - `crates/semantic-graph-store`: SQLite graph store and stats/demo CLI.
-- `crates/semantic-graph-extract`: Rust single-file, document-symbol,
-  workspace-reference, workspace-call, and all-in-one extractor.
+- `crates/semantic-graph-extract`: Rust and C# single-file, deleted-file,
+  project/crate, workspace/solution, document-symbol, reference, call, and
+  all-in-one extractor.
 - `crates/semantic-graph-visualizer-server`: local read-only JSON-RPC backend
   for visualizer projection, search, and inspection.
 - `crates/rust-analyzer-lib`: in-process facade over the pinned
   `rust-analyzer` submodule crates.
+- `crates/csharp-ls-lib`: process facade over an installed `csharp-ls` binary.
 - `crates/semantic-graph-smoke-tests`: route smoke-test/report surface.
 - `crates/wip`: small Rust crate used as the local extraction target.
+- `__SmokeTestAssets__/csharp-wip`: small C# solution used as the local C#
+  extraction target.
 - `apps/SemanticGraph.Visualizer`: Blazor WebAssembly, Radzen, and
   Blazor.Diagrams client for the read-only graph viewport and inspector.
 
@@ -492,7 +609,7 @@ The extractor currently writes:
 
 - one `files` row for each extracted source file;
 - one file node per extracted source file;
-- symbol nodes from hierarchical Rust document-symbol data;
+- symbol nodes from hierarchical Rust and C# document-symbol data;
 - `definition` occurrences for symbols;
 - `contains` edges from file to top-level symbols and parent symbols to nested
   symbols;
@@ -500,10 +617,12 @@ The extractor currently writes:
   symbols;
 - reference occurrences for `textDocument/references` locations;
 - `calls` edges from caller symbols to callee symbols;
-- call occurrences for `callHierarchy/outgoingCalls` callsite ranges;
+- call occurrences for Rust `callHierarchy/outgoingCalls` ranges and C#
+  `callHierarchy/incomingCalls` ranges mapped back to caller-to-callee edges;
 - edge evidence with `lsp_method = "textDocument/documentSymbol"` or
   `lsp_method = "textDocument/references"` or
-  `lsp_method = "callHierarchy/outgoingCalls"`;
+  `lsp_method = "callHierarchy/outgoingCalls"` or
+  `lsp_method = "callHierarchy/incomingCalls"`;
 - route status and route observations for document-symbol/reference/call
   freshness and stale closing.
 
@@ -512,7 +631,6 @@ The extractor currently writes:
 - First-class persisted crate/package rows.
 - Dedicated definition edges, implementation/inheritance edges, or type
   hierarchy.
-- C# extraction.
 - CSV snapshots.
 - Stale-row ownership policies for future semantic routes beyond document
   symbols, references, and calls.

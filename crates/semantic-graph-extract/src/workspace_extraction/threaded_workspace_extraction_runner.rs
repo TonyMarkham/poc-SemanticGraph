@@ -6,7 +6,7 @@ use crate::{
         CallRouteSummary, DocumentSymbolBatchExtraction, DocumentSymbolBatchRequest,
         ReferenceRouteSummary, RouteName, RouteScope,
     },
-    persist::{ExtractionPersister, PersistenceSummary},
+    persist::{ExtractionPersister, PersistenceRun, PersistenceSummary},
     providers::rust_analyzer::RustAnalyzerProvider,
     workspace_extraction::{
         FileRelationContext, FileRelationRouteStart, FileRelationWorkerSummary,
@@ -431,11 +431,14 @@ async fn file_relation_worker(
                 let reference_summary = ExtractionPersister
                     .persist_reference_after_route_started(
                         &context.store,
-                        context.workspace_id,
-                        context.reference_run_id,
+                        PersistenceRun {
+                            workspace_id: context.workspace_id,
+                            run_id: context.reference_run_id,
+                        },
                         &context.workspace_root_uri,
                         reference,
                         &context.file_ids,
+                        context.provider.language(),
                     )
                     .await?;
                 merge_summary(&mut summary.reference_persistence, &reference_summary);
@@ -462,11 +465,14 @@ async fn file_relation_worker(
                 let call_summary = ExtractionPersister
                     .persist_call_after_route_started(
                         &context.store,
-                        context.workspace_id,
-                        context.call_run_id,
+                        PersistenceRun {
+                            workspace_id: context.workspace_id,
+                            run_id: context.call_run_id,
+                        },
                         &context.workspace_root_uri,
                         call,
                         &context.file_ids,
+                        context.provider.language(),
                     )
                     .await?;
                 merge_summary(&mut summary.call_persistence, &call_summary);

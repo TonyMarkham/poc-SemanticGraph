@@ -1,6 +1,6 @@
 use crate::{
-    Config, ConfigError, ConfigResult, DatabaseConfig, ExtractorConfig, RawDatabaseConfig,
-    RawExtractorConfig, RawWriterConfig, WriterConfig,
+    CSharpConfig, Config, ConfigError, ConfigResult, DatabaseConfig, ExtractorConfig,
+    RawCSharpConfig, RawDatabaseConfig, RawExtractorConfig, RawWriterConfig, WriterConfig,
 };
 
 use serde::Deserialize;
@@ -11,6 +11,7 @@ struct RawConfig {
     database: Option<RawDatabaseConfig>,
     extractor: Option<RawExtractorConfig>,
     writer: Option<RawWriterConfig>,
+    csharp: Option<RawCSharpConfig>,
 }
 
 pub fn load_config(path: impl AsRef<Path>) -> ConfigResult<Config> {
@@ -31,10 +32,12 @@ pub fn load_config(path: impl AsRef<Path>) -> ConfigResult<Config> {
 
     let extractor = ExtractorConfig::from_raw(raw.extractor)?;
     let writer = WriterConfig::from_raw(raw.writer)?;
+    let csharp = CSharpConfig::from_raw(raw.csharp)?;
 
     Ok(Config::new(
         DatabaseConfig::new(database_path),
         extractor,
         writer,
+        csharp,
     ))
 }

@@ -507,6 +507,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "csharp-ls-lib"
+version = "0.1.0"
+dependencies = [
+ "error-location",
+ "lsp-types",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "ctutils"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2374,6 +2386,7 @@ name = "semantic-graph-extract"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "csharp-ls-lib",
  "error-location",
  "hex",
  "lsp-types",
@@ -2392,6 +2405,7 @@ dependencies = [
 name = "semantic-graph-smoke-tests"
 version = "0.1.0"
 dependencies = [
+ "csharp-ls-lib",
  "lsp-types",
  "rust-analyzer-lib",
  "semantic-graph-db-manager",

@@ -2,6 +2,9 @@
 
 mod cli;
 mod command;
+mod csharp_file_extractions;
+mod csharp_file_mode;
+mod resolved_csharp_extractor_plan;
 mod rust_file_extractions;
 mod rust_file_mode;
 
@@ -9,6 +12,9 @@ mod rust_file_mode;
 
 pub use cli::Cli;
 pub use command::Command;
+pub use csharp_file_extractions::CSharpFileExtractions;
+pub use csharp_file_mode::CSharpFileMode;
+pub use resolved_csharp_extractor_plan::ResolvedCSharpExtractorPlan;
 pub use rust_file_extractions::RustFileExtractions;
 pub use rust_file_mode::RustFileMode;
 
@@ -20,9 +26,15 @@ use crate::{
     workspace_extraction::WorkspaceExtractionRoutes,
 };
 
-use semantic_graph_config::{LoadOptions, resolve_database_path};
+use semantic_graph_config::{
+    CSharpConfig, LoadOptions, discover_config, ensure_config_with_csharp_defaults, load_config,
+    resolve_database_path,
+};
 
-use std::path::{Component, Path, PathBuf};
+use std::{
+    env, fs,
+    path::{Component, Path, PathBuf},
+};
 
 pub fn resolve_cli_database_path(
     db: Option<PathBuf>,
@@ -73,6 +85,110 @@ pub fn resolve_rust_workspace_routes(
     symbols: bool,
 ) -> WorkspaceExtractionRoutes {
     WorkspaceExtractionRoutes::from_selectors(symbols, references, calls)
+}
+
+pub fn resolve_csharp_file_mode(
+    calls: bool,
+    references: bool,
+    symbols: bool,
+) -> ExtractResult<CSharpFileMode> {
+    let selected = [calls, references, symbols]
+        .into_iter()
+        .filter(|selected| *selected)
+        .count();
+    if selected > 1 {
+        return Err(ExtractError::response_shape(
+            "csharp-language-server",
+            "csharp-file",
+            "--calls, --references, and --symbols are mutually exclusive",
+        ));
+    }
+
+    if calls {
+        Ok(CSharpFileMode::Calls)
+    } else if references {
+        Ok(CSharpFileMode::References)
+    } else if symbols {
+        Ok(CSharpFileMode::Symbols)
+    } else {
+        Ok(CSharpFileMode::Full)
+    }
+}
+
+pub fn resolve_csharp_workspace_routes(
+    calls: bool,
+    references: bool,
+    symbols: bool,
+) -> WorkspaceExtractionRoutes {
+    WorkspaceExtractionRoutes::from_selectors(symbols, references, calls)
+}
+
+pub fn resolve_solution(
+    cli_solution: Option<PathBuf>,
+    csharp_config: &CSharpConfig,
+) -> ExtractResult<PathBuf> {
+    let current_dir = env::current_dir()
+        .map_err(|source| ExtractError::io("read current directory", None, source))?;
+    resolve_solution_from(
+        cli_solution,
+        csharp_config.solution().cloned(),
+        &current_dir,
+    )
+}
+
+pub fn resolve_solution_from(
+    cli_solution: Option<PathBuf>,
+    config_solution: Option<PathBuf>,
+    current_dir: &Path,
+) -> ExtractResult<PathBuf> {
+    if let Some(solution) = cli_solution {
+        return validate_solution_path(solution, current_dir, "--solution");
+    }
+
+    if let Some(solution) = config_solution {
+        return validate_solution_path(solution, current_dir, "[csharp].solution");
+    }
+
+    discover_solution_in_current_dir(current_dir).ok_or_else(|| {
+        ExtractError::response_shape(
+            "csharp-language-server",
+            "resolve_solution",
+            "no C# solution found; pass --solution, set [csharp].solution, or run from a directory containing a .slnx or .sln",
+        )
+    })
+}
+
+pub fn resolve_csharp_extractor_plan(
+    config: &Option<PathBuf>,
+    discovery_start_dir: &Path,
+    cli_binary: Option<PathBuf>,
+    cli_solution: Option<PathBuf>,
+    process_workers: Option<usize>,
+) -> ExtractResult<ResolvedCSharpExtractorPlan> {
+    let (csharp_config, config_dir) = resolve_cli_csharp_config(config, discovery_start_dir)?;
+    let binary = cli_binary.unwrap_or_else(|| csharp_config.binary().clone());
+    let config_solution = csharp_config
+        .solution()
+        .map(|solution| resolve_config_relative_path(solution, config_dir.as_deref()));
+    let solution = resolve_solution_from(cli_solution, config_solution, discovery_start_dir)?;
+    let process_workers = process_workers.unwrap_or_else(|| csharp_config.analysis_workers());
+    if process_workers == 0 {
+        return Err(ExtractError::response_shape(
+            "csharp-language-server",
+            "csharp extractor plan",
+            "--process-workers must be greater than zero",
+        ));
+    }
+
+    Ok(ResolvedCSharpExtractorPlan::new(
+        binary,
+        solution,
+        csharp_config.log_level().to_string(),
+        csharp_config.features().to_vec(),
+        process_workers,
+        csharp_config.startup_timeout_ms(),
+        csharp_config.request_timeout_ms(),
+    ))
 }
 
 pub fn validate_deleted_rust_file_request(
@@ -144,4 +260,92 @@ pub fn symbol_key_belongs_to_file(symbol_key: &str, file_scope_key: &str) -> boo
         || symbol_key
             .strip_prefix(file_scope_key)
             .is_some_and(|suffix| suffix.starts_with('#'))
+}
+
+fn resolve_cli_csharp_config(
+    config: &Option<PathBuf>,
+    discovery_start_dir: &Path,
+) -> ExtractResult<(CSharpConfig, Option<PathBuf>)> {
+    let config_path = match config {
+        Some(path) => path.clone(),
+        None => match discover_config(discovery_start_dir).map_err(ExtractError::config)? {
+            Some(path) => path,
+            None => discovery_start_dir.join(".refactor-radar/config.toml"),
+        },
+    };
+
+    ensure_config_with_csharp_defaults(&config_path).map_err(ExtractError::config)?;
+    let loaded = load_config(&config_path).map_err(ExtractError::config)?;
+    let config_dir = config_path.parent().map(Path::to_path_buf);
+
+    Ok((loaded.csharp().clone(), config_dir))
+}
+
+fn resolve_config_relative_path(path: &Path, config_dir: Option<&Path>) -> PathBuf {
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+
+    if let Some(config_dir) = config_dir {
+        let config_relative = config_dir.join(path);
+        if config_relative.is_file() {
+            return config_relative;
+        }
+    }
+
+    path.to_path_buf()
+}
+
+fn validate_solution_path(
+    solution: PathBuf,
+    current_dir: &Path,
+    source: &'static str,
+) -> ExtractResult<PathBuf> {
+    let resolved = if solution.is_absolute() {
+        solution
+    } else {
+        current_dir.join(solution)
+    };
+    if !resolved.is_file() {
+        return Err(ExtractError::invalid_path(
+            resolved,
+            current_dir,
+            format!("{source} must point to an existing .slnx or .sln file"),
+        ));
+    }
+    if !is_solution_file(&resolved) {
+        return Err(ExtractError::invalid_path(
+            resolved,
+            current_dir,
+            format!("{source} must point to a .slnx or .sln file"),
+        ));
+    }
+
+    Ok(normalize_lexical_path(&resolved))
+}
+
+fn discover_solution_in_current_dir(current_dir: &Path) -> Option<PathBuf> {
+    let mut candidates = fs::read_dir(current_dir)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file() && is_solution_file(path))
+        .collect::<Vec<_>>();
+    candidates.sort();
+
+    candidates
+        .iter()
+        .find(|path| extension_is(path, "slnx"))
+        .or_else(|| candidates.iter().find(|path| extension_is(path, "sln")))
+        .map(|path| normalize_lexical_path(path))
+}
+
+fn is_solution_file(path: &Path) -> bool {
+    extension_is(path, "slnx") || extension_is(path, "sln")
+}
+
+fn extension_is(path: &Path, expected: &str) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case(expected))
 }

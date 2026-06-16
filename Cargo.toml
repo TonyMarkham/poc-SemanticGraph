@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/csharp-ls-lib",
     "crates/rust-analyzer-lib",
     "crates/semantic-graph-config",
     "crates/semantic-graph-db-manager",
@@ -17,46 +18,47 @@ version = "0.1.0"
 edition = "2024"
 
 [workspace.dependencies]
-axum                   = { version = "0.8.9" }
-clap                   = { version = "4.6.1", features = ["derive"] }
-error-location         = { version = "0.1.0" }
-hex                    = { version = "0.4.3" }
+axum                      = { version = "0.8.9" }
+clap                      = { version = "4.6.1", features = ["derive"] }
+error-location            = { version = "0.1.0" }
+hex                       = { version = "0.4.3" }
 # Keep this pinned to the version used by the submodules/rust-analyzer/crates/rust-analyzer/Cargo.toml.
-lsp-types              = { version = "=0.95.0", features = ["proposed"] }
-prost                  = { version = "0.14.4" }
-prost-build            = { version = "0.14.4" }
-serde                  = { version = "1.0.228", features = ["derive"] }
-serde_json             = { version = "1.0.150" }
-sha2                   = { version = "0.11.0" }
-sqlx                   = { version = "0.9.0", features = ["macros", "migrate", "runtime-tokio", "sqlite"] }
-thiserror              = { version = "2.0.18" }
-tokio                  = { version = "1.52.3", features = ["macros", "rt-multi-thread", "sync", "io-util", "process", "time"] }
-toml                   = { version = "1.1.2" }
-tower-http             = { version = "0.6.11", features = ["cors"] }
-tree-sitter            = { version = "0.26.9" }
-tree-sitter-c-sharp    = { version = "0.23.5" }
-tree-sitter-css        = { version = "0.25.0" }
-tree-sitter-razor      = { version = "0.1.0" }
-tree-sitter-rust       = { version = "0.24.2" }
+lsp-types                 = { version = "=0.95.0", features = ["proposed"] }
+prost                     = { version = "0.14.4" }
+prost-build               = { version = "0.14.4" }
+serde                     = { version = "1.0.228", features = ["derive"] }
+serde_json                = { version = "1.0.150" }
+sha2                      = { version = "0.11.0" }
+sqlx                      = { version = "0.9.0", features = ["macros", "migrate", "runtime-tokio", "sqlite"] }
+thiserror                 = { version = "2.0.18" }
+tokio                     = { version = "1.52.3", features = ["macros", "rt-multi-thread", "sync", "io-util", "process", "time"] }
+toml                      = { version = "1.1.2" }
+tower-http                = { version = "0.6.11", features = ["cors"] }
+tree-sitter               = { version = "0.26.9" }
+tree-sitter-c-sharp       = { version = "0.23.5" }
+tree-sitter-css           = { version = "0.25.0" }
+tree-sitter-razor         = { version = "0.1.0" }
+tree-sitter-rust          = { version = "0.24.2" }
 
-rust-analyzer-lib      = { path = "crates/rust-analyzer-lib" }
-semantic-graph-config  = { path = "crates/semantic-graph-config" }
+rust-analyzer-lib         = { path = "crates/rust-analyzer-lib" }
+csharp-ls-lib             = { path = "crates/csharp-ls-lib" }
+semantic-graph-config     = { path = "crates/semantic-graph-config" }
 semantic-graph-db-manager = { path = "crates/semantic-graph-db-manager" }
-semantic-graph-extract = { path = "crates/semantic-graph-extract" }
-semantic-graph-store   = { path = "crates/semantic-graph-store" }
+semantic-graph-extract    = { path = "crates/semantic-graph-extract" }
+semantic-graph-store      = { path = "crates/semantic-graph-store" }
 
-ide                    = { path = "submodules/rust-analyzer/crates/ide" }
-ide-db                 = { path = "submodules/rust-analyzer/crates/ide-db" }
-load-cargo             = { path = "submodules/rust-analyzer/crates/load-cargo" }
-paths                  = { path = "submodules/rust-analyzer/crates/paths" }
-project-model          = { path = "submodules/rust-analyzer/crates/project-model" }
-syntax                 = { path = "submodules/rust-analyzer/crates/syntax" }
-vfs                    = { path = "submodules/rust-analyzer/crates/vfs" }
+ide                       = { path = "submodules/rust-analyzer/crates/ide" }
+ide-db                    = { path = "submodules/rust-analyzer/crates/ide-db" }
+load-cargo                = { path = "submodules/rust-analyzer/crates/load-cargo" }
+paths                     = { path = "submodules/rust-analyzer/crates/paths" }
+project-model             = { path = "submodules/rust-analyzer/crates/project-model" }
+syntax                    = { path = "submodules/rust-analyzer/crates/syntax" }
+vfs                       = { path = "submodules/rust-analyzer/crates/vfs" }
 
 [workspace.lints.clippy]
-unwrap_used            = "deny"
-expect_used            = "deny"
-panic                  = "deny"
+unwrap_used               = "deny"
+expect_used               = "deny"
+panic                     = "deny"
 
 [workspace.lints.rust]
-unused_must_use        = "deny"
+unused_must_use           = "deny"

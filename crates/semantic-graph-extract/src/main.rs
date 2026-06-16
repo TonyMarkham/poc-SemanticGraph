@@ -4,13 +4,19 @@ use semantic_graph_extract::{
     ExtractError, ExtractResult,
     benchmark::{BenchmarkSummary, Stopwatch},
     cli::{
-        Cli, Command, RustFileExtractions, RustFileMode, resolve_cli_database_path,
+        CSharpFileExtractions, CSharpFileMode, Cli, Command, ResolvedCSharpExtractorPlan,
+        RustFileExtractions, RustFileMode, normalize_lexical_path, resolve_cli_database_path,
+        resolve_csharp_extractor_plan, resolve_csharp_file_mode, resolve_csharp_workspace_routes,
         resolve_rust_file_mode, resolve_rust_workspace_routes, symbol_key_belongs_to_file,
         validate_deleted_rust_file_request,
     },
     document_symbols::paths::{file_uri, validate_document_symbol_batch_request},
-    model::{CallBatchExtraction, DocumentSymbolBatchExtraction, DocumentSymbolBatchRequest},
+    model::{
+        CallBatchExtraction, CallRouteSummary, DocumentSymbolBatchExtraction,
+        DocumentSymbolBatchRequest, GraphLanguage, ProviderId, ReferenceRouteSummary,
+    },
     persist::{ExtractionPersister, PersistenceSummary},
+    providers::csharp_ls::CSharpLsProvider,
     providers::rust_analyzer::RustAnalyzerProvider,
     workspace_extraction::{
         ThreadedWorkspaceExtractionConfig, ThreadedWorkspaceExtractionRunner,
@@ -19,6 +25,7 @@ use semantic_graph_extract::{
 };
 
 use clap::Parser;
+use sha2::Digest;
 use std::{
     error::Error,
     path::{Path, PathBuf},
@@ -155,6 +162,167 @@ async fn run() -> ExtractResult<()> {
             .await?;
 
             print_rust_route_batch_summary("workspace", routes, &summary);
+            print_benchmark_summary(&summary.benchmark);
+        }
+        Command::CSharpFile {
+            db,
+            solution,
+            csharp_ls,
+            calls,
+            references,
+            symbols,
+            file,
+        } => {
+            let mode = resolve_csharp_file_mode(calls, references, symbols)?;
+            let provider = CSharpLsProvider::new();
+            let current_dir = std::env::current_dir()
+                .map_err(|source| ExtractError::io("read current directory", None, source))?;
+            let plan =
+                resolve_csharp_extractor_plan(&config, &current_dir, csharp_ls, solution, None)?;
+            let solution_model =
+                csharp_ls_lib::load_solution(plan.solution()).map_err(|source| {
+                    ExtractError::csharp_ls_lib("load C# solution for csharp-file", source)
+                })?;
+            let project_match =
+                csharp_ls_lib::project_for_file(&solution_model, &file).map_err(|source| {
+                    ExtractError::csharp_ls_lib("match C# file to project", source)
+                })?;
+            let workspace_root = csharp_workspace_root(plan.solution())?;
+            let package_path = csharp_package_path(&project_match.project_path)?;
+            let document_request =
+                validate_document_symbol_batch_request(DocumentSymbolBatchRequest {
+                    package_path,
+                    workspace_root: workspace_root.clone(),
+                    file_paths: vec![project_match.file_path],
+                })?;
+            let workspace_root_uri = file_uri(plan.solution())?;
+            let db = resolve_cli_database_path(db, &config, &workspace_root)?;
+            let store = start_writer(db, &config, &workspace_root).await?;
+
+            let extractions =
+                extract_csharp_file_with_single_worker(&provider, &plan, document_request, mode)
+                    .await?;
+            let summary =
+                persist_csharp_file_extractions(&store, &workspace_root_uri, mode, &extractions)
+                    .await?;
+            shutdown_writer(&store).await?;
+
+            print_csharp_file_summary(mode, &summary);
+        }
+        Command::CSharpFileDeleted {
+            db,
+            solution,
+            csharp_ls,
+            file,
+        } => {
+            let current_dir = std::env::current_dir()
+                .map_err(|source| ExtractError::io("read current directory", None, source))?;
+            let plan =
+                resolve_csharp_extractor_plan(&config, &current_dir, csharp_ls, solution, None)?;
+            let workspace_root = csharp_workspace_root(plan.solution())?;
+            let deleted_file_path =
+                resolve_csharp_deleted_file_path(&workspace_root, &current_dir, &file)?;
+            let deleted_file_uri = file_uri(&deleted_file_path)?;
+            let relative_path =
+                semantic_graph_extract::document_symbols::paths::workspace_relative_path(
+                    &workspace_root,
+                    &deleted_file_path,
+                )?;
+            let workspace_root_uri = file_uri(plan.solution())?;
+            let db = resolve_cli_database_path(db, &config, &workspace_root)?;
+            let store = start_writer(db, &config, &workspace_root).await?;
+
+            let summary = ExtractionPersister
+                .mark_deleted_file_stale(
+                    &store,
+                    &workspace_root_uri,
+                    &deleted_file_uri,
+                    GraphLanguage::CSharp,
+                    ProviderId::csharp_language_server(),
+                    "csharp-file-deleted",
+                )
+                .await?;
+            shutdown_writer(&store).await?;
+
+            print_csharp_file_deleted_summary(&relative_path, &summary);
+        }
+        Command::CSharpProject {
+            db,
+            solution,
+            csharp_ls,
+            process_workers,
+            calls,
+            references,
+            symbols,
+            project_or_root,
+        } => {
+            let routes = resolve_csharp_workspace_routes(calls, references, symbols);
+            let provider = CSharpLsProvider::new();
+            let current_dir = std::env::current_dir()
+                .map_err(|source| ExtractError::io("read current directory", None, source))?;
+            let plan = resolve_csharp_extractor_plan(
+                &config,
+                &current_dir,
+                csharp_ls,
+                solution,
+                process_workers,
+            )?;
+            let solution_model =
+                csharp_ls_lib::load_solution(plan.solution()).map_err(|source| {
+                    ExtractError::csharp_ls_lib("load C# solution for csharp-project", source)
+                })?;
+            let file_paths = csharp_ls_lib::project_source_files(&solution_model, &project_or_root)
+                .map_err(|source| {
+                    ExtractError::csharp_ls_lib("discover C# project source files", source)
+                })?;
+            let workspace_root = csharp_workspace_root(plan.solution())?;
+            let package_path = csharp_project_package_path(&project_or_root)?;
+            let document_request =
+                validate_document_symbol_batch_request(DocumentSymbolBatchRequest {
+                    workspace_root: workspace_root.clone(),
+                    package_path,
+                    file_paths,
+                })?;
+            let summary =
+                run_csharp_route_batch(&config, db, &provider, &plan, document_request, routes)
+                    .await?;
+
+            print_csharp_route_batch_summary("project", routes, &summary);
+            print_benchmark_summary(&summary.benchmark);
+        }
+        Command::CSharpSolution {
+            db,
+            solution,
+            csharp_ls,
+            process_workers,
+            calls,
+            references,
+            symbols,
+        } => {
+            let routes = resolve_csharp_workspace_routes(calls, references, symbols);
+            let provider = CSharpLsProvider::new();
+            let current_dir = std::env::current_dir()
+                .map_err(|source| ExtractError::io("read current directory", None, source))?;
+            let plan = resolve_csharp_extractor_plan(
+                &config,
+                &current_dir,
+                csharp_ls,
+                solution,
+                process_workers,
+            )?;
+            let file_paths = provider.discover_csharp_solution_source_files(plan.solution())?;
+            let workspace_root = csharp_workspace_root(plan.solution())?;
+            let document_request =
+                validate_document_symbol_batch_request(DocumentSymbolBatchRequest {
+                    package_path: workspace_root.clone(),
+                    workspace_root: workspace_root.clone(),
+                    file_paths,
+                })?;
+            let summary =
+                run_csharp_route_batch(&config, db, &provider, &plan, document_request, routes)
+                    .await?;
+
+            print_csharp_route_batch_summary("solution", routes, &summary);
             print_benchmark_summary(&summary.benchmark);
         }
     }
@@ -478,6 +646,218 @@ async fn persist_rust_file_extractions(
     })
 }
 
+async fn extract_csharp_file_with_single_worker(
+    provider: &CSharpLsProvider,
+    plan: &ResolvedCSharpExtractorPlan,
+    document_request: DocumentSymbolBatchRequest,
+    mode: CSharpFileMode,
+) -> ExtractResult<CSharpFileExtractions> {
+    let mut worker = start_csharp_worker(plan).await?;
+    let result = extract_csharp_file_with_worker(
+        provider,
+        &mut worker,
+        document_request,
+        mode,
+        plan.solution(),
+    )
+    .await;
+    let shutdown_result = worker.shutdown().await.map_err(|source| {
+        ExtractError::csharp_ls_lib("shutdown single csharp-file worker", source)
+    });
+
+    match (result, shutdown_result) {
+        (Ok(extractions), Ok(())) => Ok(extractions),
+        (Err(error), _) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+    }
+}
+
+async fn extract_csharp_file_with_worker(
+    provider: &CSharpLsProvider,
+    worker: &mut csharp_ls_lib::CSharpLsWorker,
+    document_request: DocumentSymbolBatchRequest,
+    mode: CSharpFileMode,
+    solution_path: &Path,
+) -> ExtractResult<CSharpFileExtractions> {
+    let file_scope_key = file_uri(&document_request.file_paths[0])?;
+    let document_symbols =
+        csharp_document_symbols_with_worker(provider, worker, document_request.clone()).await?;
+
+    if !mode.includes_references() && !mode.includes_calls() {
+        return Ok(CSharpFileExtractions {
+            file_scope_key,
+            document_symbols,
+            references: None,
+            calls: None,
+        });
+    }
+
+    let (relation_document_request, relation_document_symbols) =
+        csharp_file_relation_document_symbols(provider, worker, &document_request, solution_path)
+            .await?;
+
+    let references =
+        if mode.includes_references() {
+            let reference_targets = provider.reference_targets_for_document_symbols(
+                &relation_document_request,
+                &relation_document_symbols,
+            )?;
+            let mut reference_sets = Vec::with_capacity(reference_targets.len());
+            for target in &reference_targets {
+                reference_sets.push(worker.references_for_symbol(target).await.map_err(
+                    |source| {
+                        ExtractError::csharp_ls_lib("csharp-ls-lib references_for_symbol", source)
+                    },
+                )?);
+            }
+            let reference_sets = csharp_reference_sets_for_file_relations(
+                reference_sets,
+                &document_request.file_paths[0],
+            );
+            Some(provider.map_reference_sets(
+                &relation_document_request,
+                relation_document_symbols.clone(),
+                reference_sets,
+                reference_targets.len(),
+            )?)
+        } else {
+            None
+        };
+
+    let calls = if mode.includes_calls() {
+        let call_targets = provider.call_targets_for_document_symbols(
+            &relation_document_request,
+            &relation_document_symbols,
+        )?;
+        let mut incoming_call_sets = Vec::with_capacity(call_targets.len());
+        for target in &call_targets {
+            incoming_call_sets.push(worker.incoming_calls_for_symbol(target).await.map_err(
+                |source| {
+                    ExtractError::csharp_ls_lib("csharp-ls-lib incoming_calls_for_symbol", source)
+                },
+            )?);
+        }
+        let calls = provider.map_incoming_call_sets(
+            &relation_document_request,
+            relation_document_symbols,
+            incoming_call_sets,
+            call_targets.len(),
+        )?;
+        Some(call_extraction_for_file_relations(calls, &file_scope_key))
+    } else {
+        None
+    };
+
+    Ok(CSharpFileExtractions {
+        file_scope_key,
+        document_symbols,
+        references,
+        calls,
+    })
+}
+
+async fn csharp_document_symbols_with_worker(
+    provider: &CSharpLsProvider,
+    worker: &mut csharp_ls_lib::CSharpLsWorker,
+    document_request: DocumentSymbolBatchRequest,
+) -> ExtractResult<DocumentSymbolBatchExtraction> {
+    let document_symbol_items = worker
+        .document_symbols_for_files(document_request.file_paths.clone())
+        .await
+        .map_err(|source| {
+            ExtractError::csharp_ls_lib("csharp-ls-lib document_symbols_for_files", source)
+        })?;
+
+    provider.map_document_symbol_items(document_request, document_symbol_items)
+}
+
+async fn csharp_file_relation_document_symbols(
+    provider: &CSharpLsProvider,
+    worker: &mut csharp_ls_lib::CSharpLsWorker,
+    document_request: &DocumentSymbolBatchRequest,
+    solution_path: &Path,
+) -> ExtractResult<(DocumentSymbolBatchRequest, DocumentSymbolBatchExtraction)> {
+    let mut file_paths = provider.discover_csharp_solution_source_files(solution_path)?;
+    file_paths.push(document_request.file_paths[0].clone());
+
+    let relation_document_request =
+        validate_document_symbol_batch_request(DocumentSymbolBatchRequest {
+            package_path: document_request.workspace_root.clone(),
+            workspace_root: document_request.workspace_root.clone(),
+            file_paths,
+        })?;
+    let relation_document_symbols =
+        csharp_document_symbols_with_worker(provider, worker, relation_document_request.clone())
+            .await?;
+
+    Ok((relation_document_request, relation_document_symbols))
+}
+
+fn csharp_reference_sets_for_file_relations(
+    mut reference_sets: Vec<csharp_ls_lib::ResolvedReferenceSet>,
+    file_path: &Path,
+) -> Vec<csharp_ls_lib::ResolvedReferenceSet> {
+    for reference_set in &mut reference_sets {
+        let target_is_in_file = reference_set.target_file_path == file_path;
+        reference_set
+            .references
+            .retain(|location| target_is_in_file || location.file_path == file_path);
+    }
+
+    reference_sets
+        .into_iter()
+        .filter(|reference_set| !reference_set.references.is_empty())
+        .collect()
+}
+
+async fn persist_csharp_file_extractions(
+    store: &WriteHandle,
+    workspace_root_uri: &str,
+    mode: CSharpFileMode,
+    extractions: &CSharpFileExtractions,
+) -> ExtractResult<PersistenceSummary> {
+    let mut summary = None;
+
+    if mode.includes_symbols() {
+        let document_summary = ExtractionPersister
+            .persist_document_symbol_batch(store, workspace_root_uri, &extractions.document_symbols)
+            .await?;
+        merge_optional_summary(&mut summary, document_summary);
+    }
+
+    if let Some(references) = &extractions.references {
+        let reference_summary = ExtractionPersister
+            .persist_reference_file_batch_for_file(
+                store,
+                workspace_root_uri,
+                &extractions.file_scope_key,
+                references,
+            )
+            .await?;
+        merge_optional_summary(&mut summary, reference_summary);
+    }
+
+    if let Some(calls) = &extractions.calls {
+        let call_summary = ExtractionPersister
+            .persist_call_file_batch_for_file(
+                store,
+                workspace_root_uri,
+                &extractions.file_scope_key,
+                calls,
+            )
+            .await?;
+        merge_optional_summary(&mut summary, call_summary);
+    }
+
+    summary.ok_or_else(|| {
+        ExtractError::response_shape(
+            "csharp-language-server",
+            "csharp-file",
+            "csharp-file extraction produced no persistence work",
+        )
+    })
+}
+
 fn merge_optional_summary(target: &mut Option<PersistenceSummary>, source: PersistenceSummary) {
     match target {
         Some(target) => {
@@ -533,6 +913,73 @@ fn print_rust_file_deleted_summary(relative_path: &str, summary: &PersistenceSum
         summary.routes_complete,
         summary.stale_nodes_closed,
         summary.stale_edges_closed
+    );
+}
+
+fn print_csharp_file_summary(mode: CSharpFileMode, summary: &PersistenceSummary) {
+    let contains_edges = summary
+        .edges
+        .saturating_sub(summary.reference_edges + summary.call_edges);
+    println!(
+        "mode={} workspace={} last_run={} files={} nodes={} contains_edges={} references_edges={} reference_occurrences={} calls_edges={} call_occurrences={} evidence={} routes_complete={} stale_nodes_closed={} stale_edges_closed={}",
+        mode.label(),
+        summary.workspace_id,
+        summary.run_id,
+        summary.files,
+        summary.nodes,
+        contains_edges,
+        summary.reference_edges,
+        summary.reference_occurrences,
+        summary.call_edges,
+        summary.call_occurrences,
+        summary.evidence,
+        summary.routes_complete,
+        summary.stale_nodes_closed,
+        summary.stale_edges_closed
+    );
+}
+
+fn print_csharp_file_deleted_summary(relative_path: &str, summary: &PersistenceSummary) {
+    println!(
+        "mode=deleted file={} workspace={} run={} routes_complete={} stale_nodes_closed={} stale_edges_closed={}",
+        relative_path,
+        summary.workspace_id,
+        summary.run_id,
+        summary.routes_complete,
+        summary.stale_nodes_closed,
+        summary.stale_edges_closed
+    );
+}
+
+fn print_csharp_route_batch_summary(
+    scope: &str,
+    routes: WorkspaceExtractionRoutes,
+    summary: &WorkspaceExtractionSummary,
+) {
+    let contains_edges = summary.document_summary.edges;
+    println!(
+        "scope={} mode={} workspace={} last_run={} files={} nodes={} contains_edges={} references_edges={} reference_occurrences={} calls_edges={} call_occurrences={} evidence={} routes_complete={} stale_nodes_closed={} stale_edges_closed={}",
+        scope,
+        routes.label(),
+        summary.document_summary.workspace_id,
+        selected_route_last_run(routes, summary),
+        summary.document_summary.files,
+        summary.document_summary.nodes,
+        contains_edges,
+        summary.reference_summary.reference_edges,
+        summary.reference_summary.reference_occurrences,
+        summary.call_summary.call_edges,
+        summary.call_summary.call_occurrences,
+        summary.document_summary.evidence
+            + summary.reference_summary.evidence
+            + summary.call_summary.evidence,
+        summary.document_summary.routes_complete
+            + summary.reference_summary.routes_complete
+            + summary.call_summary.routes_complete,
+        summary.document_summary.stale_nodes_closed,
+        summary.document_summary.stale_edges_closed
+            + summary.reference_summary.stale_edges_closed
+            + summary.call_summary.stale_edges_closed
     );
 }
 
@@ -609,6 +1056,154 @@ async fn run_threaded_rust_route_batch(
     Ok(summary)
 }
 
+async fn run_csharp_route_batch(
+    config: &Option<PathBuf>,
+    db: Option<PathBuf>,
+    provider: &CSharpLsProvider,
+    plan: &ResolvedCSharpExtractorPlan,
+    document_request: DocumentSymbolBatchRequest,
+    routes: WorkspaceExtractionRoutes,
+) -> ExtractResult<WorkspaceExtractionSummary> {
+    let total_timer = Stopwatch::start_new();
+    let mut benchmark = BenchmarkSummary::new();
+    benchmark.insert_label("mode", "csharp-process-pool");
+    benchmark.insert_label("routes", routes.label());
+    benchmark.insert_count("process_workers", plan.process_workers());
+    benchmark.insert_count("files_discovered", document_request.file_paths.len());
+
+    let workspace_root_uri = file_uri(plan.solution())?;
+    let db = resolve_cli_database_path(db, config, &document_request.workspace_root)?;
+    let store = start_writer(db, config, &document_request.workspace_root).await?;
+
+    let mut worker_pool = csharp_ls_lib::CSharpLsWorkerPool::start(
+        plan.binary().clone(),
+        plan.solution().clone(),
+        plan.log_level().to_string(),
+        plan.features().to_vec(),
+        plan.startup_timeout_ms(),
+        plan.request_timeout_ms(),
+        plan.process_workers(),
+    )
+    .await
+    .map_err(|source| ExtractError::csharp_ls_lib("start C# worker pool", source))?;
+    benchmark.insert_count("actual_process_workers", worker_pool.worker_count());
+
+    let document_symbol_items = worker_pool
+        .document_symbols_for_files(document_request.file_paths.clone())
+        .await
+        .map_err(|source| {
+            ExtractError::csharp_ls_lib("csharp-ls-lib document_symbols_for_files", source)
+        })?;
+    let document_symbols =
+        provider.map_document_symbol_items(document_request.clone(), document_symbol_items)?;
+    benchmark.insert_count("document_files", document_symbols.extractions.len());
+
+    let mut document_summary = if routes.includes_symbols() {
+        ExtractionPersister
+            .persist_document_symbol_batch(&store, &workspace_root_uri, &document_symbols)
+            .await?
+    } else {
+        empty_persistence_summary(
+            existing_csharp_workspace_id(&store, &workspace_root_uri).await?,
+            0,
+        )
+    };
+
+    let workspace_fingerprint = csharp_workspace_fingerprint(&document_symbols);
+    let mut reference_summary = empty_persistence_summary(document_summary.workspace_id, 0);
+    let mut call_summary = empty_persistence_summary(document_summary.workspace_id, 0);
+    let mut reference_route_summary = empty_reference_route_summary();
+    let mut call_route_summary = empty_call_route_summary();
+
+    if routes.includes_references() {
+        let reference_targets = provider
+            .reference_targets_for_document_symbols(&document_request, &document_symbols)?;
+        let work_items = reference_targets
+            .iter()
+            .cloned()
+            .map(|target| csharp_ls_lib::FileSemanticWork {
+                file_path: target.file_path.clone(),
+                reference_targets: vec![target],
+                call_targets: Vec::new(),
+            })
+            .collect::<Vec<_>>();
+        let file_results = worker_pool
+            .file_semantic_work_items(work_items)
+            .await
+            .map_err(|source| ExtractError::csharp_ls_lib("C# reference work items", source))?;
+        let reference_sets = file_results
+            .into_iter()
+            .flat_map(|result| result.reference_sets)
+            .collect::<Vec<_>>();
+        let mut extraction = provider.map_reference_sets(
+            &document_request,
+            document_symbols.clone(),
+            reference_sets,
+            reference_targets.len(),
+        )?;
+        extraction.workspace_fingerprint = workspace_fingerprint.clone();
+        reference_route_summary = extraction.summary.clone();
+        reference_summary = ExtractionPersister
+            .persist_reference_batch(&store, &workspace_root_uri, &extraction)
+            .await?;
+        if document_summary.workspace_id == 0 {
+            document_summary.workspace_id = reference_summary.workspace_id;
+        }
+    }
+
+    if routes.includes_calls() {
+        let call_targets =
+            provider.call_targets_for_document_symbols(&document_request, &document_symbols)?;
+        let work_items = call_targets
+            .iter()
+            .cloned()
+            .map(|target| csharp_ls_lib::FileSemanticWork {
+                file_path: target.file_path.clone(),
+                reference_targets: Vec::new(),
+                call_targets: vec![target],
+            })
+            .collect::<Vec<_>>();
+        let file_results = worker_pool
+            .file_semantic_work_items(work_items)
+            .await
+            .map_err(|source| ExtractError::csharp_ls_lib("C# call work items", source))?;
+        let incoming_call_sets = file_results
+            .into_iter()
+            .flat_map(|result| result.incoming_call_sets)
+            .collect::<Vec<_>>();
+        let mut extraction = provider.map_incoming_call_sets(
+            &document_request,
+            document_symbols,
+            incoming_call_sets,
+            call_targets.len(),
+        )?;
+        extraction.workspace_fingerprint = workspace_fingerprint;
+        call_route_summary = extraction.summary.clone();
+        call_summary = ExtractionPersister
+            .persist_call_batch(&store, &workspace_root_uri, &extraction)
+            .await?;
+        if document_summary.workspace_id == 0 {
+            document_summary.workspace_id = call_summary.workspace_id;
+        }
+    }
+
+    worker_pool
+        .shutdown()
+        .await
+        .map_err(|source| ExtractError::csharp_ls_lib("shutdown C# worker pool", source))?;
+    shutdown_writer(&store).await?;
+
+    benchmark.insert_duration_ms("total", total_timer.elapsed());
+    Ok(WorkspaceExtractionSummary {
+        benchmark,
+        document_summary,
+        reference_summary,
+        call_summary,
+        reference_route_summary,
+        call_route_summary,
+    })
+}
+
 fn resolve_threaded_route_analysis_workers(
     config: &Option<PathBuf>,
     workspace_root: &Path,
@@ -673,6 +1268,186 @@ fn selected_route_last_run(
     .flatten()
     .max()
     .unwrap_or(0)
+}
+
+async fn start_csharp_worker(
+    plan: &ResolvedCSharpExtractorPlan,
+) -> ExtractResult<csharp_ls_lib::CSharpLsWorker> {
+    csharp_ls_lib::CSharpLsWorker::start(
+        plan.binary().clone(),
+        plan.solution().clone(),
+        plan.log_level().to_string(),
+        plan.features().to_vec(),
+        plan.startup_timeout_ms(),
+        plan.request_timeout_ms(),
+    )
+    .await
+    .map_err(|source| ExtractError::csharp_ls_lib("start C# worker", source))
+}
+
+fn csharp_workspace_root(solution_path: &Path) -> ExtractResult<PathBuf> {
+    solution_path
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| {
+            ExtractError::invalid_path(
+                solution_path,
+                PathBuf::new(),
+                "C# solution path has no parent directory",
+            )
+        })
+}
+
+fn resolve_csharp_deleted_file_path(
+    workspace_root: &Path,
+    current_dir: &Path,
+    file_path: &Path,
+) -> ExtractResult<PathBuf> {
+    let current_dir_candidate = if file_path.is_absolute() {
+        file_path.to_path_buf()
+    } else {
+        current_dir.join(file_path)
+    };
+    let current_dir_candidate = normalize_lexical_path(&current_dir_candidate);
+    let resolved = if current_dir_candidate.starts_with(workspace_root) {
+        current_dir_candidate
+    } else if file_path.is_absolute() {
+        return Err(ExtractError::invalid_path(
+            current_dir_candidate,
+            workspace_root,
+            "deleted csharp-file path is outside the resolved solution directory",
+        ));
+    } else {
+        normalize_lexical_path(&workspace_root.join(file_path))
+    };
+
+    if !resolved.starts_with(workspace_root) {
+        return Err(ExtractError::invalid_path(
+            resolved,
+            workspace_root,
+            "deleted csharp-file path is outside the resolved solution directory",
+        ));
+    }
+    if resolved.exists() && !resolved.is_file() {
+        return Err(ExtractError::invalid_path(
+            resolved,
+            workspace_root,
+            "deleted csharp-file path must be a file path",
+        ));
+    }
+
+    Ok(resolved)
+}
+
+fn csharp_package_path(project_path: &Path) -> ExtractResult<PathBuf> {
+    project_path.parent().map(Path::to_path_buf).ok_or_else(|| {
+        ExtractError::invalid_path(
+            project_path,
+            PathBuf::new(),
+            "C# project path has no parent directory",
+        )
+    })
+}
+
+fn csharp_project_package_path(project_or_root: &Path) -> ExtractResult<PathBuf> {
+    let canonical = project_or_root
+        .canonicalize()
+        .map_err(|source| ExtractError::io("canonicalize C# project boundary", None, source))?;
+    if canonical
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("csproj"))
+    {
+        csharp_package_path(&canonical)
+    } else {
+        Ok(canonical)
+    }
+}
+
+async fn existing_csharp_workspace_id(
+    store: &WriteHandle,
+    workspace_root_uri: &str,
+) -> ExtractResult<i64> {
+    store
+        .workspace_id(workspace_root_uri)
+        .await
+        .map_err(ExtractError::storage)?
+        .ok_or_else(|| {
+            ExtractError::response_shape(
+                "csharp-language-server",
+                "csharp route-only extraction",
+                format!(
+                    "workspace {workspace_root_uri} is missing; run csharp-solution --symbols, csharp-project --symbols, or csharp-file --symbols first"
+                ),
+            )
+        })
+}
+
+fn empty_persistence_summary(workspace_id: i64, run_id: i64) -> PersistenceSummary {
+    PersistenceSummary {
+        workspace_id,
+        run_id,
+        files: 0,
+        nodes: 0,
+        edges: 0,
+        reference_edges: 0,
+        call_edges: 0,
+        occurrences: 0,
+        reference_occurrences: 0,
+        call_occurrences: 0,
+        evidence: 0,
+        routes_complete: 0,
+        stale_nodes_closed: 0,
+        stale_edges_closed: 0,
+    }
+}
+
+fn empty_reference_route_summary() -> ReferenceRouteSummary {
+    ReferenceRouteSummary {
+        targets_queried: 0,
+        reference_edges: 0,
+        reference_occurrences: 0,
+        file_fallbacks: 0,
+        skipped_external: 0,
+    }
+}
+
+fn empty_call_route_summary() -> CallRouteSummary {
+    CallRouteSummary {
+        callable_nodes: 0,
+        call_edges: 0,
+        call_occurrences: 0,
+        skipped_external_targets: 0,
+        skipped_unresolved_targets: 0,
+        skipped_non_callable_prepare_items: 0,
+    }
+}
+
+fn csharp_workspace_fingerprint(extraction: &DocumentSymbolBatchExtraction) -> String {
+    let mut entries = extraction
+        .extractions
+        .iter()
+        .map(|file_extraction| {
+            format!(
+                "{}:{}",
+                file_extraction.source_file.relative_path,
+                file_extraction
+                    .source_file
+                    .content_hash
+                    .as_deref()
+                    .unwrap_or_default()
+            )
+        })
+        .collect::<Vec<_>>();
+    entries.sort();
+
+    let mut hasher = sha2::Sha256::new();
+    for entry in entries {
+        hasher.update(entry.as_bytes());
+        hasher.update(b"\n");
+    }
+
+    hex::encode(hasher.finalize())
 }
 
 fn resolve_cli_extractor_config(

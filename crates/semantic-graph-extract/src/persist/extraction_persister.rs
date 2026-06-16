@@ -4,10 +4,10 @@ use crate::{
     document_symbols::paths::basename_from_relative_path,
     model::{
         CallBatchExtraction, DocumentSymbolBatchExtraction, DocumentSymbolExtraction,
-        ExtractedCall, ExtractedReference, ProviderId, ReferenceBatchExtraction, RouteName,
-        RouteScope,
+        ExtractedCall, ExtractedReference, GraphLanguage, ProviderId, ReferenceBatchExtraction,
+        RouteName, RouteScope,
     },
-    persist::{PersistenceSummary, ScopedRoute},
+    persist::{PersistenceRun, PersistenceSummary, ScopedRoute},
 };
 
 use semantic_graph_db_manager::{
@@ -28,9 +28,28 @@ impl ExtractionPersister {
         workspace_root_uri: &str,
         file_uri: &str,
     ) -> ExtractResult<PersistenceSummary> {
-        let provider = ProviderId::rust_analyzer();
+        self.mark_deleted_file_stale(
+            store,
+            workspace_root_uri,
+            file_uri,
+            GraphLanguage::Rust,
+            ProviderId::rust_analyzer(),
+            "rust-file-deleted",
+        )
+        .await
+    }
+
+    pub async fn mark_deleted_file_stale(
+        &self,
+        store: &WriteHandle,
+        workspace_root_uri: &str,
+        file_uri: &str,
+        language: GraphLanguage,
+        provider: ProviderId,
+        source: &'static str,
+    ) -> ExtractResult<PersistenceSummary> {
         let workspace_id = store
-            .create_workspace(workspace_root_uri, "rust")
+            .create_workspace(workspace_root_uri, language.workspace_kind())
             .await
             .map_err(ExtractError::storage)?;
         let run_id = store
@@ -39,12 +58,16 @@ impl ExtractionPersister {
             .map_err(ExtractError::storage)?;
 
         let result = self
-            .mark_deleted_rust_file_stale_after_run_started(
+            .mark_deleted_file_stale_after_run_started(
                 store,
-                workspace_id,
-                run_id,
+                PersistenceRun {
+                    workspace_id,
+                    run_id,
+                },
                 provider,
                 file_uri,
+                language,
+                source,
             )
             .await;
 
@@ -66,28 +89,29 @@ impl ExtractionPersister {
         }
     }
 
-    async fn mark_deleted_rust_file_stale_after_run_started(
+    async fn mark_deleted_file_stale_after_run_started(
         &self,
         store: &WriteHandle,
-        workspace_id: i64,
-        run_id: i64,
+        run: PersistenceRun,
         provider: ProviderId,
         file_uri: &str,
+        language: GraphLanguage,
+        source: &'static str,
     ) -> ExtractResult<PersistenceSummary> {
         let file_id = store
-            .file_id(workspace_id, file_uri)
+            .file_id(run.workspace_id, file_uri)
             .await
             .map_err(ExtractError::storage)?;
-        let mut summary = empty_summary(workspace_id, run_id);
+        let mut summary = empty_summary(run.workspace_id, run.run_id);
 
         for route in [
-            RouteName::RUST_DOCUMENT_SYMBOLS,
-            RouteName::RUST_REFERENCES,
-            RouteName::RUST_CALLS,
+            RouteName::document_symbols_for_language(language),
+            RouteName::references_for_language(language),
+            RouteName::calls_for_language(language),
         ] {
             store
                 .start_route_status(RouteStatusStartInput {
-                    workspace_id,
+                    workspace_id: run.workspace_id,
                     route: route.as_str(),
                     scope: RouteScope::FILE.as_str(),
                     scope_key: file_uri,
@@ -95,10 +119,10 @@ impl ExtractionPersister {
                     provider: provider.as_str(),
                     provider_version: None,
                     content_hash: None,
-                    run_id,
+                    run_id: run.run_id,
                     diagnostics_json: json!({
                         "file_deleted": true,
-                        "source": "rust-file-deleted",
+                        "source": source,
                     }),
                 })
                 .await
@@ -106,18 +130,18 @@ impl ExtractionPersister {
 
             store
                 .complete_route_status(RouteStatusCompleteInput {
-                    workspace_id,
+                    workspace_id: run.workspace_id,
                     route: route.as_str(),
                     scope: RouteScope::FILE.as_str(),
                     scope_key: file_uri,
                     provider: provider.as_str(),
                     provider_version: None,
                     content_hash: None,
-                    run_id,
+                    run_id: run.run_id,
                     diagnostics_json: json!({
                         "file_deleted": true,
                         "observations": 0,
-                        "source": "rust-file-deleted",
+                        "source": source,
                     }),
                 })
                 .await
@@ -127,8 +151,8 @@ impl ExtractionPersister {
 
         let stale_summary = store
             .close_stale_file(CloseStaleFileInput {
-                workspace_id,
-                run_id,
+                workspace_id: run.workspace_id,
+                run_id: run.run_id,
                 file_uri,
             })
             .await
@@ -305,22 +329,16 @@ impl ExtractionPersister {
         workspace_root_uri: &str,
         extraction: &ReferenceBatchExtraction,
     ) -> ExtractResult<PersistenceSummary> {
-        let _first_extraction =
-            extraction
-                .document_symbols
-                .extractions
-                .first()
-                .ok_or_else(|| {
-                    ExtractError::response_shape(
-                        extraction.provider.as_str(),
-                        "textDocument/references",
-                        "reference batch contained no document-symbol files",
-                    )
-                })?;
+        let language = document_symbol_batch_language(
+            extraction.provider.as_str(),
+            "textDocument/references",
+            &extraction.document_symbols,
+        )?;
         let workspace_id = self
             .existing_workspace_id(
                 store,
                 workspace_root_uri,
+                language,
                 extraction.provider.as_str(),
                 "textDocument/references",
             )
@@ -390,10 +408,16 @@ impl ExtractionPersister {
         file_scope_key: &str,
         extraction: &ReferenceBatchExtraction,
     ) -> ExtractResult<PersistenceSummary> {
+        let language = document_symbol_batch_language(
+            extraction.provider.as_str(),
+            "textDocument/references",
+            &extraction.document_symbols,
+        )?;
         let workspace_id = self
             .existing_workspace_id(
                 store,
                 workspace_root_uri,
+                language,
                 extraction.provider.as_str(),
                 "textDocument/references",
             )
@@ -444,22 +468,29 @@ impl ExtractionPersister {
         workspace_root_uri: &str,
         extraction: &ReferenceBatchExtraction,
     ) -> ExtractResult<PersistenceSummary> {
+        let language = document_symbol_batch_language(
+            extraction.provider.as_str(),
+            "textDocument/references",
+            &extraction.document_symbols,
+        )?;
+        let route_name = RouteName::references_for_language(language);
         let file_ids = self
             .existing_document_symbol_file_ids(
                 store,
                 workspace_id,
+                language,
                 extraction.provider.as_str(),
                 "textDocument/references",
                 &extraction.document_symbols,
             )
             .await?;
-        self.validate_reference_nodes(store, workspace_id, extraction)
+        self.validate_reference_nodes(store, workspace_id, language, extraction)
             .await?;
 
         store
             .start_route_status(RouteStatusStartInput {
                 workspace_id,
-                route: RouteName::RUST_REFERENCES.as_str(),
+                route: route_name.as_str(),
                 scope: RouteScope::WORKSPACE.as_str(),
                 scope_key: workspace_root_uri,
                 file_id: None,
@@ -475,11 +506,14 @@ impl ExtractionPersister {
         let result = self
             .persist_references_after_scoped_route_started(
                 store,
-                workspace_id,
-                run_id,
+                PersistenceRun {
+                    workspace_id,
+                    run_id,
+                },
                 ScopedRoute::workspace(workspace_root_uri),
                 extraction,
                 &file_ids,
+                language,
             )
             .await;
 
@@ -488,7 +522,7 @@ impl ExtractionPersister {
                 store
                     .complete_route_status(RouteStatusCompleteInput {
                         workspace_id,
-                        route: RouteName::RUST_REFERENCES.as_str(),
+                        route: route_name.as_str(),
                         scope: RouteScope::WORKSPACE.as_str(),
                         scope_key: workspace_root_uri,
                         provider: extraction.provider.as_str(),
@@ -509,7 +543,7 @@ impl ExtractionPersister {
                     .close_stale_edges_for_route(CloseStaleRouteInput {
                         workspace_id,
                         run_id,
-                        route: RouteName::RUST_REFERENCES.as_str(),
+                        route: route_name.as_str(),
                         scope: RouteScope::WORKSPACE.as_str(),
                         scope_key: workspace_root_uri,
                         provider: extraction.provider.as_str(),
@@ -526,7 +560,7 @@ impl ExtractionPersister {
                 store
                     .fail_route_status(RouteStatusFailInput {
                         workspace_id,
-                        route: RouteName::RUST_REFERENCES.as_str(),
+                        route: route_name.as_str(),
                         scope: RouteScope::WORKSPACE.as_str(),
                         scope_key: workspace_root_uri,
                         provider: extraction.provider.as_str(),
@@ -551,6 +585,12 @@ impl ExtractionPersister {
         workspace_root_uri: &str,
         extraction: &ReferenceBatchExtraction,
     ) -> ExtractResult<PersistenceSummary> {
+        let language = document_symbol_batch_language(
+            extraction.provider.as_str(),
+            "textDocument/references",
+            &extraction.document_symbols,
+        )?;
+        let route_name = RouteName::references_for_language(language);
         let mut summary = self
             .persist_batch_after_run_started(
                 store,
@@ -566,7 +606,7 @@ impl ExtractionPersister {
         store
             .start_route_status(RouteStatusStartInput {
                 workspace_id,
-                route: RouteName::RUST_REFERENCES.as_str(),
+                route: route_name.as_str(),
                 scope: RouteScope::WORKSPACE.as_str(),
                 scope_key: workspace_root_uri,
                 file_id: None,
@@ -582,11 +622,14 @@ impl ExtractionPersister {
         let result = self
             .persist_references_after_scoped_route_started(
                 store,
-                workspace_id,
-                run_id,
+                PersistenceRun {
+                    workspace_id,
+                    run_id,
+                },
                 ScopedRoute::workspace(workspace_root_uri),
                 extraction,
                 &file_ids,
+                language,
             )
             .await;
 
@@ -595,7 +638,7 @@ impl ExtractionPersister {
                 store
                     .complete_route_status(RouteStatusCompleteInput {
                         workspace_id,
-                        route: RouteName::RUST_REFERENCES.as_str(),
+                        route: route_name.as_str(),
                         scope: RouteScope::WORKSPACE.as_str(),
                         scope_key: workspace_root_uri,
                         provider: extraction.provider.as_str(),
@@ -616,7 +659,7 @@ impl ExtractionPersister {
                     .close_stale_edges_for_route(CloseStaleRouteInput {
                         workspace_id,
                         run_id,
-                        route: RouteName::RUST_REFERENCES.as_str(),
+                        route: route_name.as_str(),
                         scope: RouteScope::WORKSPACE.as_str(),
                         scope_key: workspace_root_uri,
                         provider: extraction.provider.as_str(),
@@ -638,7 +681,7 @@ impl ExtractionPersister {
                 store
                     .fail_route_status(RouteStatusFailInput {
                         workspace_id,
-                        route: RouteName::RUST_REFERENCES.as_str(),
+                        route: route_name.as_str(),
                         scope: RouteScope::WORKSPACE.as_str(),
                         scope_key: workspace_root_uri,
                         provider: extraction.provider.as_str(),
@@ -663,10 +706,17 @@ impl ExtractionPersister {
         file_scope_key: &str,
         extraction: &ReferenceBatchExtraction,
     ) -> ExtractResult<PersistenceSummary> {
+        let language = document_symbol_batch_language(
+            extraction.provider.as_str(),
+            "textDocument/references",
+            &extraction.document_symbols,
+        )?;
+        let route_name = RouteName::references_for_language(language);
         let file_id = self
             .existing_file_id_for_uri(
                 store,
                 workspace_id,
+                language,
                 extraction.provider.as_str(),
                 "textDocument/references",
                 file_scope_key,
@@ -676,6 +726,7 @@ impl ExtractionPersister {
             .reference_file_extraction_with_existing_nodes(
                 store,
                 workspace_id,
+                language,
                 file_scope_key,
                 extraction,
             )
@@ -684,6 +735,7 @@ impl ExtractionPersister {
             .reference_file_extraction_with_existing_files(
                 store,
                 workspace_id,
+                language,
                 file_scope_key,
                 &extraction,
             )
@@ -699,7 +751,7 @@ impl ExtractionPersister {
         store
             .start_route_status(RouteStatusStartInput {
                 workspace_id,
-                route: RouteName::RUST_REFERENCES.as_str(),
+                route: route_name.as_str(),
                 scope: RouteScope::FILE.as_str(),
                 scope_key: file_scope_key,
                 file_id: Some(file_id),
@@ -715,11 +767,14 @@ impl ExtractionPersister {
         let result = self
             .persist_references_after_scoped_route_started(
                 store,
-                workspace_id,
-                run_id,
+                PersistenceRun {
+                    workspace_id,
+                    run_id,
+                },
                 ScopedRoute::file(file_scope_key),
                 extraction,
                 &file_ids,
+                language,
             )
             .await;
 
@@ -728,7 +783,7 @@ impl ExtractionPersister {
                 store
                     .complete_route_status(RouteStatusCompleteInput {
                         workspace_id,
-                        route: RouteName::RUST_REFERENCES.as_str(),
+                        route: route_name.as_str(),
                         scope: RouteScope::FILE.as_str(),
                         scope_key: file_scope_key,
                         provider: extraction.provider.as_str(),
@@ -752,7 +807,7 @@ impl ExtractionPersister {
                     .close_stale_edges_for_route(CloseStaleRouteInput {
                         workspace_id,
                         run_id,
-                        route: RouteName::RUST_REFERENCES.as_str(),
+                        route: route_name.as_str(),
                         scope: RouteScope::FILE.as_str(),
                         scope_key: file_scope_key,
                         provider: extraction.provider.as_str(),
@@ -769,7 +824,7 @@ impl ExtractionPersister {
                 store
                     .fail_route_status(RouteStatusFailInput {
                         workspace_id,
-                        route: RouteName::RUST_REFERENCES.as_str(),
+                        route: route_name.as_str(),
                         scope: RouteScope::FILE.as_str(),
                         scope_key: file_scope_key,
                         provider: extraction.provider.as_str(),
@@ -789,15 +844,15 @@ impl ExtractionPersister {
     async fn persist_references_after_scoped_route_started(
         &self,
         store: &WriteHandle,
-        workspace_id: i64,
-        run_id: i64,
+        run: PersistenceRun,
         route: ScopedRoute<'_>,
         extraction: &ReferenceBatchExtraction,
         file_ids: &HashMap<String, i64>,
+        language: GraphLanguage,
     ) -> ExtractResult<PersistenceSummary> {
         let mut summary = PersistenceSummary {
-            workspace_id,
-            run_id,
+            workspace_id: run.workspace_id,
+            run_id: run.run_id,
             files: 0,
             nodes: 0,
             edges: 0,
@@ -815,12 +870,7 @@ impl ExtractionPersister {
         for reference in &extraction.references {
             let reference_summary = self
                 .persist_reference_after_scoped_route_started(
-                    store,
-                    workspace_id,
-                    run_id,
-                    reference,
-                    file_ids,
-                    route,
+                    store, run, reference, file_ids, route, language,
                 )
                 .await?;
 
@@ -833,19 +883,19 @@ impl ExtractionPersister {
     pub async fn persist_reference_after_route_started(
         &self,
         store: &WriteHandle,
-        workspace_id: i64,
-        run_id: i64,
+        run: PersistenceRun,
         workspace_root_uri: &str,
         reference: &ExtractedReference,
         file_ids: &HashMap<String, i64>,
+        language: GraphLanguage,
     ) -> ExtractResult<PersistenceSummary> {
         self.persist_reference_after_scoped_route_started(
             store,
-            workspace_id,
-            run_id,
+            run,
             reference,
             file_ids,
             ScopedRoute::workspace(workspace_root_uri),
+            language,
         )
         .await
     }
@@ -853,16 +903,19 @@ impl ExtractionPersister {
     async fn persist_reference_after_scoped_route_started(
         &self,
         store: &WriteHandle,
-        workspace_id: i64,
-        run_id: i64,
+        run: PersistenceRun,
         reference: &ExtractedReference,
         file_ids: &HashMap<String, i64>,
         route: ScopedRoute<'_>,
+        language: GraphLanguage,
     ) -> ExtractResult<PersistenceSummary> {
         let provider = reference.provider.as_str();
+        let route_name = RouteName::references_for_language(language);
+        let lsp_method = reference_lsp_method(reference);
         self.require_node(
             store,
-            workspace_id,
+            run.workspace_id,
+            language,
             provider,
             "textDocument/references",
             &reference.source_symbol_key,
@@ -870,18 +923,27 @@ impl ExtractionPersister {
         .await?;
         self.require_node(
             store,
-            workspace_id,
+            run.workspace_id,
+            language,
             provider,
             "textDocument/references",
             &reference.target_symbol_key,
         )
         .await?;
 
-        let source_node_id = node_id(workspace_id, "rust", &reference.source_symbol_key);
-        let target_node_id = node_id(workspace_id, "rust", &reference.target_symbol_key);
+        let source_node_id = node_id(
+            run.workspace_id,
+            language.as_store_str(),
+            &reference.source_symbol_key,
+        );
+        let target_node_id = node_id(
+            run.workspace_id,
+            language.as_store_str(),
+            &reference.target_symbol_key,
+        );
         let edge_id = store
             .upsert_edge(EdgeInput {
-                workspace_id,
+                workspace_id: run.workspace_id,
                 src_node_id: &source_node_id,
                 dst_node_id: &target_node_id,
                 relation: "references",
@@ -891,17 +953,17 @@ impl ExtractionPersister {
                 weight: reference.occurrences.len() as f64,
                 properties_json: json!({
                     "provider": reference.provider.as_str(),
-                    "route": RouteName::RUST_REFERENCES.as_str(),
+                    "route": route_name.as_str(),
                     "source_resolution": reference.source_resolution,
                     "source_symbol_key": reference.source_symbol_key,
                     "target_symbol_key": reference.target_symbol_key,
                 }),
-                run_id: Some(run_id),
+                run_id: Some(run.run_id),
             })
             .await
             .map_err(ExtractError::storage)?;
 
-        let mut summary = empty_summary(workspace_id, run_id);
+        let mut summary = empty_summary(run.workspace_id, run.run_id);
         summary.edges += 1;
         summary.reference_edges += 1;
 
@@ -919,12 +981,12 @@ impl ExtractionPersister {
             let enclosing_node_id = occurrence
                 .enclosing_symbol_key
                 .as_ref()
-                .map(|symbol_key| node_id(workspace_id, "rust", symbol_key));
+                .map(|symbol_key| node_id(run.workspace_id, language.as_store_str(), symbol_key));
 
             store
                 .insert_occurrence(OccurrenceInput {
                     node_id: &target_node_id,
-                    run_id,
+                    run_id: run.run_id,
                     file_id,
                     role: "reference",
                     range: occurrence.range,
@@ -936,9 +998,9 @@ impl ExtractionPersister {
             store
                 .insert_edge_evidence(EdgeEvidenceInput {
                     edge_id: &edge_id,
-                    run_id,
+                    run_id: run.run_id,
                     provider: reference.provider.as_str(),
-                    lsp_method: Some("textDocument/references"),
+                    lsp_method: Some(&lsp_method),
                     file_id: Some(file_id),
                     range: Some(occurrence.range),
                     raw_json: Some(json!({
@@ -950,9 +1012,9 @@ impl ExtractionPersister {
                 .map_err(ExtractError::storage)?;
             store
                 .record_route_observation(RouteObservationInput {
-                    workspace_id,
-                    run_id,
-                    route: RouteName::RUST_REFERENCES.as_str(),
+                    workspace_id: run.workspace_id,
+                    run_id: run.run_id,
+                    route: route_name.as_str(),
                     scope: route.scope,
                     scope_key: route.scope_key,
                     provider,
@@ -960,7 +1022,7 @@ impl ExtractionPersister {
                     entity_id: &edge_id,
                     source_file_id: Some(file_id),
                     properties_json: json!({
-                        "source": "textDocument/references",
+                        "source": lsp_method,
                         "source_resolution": reference.source_resolution,
                     }),
                 })
@@ -1044,22 +1106,16 @@ impl ExtractionPersister {
         workspace_root_uri: &str,
         extraction: &CallBatchExtraction,
     ) -> ExtractResult<PersistenceSummary> {
-        let _first_extraction =
-            extraction
-                .document_symbols
-                .extractions
-                .first()
-                .ok_or_else(|| {
-                    ExtractError::response_shape(
-                        extraction.provider.as_str(),
-                        "callHierarchy/outgoingCalls",
-                        "call batch contained no document-symbol files",
-                    )
-                })?;
+        let language = document_symbol_batch_language(
+            extraction.provider.as_str(),
+            "callHierarchy/outgoingCalls",
+            &extraction.document_symbols,
+        )?;
         let workspace_id = self
             .existing_workspace_id(
                 store,
                 workspace_root_uri,
+                language,
                 extraction.provider.as_str(),
                 "callHierarchy/outgoingCalls",
             )
@@ -1129,10 +1185,16 @@ impl ExtractionPersister {
         file_scope_key: &str,
         extraction: &CallBatchExtraction,
     ) -> ExtractResult<PersistenceSummary> {
+        let language = document_symbol_batch_language(
+            extraction.provider.as_str(),
+            "callHierarchy/outgoingCalls",
+            &extraction.document_symbols,
+        )?;
         let workspace_id = self
             .existing_workspace_id(
                 store,
                 workspace_root_uri,
+                language,
                 extraction.provider.as_str(),
                 "callHierarchy/outgoingCalls",
             )
@@ -1183,22 +1245,29 @@ impl ExtractionPersister {
         workspace_root_uri: &str,
         extraction: &CallBatchExtraction,
     ) -> ExtractResult<PersistenceSummary> {
+        let language = document_symbol_batch_language(
+            extraction.provider.as_str(),
+            "callHierarchy/outgoingCalls",
+            &extraction.document_symbols,
+        )?;
+        let route_name = RouteName::calls_for_language(language);
         let file_ids = self
             .existing_document_symbol_file_ids(
                 store,
                 workspace_id,
+                language,
                 extraction.provider.as_str(),
                 "callHierarchy/outgoingCalls",
                 &extraction.document_symbols,
             )
             .await?;
-        self.validate_call_nodes(store, workspace_id, extraction)
+        self.validate_call_nodes(store, workspace_id, language, extraction)
             .await?;
 
         store
             .start_route_status(RouteStatusStartInput {
                 workspace_id,
-                route: RouteName::RUST_CALLS.as_str(),
+                route: route_name.as_str(),
                 scope: RouteScope::WORKSPACE.as_str(),
                 scope_key: workspace_root_uri,
                 file_id: None,
@@ -1214,11 +1283,14 @@ impl ExtractionPersister {
         let result = self
             .persist_calls_after_scoped_route_started(
                 store,
-                workspace_id,
-                run_id,
+                PersistenceRun {
+                    workspace_id,
+                    run_id,
+                },
                 ScopedRoute::workspace(workspace_root_uri),
                 extraction,
                 &file_ids,
+                language,
             )
             .await;
 
@@ -1227,7 +1299,7 @@ impl ExtractionPersister {
                 store
                     .complete_route_status(RouteStatusCompleteInput {
                         workspace_id,
-                        route: RouteName::RUST_CALLS.as_str(),
+                        route: route_name.as_str(),
                         scope: RouteScope::WORKSPACE.as_str(),
                         scope_key: workspace_root_uri,
                         provider: extraction.provider.as_str(),
@@ -1249,7 +1321,7 @@ impl ExtractionPersister {
                     .close_stale_edges_for_route(CloseStaleRouteInput {
                         workspace_id,
                         run_id,
-                        route: RouteName::RUST_CALLS.as_str(),
+                        route: route_name.as_str(),
                         scope: RouteScope::WORKSPACE.as_str(),
                         scope_key: workspace_root_uri,
                         provider: extraction.provider.as_str(),
@@ -1266,7 +1338,7 @@ impl ExtractionPersister {
                 store
                     .fail_route_status(RouteStatusFailInput {
                         workspace_id,
-                        route: RouteName::RUST_CALLS.as_str(),
+                        route: route_name.as_str(),
                         scope: RouteScope::WORKSPACE.as_str(),
                         scope_key: workspace_root_uri,
                         provider: extraction.provider.as_str(),
@@ -1291,6 +1363,12 @@ impl ExtractionPersister {
         workspace_root_uri: &str,
         extraction: &CallBatchExtraction,
     ) -> ExtractResult<PersistenceSummary> {
+        let language = document_symbol_batch_language(
+            extraction.provider.as_str(),
+            "callHierarchy/outgoingCalls",
+            &extraction.document_symbols,
+        )?;
+        let route_name = RouteName::calls_for_language(language);
         let mut summary = self
             .persist_batch_after_run_started(
                 store,
@@ -1306,7 +1384,7 @@ impl ExtractionPersister {
         store
             .start_route_status(RouteStatusStartInput {
                 workspace_id,
-                route: RouteName::RUST_CALLS.as_str(),
+                route: route_name.as_str(),
                 scope: RouteScope::WORKSPACE.as_str(),
                 scope_key: workspace_root_uri,
                 file_id: None,
@@ -1322,11 +1400,14 @@ impl ExtractionPersister {
         let result = self
             .persist_calls_after_scoped_route_started(
                 store,
-                workspace_id,
-                run_id,
+                PersistenceRun {
+                    workspace_id,
+                    run_id,
+                },
                 ScopedRoute::workspace(workspace_root_uri),
                 extraction,
                 &file_ids,
+                language,
             )
             .await;
 
@@ -1335,7 +1416,7 @@ impl ExtractionPersister {
                 store
                     .complete_route_status(RouteStatusCompleteInput {
                         workspace_id,
-                        route: RouteName::RUST_CALLS.as_str(),
+                        route: route_name.as_str(),
                         scope: RouteScope::WORKSPACE.as_str(),
                         scope_key: workspace_root_uri,
                         provider: extraction.provider.as_str(),
@@ -1357,7 +1438,7 @@ impl ExtractionPersister {
                     .close_stale_edges_for_route(CloseStaleRouteInput {
                         workspace_id,
                         run_id,
-                        route: RouteName::RUST_CALLS.as_str(),
+                        route: route_name.as_str(),
                         scope: RouteScope::WORKSPACE.as_str(),
                         scope_key: workspace_root_uri,
                         provider: extraction.provider.as_str(),
@@ -1379,7 +1460,7 @@ impl ExtractionPersister {
                 store
                     .fail_route_status(RouteStatusFailInput {
                         workspace_id,
-                        route: RouteName::RUST_CALLS.as_str(),
+                        route: route_name.as_str(),
                         scope: RouteScope::WORKSPACE.as_str(),
                         scope_key: workspace_root_uri,
                         provider: extraction.provider.as_str(),
@@ -1404,10 +1485,17 @@ impl ExtractionPersister {
         file_scope_key: &str,
         extraction: &CallBatchExtraction,
     ) -> ExtractResult<PersistenceSummary> {
+        let language = document_symbol_batch_language(
+            extraction.provider.as_str(),
+            "callHierarchy/outgoingCalls",
+            &extraction.document_symbols,
+        )?;
+        let route_name = RouteName::calls_for_language(language);
         let file_id = self
             .existing_file_id_for_uri(
                 store,
                 workspace_id,
+                language,
                 extraction.provider.as_str(),
                 "callHierarchy/outgoingCalls",
                 file_scope_key,
@@ -1417,6 +1505,7 @@ impl ExtractionPersister {
             .call_file_extraction_with_existing_nodes(
                 store,
                 workspace_id,
+                language,
                 file_scope_key,
                 extraction,
             )
@@ -1425,6 +1514,7 @@ impl ExtractionPersister {
             .call_file_extraction_with_existing_files(
                 store,
                 workspace_id,
+                language,
                 file_scope_key,
                 &extraction,
             )
@@ -1440,7 +1530,7 @@ impl ExtractionPersister {
         store
             .start_route_status(RouteStatusStartInput {
                 workspace_id,
-                route: RouteName::RUST_CALLS.as_str(),
+                route: route_name.as_str(),
                 scope: RouteScope::FILE.as_str(),
                 scope_key: file_scope_key,
                 file_id: Some(file_id),
@@ -1456,11 +1546,14 @@ impl ExtractionPersister {
         let result = self
             .persist_calls_after_scoped_route_started(
                 store,
-                workspace_id,
-                run_id,
+                PersistenceRun {
+                    workspace_id,
+                    run_id,
+                },
                 ScopedRoute::file(file_scope_key),
                 extraction,
                 &file_ids,
+                language,
             )
             .await;
 
@@ -1469,7 +1562,7 @@ impl ExtractionPersister {
                 store
                     .complete_route_status(RouteStatusCompleteInput {
                         workspace_id,
-                        route: RouteName::RUST_CALLS.as_str(),
+                        route: route_name.as_str(),
                         scope: RouteScope::FILE.as_str(),
                         scope_key: file_scope_key,
                         provider: extraction.provider.as_str(),
@@ -1494,7 +1587,7 @@ impl ExtractionPersister {
                     .close_stale_edges_for_route(CloseStaleRouteInput {
                         workspace_id,
                         run_id,
-                        route: RouteName::RUST_CALLS.as_str(),
+                        route: route_name.as_str(),
                         scope: RouteScope::FILE.as_str(),
                         scope_key: file_scope_key,
                         provider: extraction.provider.as_str(),
@@ -1511,7 +1604,7 @@ impl ExtractionPersister {
                 store
                     .fail_route_status(RouteStatusFailInput {
                         workspace_id,
-                        route: RouteName::RUST_CALLS.as_str(),
+                        route: route_name.as_str(),
                         scope: RouteScope::FILE.as_str(),
                         scope_key: file_scope_key,
                         provider: extraction.provider.as_str(),
@@ -1531,15 +1624,15 @@ impl ExtractionPersister {
     async fn persist_calls_after_scoped_route_started(
         &self,
         store: &WriteHandle,
-        workspace_id: i64,
-        run_id: i64,
+        run: PersistenceRun,
         route: ScopedRoute<'_>,
         extraction: &CallBatchExtraction,
         file_ids: &HashMap<String, i64>,
+        language: GraphLanguage,
     ) -> ExtractResult<PersistenceSummary> {
         let mut summary = PersistenceSummary {
-            workspace_id,
-            run_id,
+            workspace_id: run.workspace_id,
+            run_id: run.run_id,
             files: 0,
             nodes: 0,
             edges: 0,
@@ -1557,12 +1650,7 @@ impl ExtractionPersister {
         for call in &extraction.calls {
             let call_summary = self
                 .persist_call_after_scoped_route_started(
-                    store,
-                    workspace_id,
-                    run_id,
-                    call,
-                    file_ids,
-                    route,
+                    store, run, call, file_ids, route, language,
                 )
                 .await?;
 
@@ -1575,19 +1663,19 @@ impl ExtractionPersister {
     pub async fn persist_call_after_route_started(
         &self,
         store: &WriteHandle,
-        workspace_id: i64,
-        run_id: i64,
+        run: PersistenceRun,
         workspace_root_uri: &str,
         call: &ExtractedCall,
         file_ids: &HashMap<String, i64>,
+        language: GraphLanguage,
     ) -> ExtractResult<PersistenceSummary> {
         self.persist_call_after_scoped_route_started(
             store,
-            workspace_id,
-            run_id,
+            run,
             call,
             file_ids,
             ScopedRoute::workspace(workspace_root_uri),
+            language,
         )
         .await
     }
@@ -1595,16 +1683,19 @@ impl ExtractionPersister {
     async fn persist_call_after_scoped_route_started(
         &self,
         store: &WriteHandle,
-        workspace_id: i64,
-        run_id: i64,
+        run: PersistenceRun,
         call: &ExtractedCall,
         file_ids: &HashMap<String, i64>,
         route: ScopedRoute<'_>,
+        language: GraphLanguage,
     ) -> ExtractResult<PersistenceSummary> {
         let provider = call.provider.as_str();
+        let route_name = RouteName::calls_for_language(language);
+        let lsp_method = call_lsp_method(call);
         self.require_node(
             store,
-            workspace_id,
+            run.workspace_id,
+            language,
             provider,
             "callHierarchy/outgoingCalls",
             &call.caller_symbol_key,
@@ -1612,18 +1703,27 @@ impl ExtractionPersister {
         .await?;
         self.require_node(
             store,
-            workspace_id,
+            run.workspace_id,
+            language,
             provider,
             "callHierarchy/outgoingCalls",
             &call.callee_symbol_key,
         )
         .await?;
 
-        let caller_node_id = node_id(workspace_id, "rust", &call.caller_symbol_key);
-        let callee_node_id = node_id(workspace_id, "rust", &call.callee_symbol_key);
+        let caller_node_id = node_id(
+            run.workspace_id,
+            language.as_store_str(),
+            &call.caller_symbol_key,
+        );
+        let callee_node_id = node_id(
+            run.workspace_id,
+            language.as_store_str(),
+            &call.callee_symbol_key,
+        );
         let edge_id = store
             .upsert_edge(EdgeInput {
-                workspace_id,
+                workspace_id: run.workspace_id,
                 src_node_id: &caller_node_id,
                 dst_node_id: &callee_node_id,
                 relation: "calls",
@@ -1633,16 +1733,16 @@ impl ExtractionPersister {
                 weight: call.occurrences.len() as f64,
                 properties_json: json!({
                     "provider": call.provider.as_str(),
-                    "route": RouteName::RUST_CALLS.as_str(),
+                    "route": route_name.as_str(),
                     "caller_symbol_key": call.caller_symbol_key,
                     "callee_symbol_key": call.callee_symbol_key,
                 }),
-                run_id: Some(run_id),
+                run_id: Some(run.run_id),
             })
             .await
             .map_err(ExtractError::storage)?;
 
-        let mut summary = empty_summary(workspace_id, run_id);
+        let mut summary = empty_summary(run.workspace_id, run.run_id);
         summary.edges += 1;
         summary.call_edges += 1;
 
@@ -1657,12 +1757,16 @@ impl ExtractionPersister {
                     ),
                 )
             })?;
-            let enclosing_node_id = node_id(workspace_id, "rust", &occurrence.enclosing_symbol_key);
+            let enclosing_node_id = node_id(
+                run.workspace_id,
+                language.as_store_str(),
+                &occurrence.enclosing_symbol_key,
+            );
 
             store
                 .insert_occurrence(OccurrenceInput {
                     node_id: &callee_node_id,
-                    run_id,
+                    run_id: run.run_id,
                     file_id,
                     role: "call",
                     range: occurrence.range,
@@ -1674,9 +1778,9 @@ impl ExtractionPersister {
             store
                 .insert_edge_evidence(EdgeEvidenceInput {
                     edge_id: &edge_id,
-                    run_id,
+                    run_id: run.run_id,
                     provider: call.provider.as_str(),
-                    lsp_method: Some("callHierarchy/outgoingCalls"),
+                    lsp_method: Some(&lsp_method),
                     file_id: Some(file_id),
                     range: Some(occurrence.range),
                     raw_json: Some(json!({
@@ -1688,9 +1792,9 @@ impl ExtractionPersister {
                 .map_err(ExtractError::storage)?;
             store
                 .record_route_observation(RouteObservationInput {
-                    workspace_id,
-                    run_id,
-                    route: RouteName::RUST_CALLS.as_str(),
+                    workspace_id: run.workspace_id,
+                    run_id: run.run_id,
+                    route: route_name.as_str(),
                     scope: route.scope,
                     scope_key: route.scope_key,
                     provider,
@@ -1698,7 +1802,7 @@ impl ExtractionPersister {
                     entity_id: &edge_id,
                     source_file_id: Some(file_id),
                     properties_json: json!({
-                        "source": "callHierarchy/outgoingCalls",
+                        "source": lsp_method,
                         "context": call.context,
                     }),
                 })
@@ -1748,6 +1852,7 @@ impl ExtractionPersister {
         &self,
         store: &WriteHandle,
         workspace_root_uri: &str,
+        language: GraphLanguage,
         provider: &str,
         method: &str,
     ) -> ExtractResult<i64> {
@@ -1760,7 +1865,8 @@ impl ExtractionPersister {
                     provider,
                     method,
                     format!(
-                        "workspace {workspace_root_uri} is missing; run rust-workspace --symbols, rust-crate --symbols, or rust-file --symbols first"
+                        "workspace {workspace_root_uri} is missing; run {} first",
+                        symbol_prerequisite_commands(language)
                     ),
                 )
             })
@@ -1770,6 +1876,7 @@ impl ExtractionPersister {
         &self,
         store: &WriteHandle,
         workspace_id: i64,
+        language: GraphLanguage,
         provider: &str,
         method: &str,
         extraction: &DocumentSymbolBatchExtraction,
@@ -1785,8 +1892,9 @@ impl ExtractionPersister {
                         provider,
                         method,
                         format!(
-                            "source file {} is missing from the database; run rust-workspace --symbols, rust-crate --symbols, or rust-file --symbols first",
-                            file_extraction.source_file.uri
+                            "source file {} is missing from the database; run {} first",
+                            file_extraction.source_file.uri,
+                            symbol_prerequisite_commands(language)
                         ),
                     )
                 })?;
@@ -1800,6 +1908,7 @@ impl ExtractionPersister {
         &self,
         store: &WriteHandle,
         workspace_id: i64,
+        language: GraphLanguage,
         provider: &str,
         method: &str,
         file_uri: &str,
@@ -1813,7 +1922,8 @@ impl ExtractionPersister {
                     provider,
                     method,
                     format!(
-                        "source file {file_uri} is missing from the database; run rust-workspace --symbols, rust-crate --symbols, or rust-file --symbols first"
+                        "source file {file_uri} is missing from the database; run {} first",
+                        symbol_prerequisite_commands(language)
                     ),
                 )
             })
@@ -1823,6 +1933,7 @@ impl ExtractionPersister {
         &self,
         store: &WriteHandle,
         workspace_id: i64,
+        language: GraphLanguage,
         file_scope_key: &str,
         extraction: &ReferenceBatchExtraction,
     ) -> ExtractResult<(ReferenceBatchExtraction, usize, usize)> {
@@ -1833,13 +1944,14 @@ impl ExtractionPersister {
 
         for reference in &extraction.references {
             if !self
-                .node_exists_for_symbol(store, workspace_id, &reference.source_symbol_key)
+                .node_exists_for_symbol(store, workspace_id, language, &reference.source_symbol_key)
                 .await?
             {
                 if symbol_key_belongs_to_file(&reference.source_symbol_key, file_scope_key) {
                     self.require_node(
                         store,
                         workspace_id,
+                        language,
                         extraction.provider.as_str(),
                         "textDocument/references",
                         &reference.source_symbol_key,
@@ -1852,7 +1964,7 @@ impl ExtractionPersister {
             }
 
             if self
-                .node_exists_for_symbol(store, workspace_id, &reference.target_symbol_key)
+                .node_exists_for_symbol(store, workspace_id, language, &reference.target_symbol_key)
                 .await?
             {
                 references.push(reference.clone());
@@ -1860,6 +1972,7 @@ impl ExtractionPersister {
                 self.require_node(
                     store,
                     workspace_id,
+                    language,
                     extraction.provider.as_str(),
                     "textDocument/references",
                     &reference.target_symbol_key,
@@ -1882,6 +1995,7 @@ impl ExtractionPersister {
         &self,
         store: &WriteHandle,
         workspace_id: i64,
+        language: GraphLanguage,
         file_scope_key: &str,
         extraction: &ReferenceBatchExtraction,
     ) -> ExtractResult<(ReferenceBatchExtraction, HashMap<String, i64>, usize)> {
@@ -1890,6 +2004,7 @@ impl ExtractionPersister {
             .existing_file_id_for_uri(
                 store,
                 workspace_id,
+                language,
                 extraction.provider.as_str(),
                 "textDocument/references",
                 file_scope_key,
@@ -1940,6 +2055,7 @@ impl ExtractionPersister {
         &self,
         store: &WriteHandle,
         workspace_id: i64,
+        language: GraphLanguage,
         file_scope_key: &str,
         extraction: &CallBatchExtraction,
     ) -> ExtractResult<(CallBatchExtraction, usize, usize)> {
@@ -1950,13 +2066,14 @@ impl ExtractionPersister {
 
         for call in &extraction.calls {
             if !self
-                .node_exists_for_symbol(store, workspace_id, &call.caller_symbol_key)
+                .node_exists_for_symbol(store, workspace_id, language, &call.caller_symbol_key)
                 .await?
             {
                 if symbol_key_belongs_to_file(&call.caller_symbol_key, file_scope_key) {
                     self.require_node(
                         store,
                         workspace_id,
+                        language,
                         extraction.provider.as_str(),
                         "callHierarchy/outgoingCalls",
                         &call.caller_symbol_key,
@@ -1969,7 +2086,7 @@ impl ExtractionPersister {
             }
 
             if self
-                .node_exists_for_symbol(store, workspace_id, &call.callee_symbol_key)
+                .node_exists_for_symbol(store, workspace_id, language, &call.callee_symbol_key)
                 .await?
             {
                 calls.push(call.clone());
@@ -1977,6 +2094,7 @@ impl ExtractionPersister {
                 self.require_node(
                     store,
                     workspace_id,
+                    language,
                     extraction.provider.as_str(),
                     "callHierarchy/outgoingCalls",
                     &call.callee_symbol_key,
@@ -1999,6 +2117,7 @@ impl ExtractionPersister {
         &self,
         store: &WriteHandle,
         workspace_id: i64,
+        language: GraphLanguage,
         file_scope_key: &str,
         extraction: &CallBatchExtraction,
     ) -> ExtractResult<(CallBatchExtraction, HashMap<String, i64>, usize)> {
@@ -2007,6 +2126,7 @@ impl ExtractionPersister {
             .existing_file_id_for_uri(
                 store,
                 workspace_id,
+                language,
                 extraction.provider.as_str(),
                 "callHierarchy/outgoingCalls",
                 file_scope_key,
@@ -2057,12 +2177,14 @@ impl ExtractionPersister {
         &self,
         store: &WriteHandle,
         workspace_id: i64,
+        language: GraphLanguage,
         extraction: &ReferenceBatchExtraction,
     ) -> ExtractResult<()> {
         for reference in &extraction.references {
             self.require_node(
                 store,
                 workspace_id,
+                language,
                 extraction.provider.as_str(),
                 "textDocument/references",
                 &reference.source_symbol_key,
@@ -2071,6 +2193,7 @@ impl ExtractionPersister {
             self.require_node(
                 store,
                 workspace_id,
+                language,
                 extraction.provider.as_str(),
                 "textDocument/references",
                 &reference.target_symbol_key,
@@ -2085,12 +2208,14 @@ impl ExtractionPersister {
         &self,
         store: &WriteHandle,
         workspace_id: i64,
+        language: GraphLanguage,
         extraction: &CallBatchExtraction,
     ) -> ExtractResult<()> {
         for call in &extraction.calls {
             self.require_node(
                 store,
                 workspace_id,
+                language,
                 extraction.provider.as_str(),
                 "callHierarchy/outgoingCalls",
                 &call.caller_symbol_key,
@@ -2099,6 +2224,7 @@ impl ExtractionPersister {
             self.require_node(
                 store,
                 workspace_id,
+                language,
                 extraction.provider.as_str(),
                 "callHierarchy/outgoingCalls",
                 &call.callee_symbol_key,
@@ -2113,11 +2239,12 @@ impl ExtractionPersister {
         &self,
         store: &WriteHandle,
         workspace_id: i64,
+        language: GraphLanguage,
         provider: &str,
         method: &str,
         symbol_key: &str,
     ) -> ExtractResult<()> {
-        let id = node_id(workspace_id, "rust", symbol_key);
+        let id = node_id(workspace_id, language.as_store_str(), symbol_key);
         if store
             .node_exists(&id)
             .await
@@ -2130,7 +2257,8 @@ impl ExtractionPersister {
             provider,
             method,
             format!(
-                "symbol node {symbol_key} is missing from the database; run rust-workspace --symbols, rust-crate --symbols, or rust-file --symbols first"
+                "symbol node {symbol_key} is missing from the database; run {} first",
+                symbol_prerequisite_commands(language)
             ),
         ))
     }
@@ -2139,9 +2267,10 @@ impl ExtractionPersister {
         &self,
         store: &WriteHandle,
         workspace_id: i64,
+        language: GraphLanguage,
         symbol_key: &str,
     ) -> ExtractResult<bool> {
-        let id = node_id(workspace_id, "rust", symbol_key);
+        let id = node_id(workspace_id, language.as_store_str(), symbol_key);
         store.node_exists(&id).await.map_err(ExtractError::storage)
     }
 
@@ -2197,6 +2326,7 @@ impl ExtractionPersister {
         run_id: i64,
         extraction: &DocumentSymbolExtraction,
     ) -> ExtractResult<PersistenceSummary> {
+        let route_name = RouteName::document_symbols_for_language(extraction.source_file.language);
         let file_id = store
             .upsert_file(FileInput {
                 workspace_id,
@@ -2217,7 +2347,7 @@ impl ExtractionPersister {
         store
             .start_route_status(RouteStatusStartInput {
                 workspace_id,
-                route: RouteName::RUST_DOCUMENT_SYMBOLS.as_str(),
+                route: route_name.as_str(),
                 scope: RouteScope::FILE.as_str(),
                 scope_key: &extraction.source_file.uri,
                 file_id: Some(file_id),
@@ -2239,7 +2369,7 @@ impl ExtractionPersister {
                 store
                     .complete_route_status(RouteStatusCompleteInput {
                         workspace_id,
-                        route: RouteName::RUST_DOCUMENT_SYMBOLS.as_str(),
+                        route: route_name.as_str(),
                         scope: RouteScope::FILE.as_str(),
                         scope_key: &extraction.source_file.uri,
                         provider: extraction.provider.as_str(),
@@ -2261,7 +2391,7 @@ impl ExtractionPersister {
                     .close_stale_nodes_for_route(CloseStaleRouteInput {
                         workspace_id,
                         run_id,
-                        route: RouteName::RUST_DOCUMENT_SYMBOLS.as_str(),
+                        route: route_name.as_str(),
                         scope: RouteScope::FILE.as_str(),
                         scope_key: &extraction.source_file.uri,
                         provider: extraction.provider.as_str(),
@@ -2272,7 +2402,7 @@ impl ExtractionPersister {
                     .close_stale_edges_for_route(CloseStaleRouteInput {
                         workspace_id,
                         run_id,
-                        route: RouteName::RUST_DOCUMENT_SYMBOLS.as_str(),
+                        route: route_name.as_str(),
                         scope: RouteScope::FILE.as_str(),
                         scope_key: &extraction.source_file.uri,
                         provider: extraction.provider.as_str(),
@@ -2289,7 +2419,7 @@ impl ExtractionPersister {
                 store
                     .fail_route_status(RouteStatusFailInput {
                         workspace_id,
-                        route: RouteName::RUST_DOCUMENT_SYMBOLS.as_str(),
+                        route: route_name.as_str(),
                         scope: RouteScope::FILE.as_str(),
                         scope_key: &extraction.source_file.uri,
                         provider: extraction.provider.as_str(),
@@ -2527,11 +2657,12 @@ impl ExtractionPersister {
         extraction: &DocumentSymbolExtraction,
         node_id: &str,
     ) -> ExtractResult<()> {
+        let route_name = RouteName::document_symbols_for_language(extraction.source_file.language);
         store
             .record_route_observation(RouteObservationInput {
                 workspace_id,
                 run_id,
-                route: RouteName::RUST_DOCUMENT_SYMBOLS.as_str(),
+                route: route_name.as_str(),
                 scope: RouteScope::FILE.as_str(),
                 scope_key: &extraction.source_file.uri,
                 provider: extraction.provider.as_str(),
@@ -2555,11 +2686,12 @@ impl ExtractionPersister {
         extraction: &DocumentSymbolExtraction,
         edge_id: &str,
     ) -> ExtractResult<()> {
+        let route_name = RouteName::document_symbols_for_language(extraction.source_file.language);
         store
             .record_route_observation(RouteObservationInput {
                 workspace_id,
                 run_id,
-                route: RouteName::RUST_DOCUMENT_SYMBOLS.as_str(),
+                route: route_name.as_str(),
                 scope: RouteScope::FILE.as_str(),
                 scope_key: &extraction.source_file.uri,
                 provider: extraction.provider.as_str(),
@@ -2624,6 +2756,63 @@ fn symbol_properties_json(symbol: &crate::model::ExtractedSymbol) -> Value {
         "detail": symbol.detail.as_deref(),
         "raw": symbol.raw_json,
     })
+}
+
+fn document_symbol_batch_language(
+    provider: &str,
+    method: &str,
+    extraction: &DocumentSymbolBatchExtraction,
+) -> ExtractResult<GraphLanguage> {
+    let first_language = extraction
+        .extractions
+        .first()
+        .map(|file_extraction| file_extraction.source_file.language)
+        .ok_or_else(|| {
+            ExtractError::response_shape(
+                provider,
+                method,
+                "relation batch contained no document-symbol files",
+            )
+        })?;
+
+    for file_extraction in &extraction.extractions {
+        if file_extraction.source_file.language != first_language {
+            return Err(ExtractError::response_shape(
+                provider,
+                method,
+                "relation batch contained mixed source languages",
+            ));
+        }
+    }
+
+    Ok(first_language)
+}
+
+fn symbol_prerequisite_commands(language: GraphLanguage) -> &'static str {
+    match language {
+        GraphLanguage::Rust => {
+            "rust-workspace --symbols, rust-crate --symbols, or rust-file --symbols"
+        }
+        GraphLanguage::CSharp => {
+            "csharp-solution --symbols, csharp-project --symbols, or csharp-file --symbols"
+        }
+    }
+}
+
+fn reference_lsp_method(reference: &ExtractedReference) -> String {
+    lsp_method_from_raw(&reference.raw_json, "textDocument/references")
+}
+
+fn call_lsp_method(call: &ExtractedCall) -> String {
+    lsp_method_from_raw(&call.raw_json, "callHierarchy/outgoingCalls")
+}
+
+fn lsp_method_from_raw(raw_json: &Value, default_method: &str) -> String {
+    raw_json
+        .get("lsp_method")
+        .and_then(Value::as_str)
+        .unwrap_or(default_method)
+        .to_string()
 }
 
 fn empty_summary(workspace_id: i64, run_id: i64) -> PersistenceSummary {

@@ -1,6 +1,6 @@
 use crate::{
     ConfigError, ExtractorMode, LoadOptions, ResolvedDatabasePathSource, discover_config,
-    load_config, resolve_database_path,
+    ensure_config_with_csharp_defaults, load_config, resolve_database_path,
 };
 
 use std::{
@@ -29,6 +29,13 @@ fn parses_valid_config() -> Result<(), Box<dyn Error>> {
     assert_eq!(config.writer().max_rows_per_commit(), 1000);
     assert_eq!(config.writer().max_millis_per_commit(), 250);
     assert_eq!(config.writer().busy_timeout_ms(), 5000);
+    assert_eq!(config.csharp().binary(), &PathBuf::from("csharp-ls"));
+    assert_eq!(config.csharp().solution(), None);
+    assert_eq!(config.csharp().log_level(), "warning");
+    assert_eq!(config.csharp().features(), &[] as &[String]);
+    assert_eq!(config.csharp().analysis_workers(), 1);
+    assert_eq!(config.csharp().startup_timeout_ms(), 120000);
+    assert_eq!(config.csharp().request_timeout_ms(), 30000);
     Ok(())
 }
 
@@ -143,6 +150,118 @@ busy_timeout_ms = 2500
     assert_eq!(config.writer().max_rows_per_commit(), 64);
     assert_eq!(config.writer().max_millis_per_commit(), 50);
     assert_eq!(config.writer().busy_timeout_ms(), 2500);
+    Ok(())
+}
+
+#[test]
+fn parses_csharp_config() -> Result<(), Box<dyn Error>> {
+    let root = temp_dir("parses-csharp-config")?;
+    let config_dir = root.join(".refactor-radar");
+    fs::create_dir_all(&config_dir)?;
+    let config_path = config_dir.join("config.toml");
+    fs::write(
+        &config_path,
+        r#"
+[database]
+path = ".local/test.db"
+
+[csharp]
+binary = "/tmp/csharp-ls"
+solution = "Demo.slnx"
+log_level = "debug"
+features = ["metadata-uris"]
+analysis_workers = 3
+startup_timeout_ms = 5000
+request_timeout_ms = 1000
+"#,
+    )?;
+
+    let config = load_config(&config_path)?;
+
+    assert_eq!(config.csharp().binary(), &PathBuf::from("/tmp/csharp-ls"));
+    assert_eq!(
+        config.csharp().solution(),
+        Some(&PathBuf::from("Demo.slnx"))
+    );
+    assert_eq!(config.csharp().log_level(), "debug");
+    assert_eq!(config.csharp().features(), &["metadata-uris".to_string()]);
+    assert_eq!(config.csharp().analysis_workers(), 3);
+    assert_eq!(config.csharp().startup_timeout_ms(), 5000);
+    assert_eq!(config.csharp().request_timeout_ms(), 1000);
+    Ok(())
+}
+
+#[test]
+fn rejects_invalid_csharp_analysis_workers() -> Result<(), Box<dyn Error>> {
+    let root = temp_dir("rejects-invalid-csharp-workers")?;
+    let config_dir = root.join(".refactor-radar");
+    fs::create_dir_all(&config_dir)?;
+    let config_path = config_dir.join("config.toml");
+    fs::write(
+        &config_path,
+        r#"
+[database]
+path = ".local/test.db"
+
+[csharp]
+analysis_workers = 0
+"#,
+    )?;
+
+    let error = load_config(&config_path)
+        .err()
+        .ok_or("expected config error")?;
+
+    assert!(matches!(error, ConfigError::InvalidCSharpSetting { .. }));
+    Ok(())
+}
+
+#[test]
+fn rejects_invalid_csharp_timeouts() -> Result<(), Box<dyn Error>> {
+    let root = temp_dir("rejects-invalid-csharp-timeouts")?;
+    let config_dir = root.join(".refactor-radar");
+    fs::create_dir_all(&config_dir)?;
+    let config_path = config_dir.join("config.toml");
+    fs::write(
+        &config_path,
+        r#"
+[database]
+path = ".local/test.db"
+
+[csharp]
+startup_timeout_ms = 0
+"#,
+    )?;
+
+    let error = load_config(&config_path)
+        .err()
+        .ok_or("expected config error")?;
+
+    assert!(matches!(error, ConfigError::InvalidCSharpSetting { .. }));
+    Ok(())
+}
+
+#[test]
+fn ignores_extractor_workers_for_csharp_defaults() -> Result<(), Box<dyn Error>> {
+    let root = temp_dir("ignores-extractor-workers-for-csharp")?;
+    let config_dir = root.join(".refactor-radar");
+    fs::create_dir_all(&config_dir)?;
+    let config_path = config_dir.join("config.toml");
+    fs::write(
+        &config_path,
+        r#"
+[database]
+path = ".local/test.db"
+
+[extractor]
+analysis_workers = 7
+"#,
+    )?;
+
+    let config = load_config(&config_path)?;
+
+    assert_eq!(config.extractor().analysis_workers(), Some(7));
+    assert_eq!(config.csharp().analysis_workers(), 1);
     Ok(())
 }
 
@@ -286,6 +405,77 @@ fn missing_config_and_database_path_returns_typed_error() -> Result<(), Box<dyn 
     .ok_or("expected missing database path error")?;
 
     assert!(matches!(error, ConfigError::MissingDatabasePath { .. }));
+    Ok(())
+}
+
+#[test]
+fn creates_default_config_template_when_missing() -> Result<(), Box<dyn Error>> {
+    let root = temp_dir("creates-default-config-template")?;
+    let config_path = root.join(".refactor-radar/config.toml");
+
+    ensure_config_with_csharp_defaults(&config_path)?;
+
+    let contents = fs::read_to_string(&config_path)?;
+    assert!(contents.contains("[database]"));
+    assert!(contents.contains("[writer]"));
+    assert!(contents.contains("[csharp]"));
+    assert!(contents.contains("solution = \"SemanticGraph.Visualizer.slnx\""));
+
+    let config = load_config(&config_path)?;
+    assert_eq!(
+        config.csharp().solution(),
+        Some(&PathBuf::from("SemanticGraph.Visualizer.slnx"))
+    );
+    Ok(())
+}
+
+#[test]
+fn adds_missing_csharp_table_without_changing_existing_values() -> Result<(), Box<dyn Error>> {
+    let root = temp_dir("adds-missing-csharp-table")?;
+    let config_path = write_config(&root, "path = \".local/custom.db\"")?;
+
+    ensure_config_with_csharp_defaults(&config_path)?;
+
+    let contents = fs::read_to_string(&config_path)?;
+    assert!(contents.contains("path = \".local/custom.db\""));
+    assert!(contents.contains("[csharp]"));
+    assert!(contents.contains("binary = \"csharp-ls\""));
+    assert!(contents.contains("request_timeout_ms = 30000"));
+    Ok(())
+}
+
+#[test]
+fn adds_missing_csharp_keys_without_overwriting_existing_values() -> Result<(), Box<dyn Error>> {
+    let root = temp_dir("adds-missing-csharp-keys")?;
+    let config_dir = root.join(".refactor-radar");
+    fs::create_dir_all(&config_dir)?;
+    let config_path = config_dir.join("config.toml");
+    fs::write(
+        &config_path,
+        r#"
+[database]
+path = ".local/custom.db"
+
+[csharp]
+binary = "/custom/csharp-ls"
+analysis_workers = 5
+"#,
+    )?;
+
+    ensure_config_with_csharp_defaults(&config_path)?;
+
+    let contents = fs::read_to_string(&config_path)?;
+    assert!(contents.contains("binary = \"/custom/csharp-ls\""));
+    assert!(contents.contains("analysis_workers = 5"));
+    assert!(contents.contains("solution = \"SemanticGraph.Visualizer.slnx\""));
+    assert!(contents.contains("startup_timeout_ms = 120000"));
+
+    let config = load_config(&config_path)?;
+    assert_eq!(
+        config.csharp().binary(),
+        &PathBuf::from("/custom/csharp-ls")
+    );
+    assert_eq!(config.csharp().analysis_workers(), 5);
     Ok(())
 }
 

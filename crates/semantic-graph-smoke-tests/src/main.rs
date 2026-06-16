@@ -10,6 +10,7 @@ use semantic_graph_extract::model::{
     CallBatchRequest, DocumentSymbolBatchRequest, ReferenceBatchRequest,
 };
 use semantic_graph_extract::persist::ExtractionPersister;
+use semantic_graph_extract::providers::csharp_ls::CSharpLsProvider;
 use semantic_graph_extract::providers::rust_analyzer::RustAnalyzerProvider;
 
 #[tokio::main]
@@ -469,7 +470,243 @@ async fn run() -> Result<(), Box<dyn Error>> {
         "call persistence completed only the calls route",
     )?;
 
-    println!("PASS semantic-graph rust route smoke");
+    run_csharp_solution_smoke(&workspace_root).await?;
+
+    println!("PASS semantic-graph route smoke");
+    Ok(())
+}
+
+async fn run_csharp_solution_smoke(repo_root: &Path) -> Result<(), Box<dyn Error>> {
+    let solution_path = repo_root.join("__SmokeTestAssets__/csharp-wip/CSharpWip.sln");
+    let workspace_root = solution_path
+        .parent()
+        .ok_or_else(|| io::Error::other("C# fixture solution has no parent"))?
+        .to_path_buf();
+    let provider = CSharpLsProvider::new();
+
+    println!("csharp.solution.path={}", solution_path.display());
+    println!("csharp.workspace_root={}", workspace_root.display());
+
+    let model = csharp_ls_lib::load_solution(&solution_path)?;
+    let source_files = csharp_ls_lib::solution_source_files(&model);
+    let relative_files = relative_paths(&workspace_root, &source_files)?;
+    println!("csharp.solution.discovery.count={}", source_files.len());
+    for path in &relative_files {
+        println!("csharp.solution.discovery.file={path}");
+    }
+    ensure(
+        relative_files == ["Project/Worker.cs"],
+        "C# fixture source files matched expected module files",
+    )?;
+
+    let mut worker = csharp_ls_lib::CSharpLsWorker::start(
+        PathBuf::from("csharp-ls"),
+        solution_path.clone(),
+        "warning".to_string(),
+        Vec::new(),
+        30_000,
+        30_000,
+    )
+    .await?;
+
+    let document_items = worker
+        .document_symbols_for_files(source_files.clone())
+        .await?;
+    let document_request = DocumentSymbolBatchRequest {
+        workspace_root: workspace_root.clone(),
+        package_path: workspace_root.clone(),
+        file_paths: source_files,
+    };
+    let document_symbols =
+        provider.map_document_symbol_items(document_request.clone(), document_items)?;
+    let symbol_count = document_symbols
+        .extractions
+        .iter()
+        .map(|extraction| extraction.symbols.len())
+        .sum::<usize>();
+    println!(
+        "csharp.solution.symbols.files={}",
+        document_symbols.extractions.len()
+    );
+    println!("csharp.solution.symbols.nodes={symbol_count}");
+    ensure(
+        document_symbols.extractions.len() == 1,
+        "C# solution symbols covered one fixture file",
+    )?;
+    ensure(
+        symbol_count == 6,
+        "C# solution symbols mapped six source symbols",
+    )?;
+
+    let reference_targets =
+        provider.reference_targets_for_document_symbols(&document_request, &document_symbols)?;
+    let mut reference_sets = Vec::with_capacity(reference_targets.len());
+    for target in &reference_targets {
+        reference_sets.push(worker.references_for_symbol(target).await?);
+    }
+    let reference_extraction = provider.map_reference_sets(
+        &document_request,
+        document_symbols.clone(),
+        reference_sets,
+        reference_targets.len(),
+    )?;
+    println!(
+        "csharp.solution.references.targets={}",
+        reference_extraction.summary.targets_queried
+    );
+    println!(
+        "csharp.solution.references.edges={}",
+        reference_extraction.summary.reference_edges
+    );
+    println!(
+        "csharp.solution.references.occurrences={}",
+        reference_extraction.summary.reference_occurrences
+    );
+    println!(
+        "csharp.solution.references.file_fallbacks={}",
+        reference_extraction.summary.file_fallbacks
+    );
+    println!(
+        "csharp.solution.references.skipped_external={}",
+        reference_extraction.summary.skipped_external
+    );
+    ensure(
+        reference_extraction.summary.reference_edges == 5,
+        "C# references produced five canonical edges",
+    )?;
+    ensure(
+        reference_extraction.summary.reference_occurrences == 5,
+        "C# references produced five occurrences",
+    )?;
+
+    let call_targets =
+        provider.call_targets_for_document_symbols(&document_request, &document_symbols)?;
+    let mut incoming_call_sets = Vec::with_capacity(call_targets.len());
+    for target in &call_targets {
+        incoming_call_sets.push(worker.incoming_calls_for_symbol(target).await?);
+    }
+    let call_extraction = provider.map_incoming_call_sets(
+        &document_request,
+        document_symbols.clone(),
+        incoming_call_sets,
+        call_targets.len(),
+    )?;
+    worker.shutdown().await?;
+
+    println!(
+        "csharp.solution.calls.callable_nodes={}",
+        call_extraction.summary.callable_nodes
+    );
+    println!(
+        "csharp.solution.calls.edges={}",
+        call_extraction.summary.call_edges
+    );
+    println!(
+        "csharp.solution.calls.occurrences={}",
+        call_extraction.summary.call_occurrences
+    );
+    println!(
+        "csharp.solution.calls.skipped_external_targets={}",
+        call_extraction.summary.skipped_external_targets
+    );
+    println!(
+        "csharp.solution.calls.skipped_unresolved_targets={}",
+        call_extraction.summary.skipped_unresolved_targets
+    );
+    println!(
+        "csharp.solution.calls.skipped_non_callable_prepare_items={}",
+        call_extraction.summary.skipped_non_callable_prepare_items
+    );
+    ensure(
+        call_extraction.summary.call_edges == 2,
+        "C# calls produced two canonical edges",
+    )?;
+    ensure(
+        call_extraction.summary.call_occurrences == 2,
+        "C# calls produced two occurrences",
+    )?;
+
+    let db_path = temp_db_path("csharp-solution")?;
+    let store = WriteManager::start(&db_path).await?;
+    store.migrate().await?;
+    let workspace_root_uri = file_uri(&solution_path)?;
+    let document_summary = ExtractionPersister
+        .persist_document_symbol_batch(&store, &workspace_root_uri, &document_symbols)
+        .await?;
+    let reference_summary = ExtractionPersister
+        .persist_reference_batch(&store, &workspace_root_uri, &reference_extraction)
+        .await?;
+    let call_summary = ExtractionPersister
+        .persist_call_batch(&store, &workspace_root_uri, &call_extraction)
+        .await?;
+    store.shutdown().await?;
+
+    println!("csharp.solution.persistence.db={}", db_path.display());
+    println!(
+        "csharp.solution.persistence.files={}",
+        document_summary.files
+    );
+    println!(
+        "csharp.solution.persistence.nodes={}",
+        document_summary.nodes
+    );
+    println!(
+        "csharp.solution.persistence.contains_edges={}",
+        document_summary.edges
+    );
+    println!(
+        "csharp.solution.persistence.occurrences={}",
+        document_summary.occurrences
+    );
+    println!(
+        "csharp.solution.persistence.evidence={}",
+        document_summary.evidence
+    );
+    println!(
+        "csharp.solution.references.route.references_edges={}",
+        reference_summary.reference_edges
+    );
+    println!(
+        "csharp.solution.references.route.reference_occurrences={}",
+        reference_summary.reference_occurrences
+    );
+    println!(
+        "csharp.solution.references.route.routes_complete={}",
+        reference_summary.routes_complete
+    );
+    println!(
+        "csharp.solution.calls.route.calls_edges={}",
+        call_summary.call_edges
+    );
+    println!(
+        "csharp.solution.calls.route.call_occurrences={}",
+        call_summary.call_occurrences
+    );
+    println!(
+        "csharp.solution.calls.route.routes_complete={}",
+        call_summary.routes_complete
+    );
+    ensure(
+        document_summary.files == 1,
+        "C# persistence wrote one fixture file",
+    )?;
+    ensure(
+        document_summary.nodes == 7,
+        "C# persistence wrote the file node and six source symbols",
+    )?;
+    ensure(
+        document_summary.edges == 6,
+        "C# persistence wrote six contains edges",
+    )?;
+    ensure(
+        reference_summary.reference_edges == 5,
+        "C# persistence wrote five reference edges",
+    )?;
+    ensure(
+        call_summary.call_edges == 2,
+        "C# persistence wrote two call edges",
+    )?;
+
     Ok(())
 }
 

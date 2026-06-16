@@ -40,6 +40,13 @@ pub enum ConfigError {
         message: String,
         location: ErrorLocation,
     },
+
+    #[error("invalid csharp setting setting={setting} at {location}: {message}")]
+    InvalidCSharpSetting {
+        setting: String,
+        message: String,
+        location: ErrorLocation,
+    },
 }
 
 impl ConfigError {
@@ -91,6 +98,15 @@ impl ConfigError {
         }
     }
 
+    #[track_caller]
+    pub fn invalid_csharp_setting(setting: impl Into<String>, message: impl Into<String>) -> Self {
+        Self::InvalidCSharpSetting {
+            setting: setting.into(),
+            message: message.into(),
+            location: ErrorLocation::from(Location::caller()),
+        }
+    }
+
     pub fn message(&self) -> &'static str {
         match self {
             Self::Io { .. } => "io error",
@@ -98,6 +114,7 @@ impl ConfigError {
             Self::MissingDatabasePath { .. } => "missing database path",
             Self::InvalidWriterSetting { .. } => "invalid writer setting",
             Self::InvalidExtractorSetting { .. } => "invalid extractor setting",
+            Self::InvalidCSharpSetting { .. } => "invalid csharp setting",
         }
     }
 
@@ -107,7 +124,8 @@ impl ConfigError {
             | Self::Toml { location, .. }
             | Self::MissingDatabasePath { location, .. }
             | Self::InvalidWriterSetting { location, .. }
-            | Self::InvalidExtractorSetting { location, .. } => *location,
+            | Self::InvalidExtractorSetting { location, .. }
+            | Self::InvalidCSharpSetting { location, .. } => *location,
         }
     }
 }

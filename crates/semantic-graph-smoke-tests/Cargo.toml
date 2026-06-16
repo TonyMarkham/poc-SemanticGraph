@@ -8,6 +8,7 @@ lsp-types                 = { workspace = true }
 tokio                     = { workspace = true }
 
 rust-analyzer-lib         = { workspace = true }
+csharp-ls-lib             = { workspace = true }
 semantic-graph-extract    = { workspace = true }
 semantic-graph-db-manager = { workspace = true }
 

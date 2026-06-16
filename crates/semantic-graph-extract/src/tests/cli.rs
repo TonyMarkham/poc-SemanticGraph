@@ -1,12 +1,15 @@
 use crate::{
     cli::{
-        Cli, Command, RustFileMode, resolve_cli_database_path, resolve_rust_file_mode,
-        resolve_rust_workspace_routes, validate_deleted_rust_file_request,
+        CSharpFileMode, Cli, Command, RustFileMode, resolve_cli_database_path,
+        resolve_csharp_extractor_plan, resolve_csharp_file_mode, resolve_csharp_workspace_routes,
+        resolve_rust_file_mode, resolve_rust_workspace_routes, resolve_solution_from,
+        validate_deleted_rust_file_request,
     },
     workspace_extraction::WorkspaceExtractionRoutes,
 };
 
 use clap::Parser;
+use semantic_graph_config::ensure_config_with_csharp_defaults;
 use std::{
     error::Error,
     fs,
@@ -224,6 +227,173 @@ fn rust_workspace_routes_default_to_all_and_allow_combinations() {
 }
 
 #[test]
+fn csharp_file_defaults_and_accepts_solution() -> Result<(), Box<dyn Error>> {
+    let cli = Cli::try_parse_from([
+        "semantic-graph-extract",
+        "csharp-file",
+        "--solution",
+        "Demo.slnx",
+        "Project/Program.cs",
+    ])?;
+
+    match cli.command {
+        Command::CSharpFile {
+            db,
+            solution,
+            csharp_ls,
+            calls,
+            references,
+            symbols,
+            file,
+        } => {
+            assert_eq!(db, None);
+            assert_eq!(solution, Some(PathBuf::from("Demo.slnx")));
+            assert_eq!(csharp_ls, None);
+            assert!(!calls);
+            assert!(!references);
+            assert!(!symbols);
+            assert_eq!(file, PathBuf::from("Project/Program.cs"));
+        }
+        _ => return Err("expected csharp-file command".into()),
+    }
+
+    Ok(())
+}
+
+#[test]
+fn csharp_file_modes_are_mutually_exclusive() -> Result<(), Box<dyn Error>> {
+    assert_eq!(
+        resolve_csharp_file_mode(false, false, false)?,
+        CSharpFileMode::Full
+    );
+    assert_eq!(
+        resolve_csharp_file_mode(false, true, false)?,
+        CSharpFileMode::References
+    );
+    assert!(resolve_csharp_file_mode(true, false, true).is_err());
+    Ok(())
+}
+
+#[test]
+fn csharp_file_deleted_defaults_and_accepts_solution() -> Result<(), Box<dyn Error>> {
+    let cli = Cli::try_parse_from([
+        "semantic-graph-extract",
+        "csharp-file-deleted",
+        "--solution",
+        "Demo.slnx",
+        "Project/Deleted.cs",
+    ])?;
+
+    match cli.command {
+        Command::CSharpFileDeleted {
+            db,
+            solution,
+            csharp_ls,
+            file,
+        } => {
+            assert_eq!(db, None);
+            assert_eq!(solution, Some(PathBuf::from("Demo.slnx")));
+            assert_eq!(csharp_ls, None);
+            assert_eq!(file, PathBuf::from("Project/Deleted.cs"));
+        }
+        _ => return Err("expected csharp-file-deleted command".into()),
+    }
+
+    Ok(())
+}
+
+#[test]
+fn csharp_project_accepts_boundary_workers_and_combined_routes() -> Result<(), Box<dyn Error>> {
+    let cli = Cli::try_parse_from([
+        "semantic-graph-extract",
+        "csharp-project",
+        "--solution",
+        "Demo.slnx",
+        "--csharp-ls",
+        "/tmp/csharp-ls",
+        "--process-workers",
+        "2",
+        "--symbols",
+        "--references",
+        "Project/Project.csproj",
+    ])?;
+
+    match cli.command {
+        Command::CSharpProject {
+            db,
+            solution,
+            csharp_ls,
+            process_workers,
+            calls,
+            references,
+            symbols,
+            project_or_root,
+        } => {
+            assert_eq!(db, None);
+            assert_eq!(solution, Some(PathBuf::from("Demo.slnx")));
+            assert_eq!(csharp_ls, Some(PathBuf::from("/tmp/csharp-ls")));
+            assert_eq!(process_workers, Some(2));
+            assert!(!calls);
+            assert!(references);
+            assert!(symbols);
+            assert_eq!(project_or_root, PathBuf::from("Project/Project.csproj"));
+        }
+        _ => return Err("expected csharp-project command".into()),
+    }
+
+    Ok(())
+}
+
+#[test]
+fn csharp_solution_accepts_workers_and_combined_routes() -> Result<(), Box<dyn Error>> {
+    let cli = Cli::try_parse_from([
+        "semantic-graph-extract",
+        "csharp-solution",
+        "--solution",
+        "Demo.slnx",
+        "--process-workers",
+        "3",
+        "--calls",
+        "--references",
+    ])?;
+
+    match cli.command {
+        Command::CSharpSolution {
+            db,
+            solution,
+            csharp_ls,
+            process_workers,
+            calls,
+            references,
+            symbols,
+        } => {
+            assert_eq!(db, None);
+            assert_eq!(solution, Some(PathBuf::from("Demo.slnx")));
+            assert_eq!(csharp_ls, None);
+            assert_eq!(process_workers, Some(3));
+            assert!(calls);
+            assert!(references);
+            assert!(!symbols);
+        }
+        _ => return Err("expected csharp-solution command".into()),
+    }
+
+    Ok(())
+}
+
+#[test]
+fn csharp_workspace_routes_default_to_all_and_allow_combinations() {
+    assert_eq!(
+        resolve_csharp_workspace_routes(false, false, false),
+        WorkspaceExtractionRoutes::all()
+    );
+    assert_eq!(
+        resolve_csharp_workspace_routes(true, true, false).label(),
+        "references+calls"
+    );
+}
+
+#[test]
 fn rust_file_deleted_accepts_missing_file_path() -> Result<(), Box<dyn Error>> {
     let root = temp_dir("deleted-file-root")?;
     let deleted_file = PathBuf::from("crates/wip/src/deleted.rs");
@@ -266,6 +436,83 @@ fn cli_database_path_discovers_config_from_workspace_root() -> Result<(), Box<dy
             .ok_or("expected config parent")?
             .join(".local/config.db")
     );
+    Ok(())
+}
+
+#[test]
+fn csharp_solution_resolution_cli_overrides_config() -> Result<(), Box<dyn Error>> {
+    let root = temp_dir("csharp-solution-cli-overrides-config")?;
+    let cli_solution = root.join("Cli.slnx");
+    let config_solution = root.join("Config.slnx");
+    fs::write(&cli_solution, "")?;
+    fs::write(&config_solution, "")?;
+
+    let resolved = resolve_solution_from(Some(cli_solution.clone()), Some(config_solution), &root)?;
+
+    assert_eq!(resolved, cli_solution);
+    Ok(())
+}
+
+#[test]
+fn csharp_solution_resolution_config_overrides_discovery() -> Result<(), Box<dyn Error>> {
+    let root = temp_dir("csharp-solution-config-overrides-discovery")?;
+    let config_solution = root.join("Config.sln");
+    let discovered_solution = root.join("Discovered.slnx");
+    fs::write(&config_solution, "")?;
+    fs::write(&discovered_solution, "")?;
+
+    let resolved = resolve_solution_from(None, Some(config_solution.clone()), &root)?;
+
+    assert_eq!(resolved, config_solution);
+    Ok(())
+}
+
+#[test]
+fn csharp_solution_resolution_discovers_slnx_before_sln() -> Result<(), Box<dyn Error>> {
+    let root = temp_dir("csharp-solution-discovers-slnx")?;
+    let sln = root.join("A.sln");
+    let slnx = root.join("B.slnx");
+    fs::write(&sln, "")?;
+    fs::write(&slnx, "")?;
+
+    let resolved = resolve_solution_from(None, None, &root)?;
+
+    assert_eq!(resolved, slnx);
+    Ok(())
+}
+
+#[test]
+fn csharp_solution_resolution_errors_when_missing() -> Result<(), Box<dyn Error>> {
+    let root = temp_dir("csharp-solution-missing")?;
+
+    let error = resolve_solution_from(None, None, &root)
+        .err()
+        .ok_or("expected missing solution error")?;
+
+    assert!(error.to_string().contains("pass --solution"));
+    Ok(())
+}
+
+#[test]
+fn csharp_extractor_plan_applies_cli_overrides() -> Result<(), Box<dyn Error>> {
+    let root = temp_dir("csharp-plan-cli-overrides")?;
+    let config_path = root.join(".refactor-radar/config.toml");
+    ensure_config_with_csharp_defaults(&config_path)?;
+    let cli_solution = root.join("Cli.slnx");
+    fs::write(&cli_solution, "")?;
+
+    let plan = resolve_csharp_extractor_plan(
+        &Some(config_path),
+        &root,
+        Some(PathBuf::from("/tmp/custom-csharp-ls")),
+        Some(cli_solution.clone()),
+        Some(4),
+    )?;
+
+    assert_eq!(plan.binary(), &PathBuf::from("/tmp/custom-csharp-ls"));
+    assert_eq!(plan.solution(), &cli_solution);
+    assert_eq!(plan.process_workers(), 4);
+    assert_eq!(plan.log_level(), "warning");
     Ok(())
 }
 

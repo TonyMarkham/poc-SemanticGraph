@@ -90,6 +90,14 @@ pub enum ExtractError {
         location: ErrorLocation,
     },
 
+    #[error("csharp-ls-lib error during {context} at {location}")]
+    CSharpLsLib {
+        context: String,
+        #[source]
+        source: Box<csharp_ls_lib::CSharpLsLibError>,
+        location: ErrorLocation,
+    },
+
     #[error("configuration error at {location}")]
     Config {
         #[source]
@@ -213,6 +221,18 @@ impl ExtractError {
     }
 
     #[track_caller]
+    pub fn csharp_ls_lib(
+        context: impl Into<String>,
+        source: csharp_ls_lib::CSharpLsLibError,
+    ) -> Self {
+        Self::CSharpLsLib {
+            context: context.into(),
+            source: Box::new(source),
+            location: ErrorLocation::from(Location::caller()),
+        }
+    }
+
+    #[track_caller]
     pub fn config(source: ConfigError) -> Self {
         Self::Config {
             source: Box::new(source),
@@ -231,6 +251,7 @@ impl ExtractError {
             Self::Timeout { .. } => "timeout",
             Self::InvalidPath { .. } => "invalid input path",
             Self::RustAnalyzerLib { .. } => "rust-analyzer-lib error",
+            Self::CSharpLsLib { .. } => "csharp-ls-lib error",
             Self::Config { .. } => "configuration error",
         }
     }
@@ -246,6 +267,7 @@ impl ExtractError {
             | Self::Timeout { location, .. }
             | Self::InvalidPath { location, .. }
             | Self::RustAnalyzerLib { location, .. }
+            | Self::CSharpLsLib { location, .. }
             | Self::Config { location, .. } => *location,
         }
     }

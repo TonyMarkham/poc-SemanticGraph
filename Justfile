@@ -54,13 +54,14 @@ db-smoke db=demo_db:
 # Main local confidence checker.
 confidence:
     just --justfile {{justfile()}} sqlx-prepare
-    just --justfile {{justfile()}} fmt
-    SQLX_OFFLINE=true cargo check
-    SQLX_OFFLINE=true cargo clippy --all-targets -- -D warnings
-    SQLX_OFFLINE=true cargo build
-    SQLX_OFFLINE=true cargo build --release
-    SQLX_OFFLINE=true cargo test
+    cargo fmt
+    cargo check
+    cargo clippy --all-targets -- -D warnings
+    cargo build
+    cargo build --release
+    cargo test
     just --justfile {{justfile()}} confidence-rust-workspace
+    just --justfile {{justfile()}} confidence-csharp-solution
 
 # Exercise rust-analyzer document-symbol extraction against crates/wip.
 rust-extract-smoke:
@@ -122,9 +123,74 @@ rust-workspace-call-route-smoke:
       --calls
     cargo run -p {{package}} -- stats --db .local/rust-workspace-call-route.db
 
+# Exercise complete csharp-ls solution extraction against the local C# fixture.
+csharp-solution-smoke:
+    mkdir -p {{local_dir}}
+    rm -f .local/csharp-solution-extract.db
+    cargo run -p {{extract_package}} -- csharp-solution \
+      --db .local/csharp-solution-extract.db \
+      --solution __SmokeTestAssets__/csharp-wip/CSharpWip.sln
+    cargo run -p {{package}} -- stats --db .local/csharp-solution-extract.db
+
+# Exercise solution-scoped csharp-ls reference extraction.
+csharp-solution-reference-route-smoke:
+    mkdir -p {{local_dir}}
+    rm -f .local/csharp-solution-reference-route.db
+    cargo run -p {{extract_package}} -- csharp-solution \
+      --db .local/csharp-solution-reference-route.db \
+      --solution __SmokeTestAssets__/csharp-wip/CSharpWip.sln \
+      --symbols
+    cargo run -p {{extract_package}} -- csharp-solution \
+      --db .local/csharp-solution-reference-route.db \
+      --solution __SmokeTestAssets__/csharp-wip/CSharpWip.sln \
+      --references
+    cargo run -p {{package}} -- stats --db .local/csharp-solution-reference-route.db
+
+# Exercise solution-scoped csharp-ls incoming-call extraction.
+csharp-solution-call-route-smoke:
+    mkdir -p {{local_dir}}
+    rm -f .local/csharp-solution-call-route.db
+    cargo run -p {{extract_package}} -- csharp-solution \
+      --db .local/csharp-solution-call-route.db \
+      --solution __SmokeTestAssets__/csharp-wip/CSharpWip.sln \
+      --symbols
+    cargo run -p {{extract_package}} -- csharp-solution \
+      --db .local/csharp-solution-call-route.db \
+      --solution __SmokeTestAssets__/csharp-wip/CSharpWip.sln \
+      --calls
+    cargo run -p {{package}} -- stats --db .local/csharp-solution-call-route.db
+
+# Exercise complete csharp-ls single-file extraction against the local C# fixture.
+csharp-file-smoke:
+    mkdir -p {{local_dir}}
+    rm -f .local/csharp-file-extract.db
+    cargo run -p {{extract_package}} -- csharp-file \
+      --db .local/csharp-file-extract.db \
+      --solution __SmokeTestAssets__/csharp-wip/CSharpWip.sln \
+      __SmokeTestAssets__/csharp-wip/Project/Worker.cs
+    cargo run -p {{package}} -- stats --db .local/csharp-file-extract.db
+
+# Exercise C# deleted-file stale marking against the local C# fixture.
+csharp-file-deleted-smoke:
+    mkdir -p {{local_dir}}
+    rm -f .local/csharp-file-deleted.db
+    cargo run -p {{extract_package}} -- csharp-file \
+      --db .local/csharp-file-deleted.db \
+      --solution __SmokeTestAssets__/csharp-wip/CSharpWip.sln \
+      __SmokeTestAssets__/csharp-wip/Project/Worker.cs
+    cargo run -p {{extract_package}} -- csharp-file-deleted \
+      --db .local/csharp-file-deleted.db \
+      --solution __SmokeTestAssets__/csharp-wip/CSharpWip.sln \
+      __SmokeTestAssets__/csharp-wip/Project/Worker.cs
+    cargo run -p {{package}} -- stats --db .local/csharp-file-deleted.db
+
 # Exercise complete workspace extraction as part of confidence checks.
 confidence-rust-workspace:
     ./target/release/semantic-graph-extract rust-workspace
+
+# Exercise complete C# solution extraction as part of confidence checks.
+confidence-csharp-solution:
+    ./target/release/semantic-graph-extract csharp-solution
 
 # Exercise complete workspace-scoped rust-analyzer extraction in one CLI call.
 rust-workspace-smoke:

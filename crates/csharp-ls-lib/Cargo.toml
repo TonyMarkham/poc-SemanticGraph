@@ -1,0 +1,15 @@
+[package]
+name = "csharp-ls-lib"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+error-location = { workspace = true }
+lsp-types      = { workspace = true }
+serde          = { workspace = true }
+serde_json     = { workspace = true }
+thiserror      = { workspace = true }
+tokio          = { workspace = true }
+
+[lints]
+workspace      = true

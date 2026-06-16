@@ -10,3 +10,12 @@ queue_capacity = 4096
 max_rows_per_commit = 1000
 max_millis_per_commit = 250
 busy_timeout_ms = 5000
+
+[csharp]
+binary = "csharp-ls"
+solution = "SemanticGraph.Visualizer.slnx"
+log_level = "warning"
+features = []
+analysis_workers = 1
+startup_timeout_ms = 120000
+request_timeout_ms = 30000
