@@ -6,10 +6,10 @@ use crate::{
     DocumentSymbolWriteBatchObservationInput, DocumentSymbolWriteBatchOccurrenceInput,
     DocumentSymbolWriteBatchRouteStatusCompleteInput,
     DocumentSymbolWriteBatchRouteStatusStartInput, DocumentSymbolWriteBatchSummary,
-    EdgeEvidenceInput, EdgeInput, FileInput, NodeInput, OccurrenceInput,
-    RouteWriteBatchEdgeEvidenceInput, RouteWriteBatchEdgeInput, RouteWriteBatchInput,
-    RouteWriteBatchObservationInput, RouteWriteBatchOccurrenceInput, StaleFileSummary, TextRange,
-    WriteProgress, WriteSummary,
+    EdgeEvidenceInput, EdgeInput, FileInput, FtsWriteBatchDocumentInput, FtsWriteBatchInput,
+    FtsWriteBatchSeenDocumentInput, NodeInput, OccurrenceInput, RouteWriteBatchEdgeEvidenceInput,
+    RouteWriteBatchEdgeInput, RouteWriteBatchInput, RouteWriteBatchObservationInput,
+    RouteWriteBatchOccurrenceInput, StaleFileSummary, TextRange, WriteProgress, WriteSummary,
     commands::Commands,
     edge_id,
     models::{
@@ -142,6 +142,13 @@ impl WriteWorker {
                     .await;
                 let _send_result = response.send(result);
             }
+            Commands::ActiveFtsDocumentHashes {
+                workspace_id,
+                response,
+            } => {
+                let result = self.active_fts_document_hashes(workspace_id).await;
+                let _send_result = response.send(result);
+            }
             Commands::ActiveFileSymbols {
                 workspace_id,
                 file_uris,
@@ -226,6 +233,14 @@ impl WriteWorker {
             }
             Commands::WriteDocumentSymbolBatch { input, response } => {
                 let result = run_write_command!(self, self.write_document_symbol_batch(input));
+                self.send_write_response(response, result).await;
+            }
+            Commands::WriteFtsBatch { input, response } => {
+                let result = run_write_command!(self, self.write_fts_batch(input));
+                self.send_write_response(response, result).await;
+            }
+            Commands::WriteFtsContentBatch { input, response } => {
+                let result = run_write_command!(self, self.write_fts_content_batch(input));
                 self.send_write_response(response, result).await;
             }
             Commands::CloseStaleNodesForRoute { input, response } => {
@@ -382,6 +397,34 @@ impl WriteWorker {
         let mut hashes = HashMap::with_capacity(rows.len());
         for row in rows {
             hashes.insert(row.get("scope_key"), row.get("content_hash"));
+        }
+
+        Ok(hashes)
+    }
+
+    async fn active_fts_document_hashes(
+        &self,
+        workspace_id: i64,
+    ) -> DbManagerResult<HashMap<String, String>> {
+        let rows = sqlx::query(
+            r#"
+            SELECT files.uri, fts_documents.content_hash
+            FROM fts_documents
+            JOIN files
+              ON files.id = fts_documents.file_id
+             AND files.workspace_id = fts_documents.workspace_id
+            WHERE fts_documents.workspace_id = ?
+              AND fts_documents.valid_to_run_id IS NULL
+            "#,
+        )
+        .bind(workspace_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(DbManagerError::database)?;
+
+        let mut hashes = HashMap::with_capacity(rows.len());
+        for row in rows {
+            hashes.insert(row.get("uri"), row.get("content_hash"));
         }
 
         Ok(hashes)
@@ -576,7 +619,10 @@ impl WriteWorker {
         Ok(id)
     }
 
-    async fn upsert_fts_document(&self, input: OwnedFtsDocumentInput) -> DbManagerResult<i64> {
+    async fn upsert_fts_document_metadata(
+        &self,
+        input: &OwnedFtsDocumentInput,
+    ) -> DbManagerResult<i64> {
         let properties_json = input.properties_json.to_string();
 
         sqlx::query(
@@ -623,6 +669,50 @@ impl WriteWorker {
         .fetch_one(&self.pool)
         .await
         .map_err(DbManagerError::database)?;
+
+        Ok(document_id)
+    }
+
+    async fn upsert_fts_document_content(
+        &self,
+        document_id: i64,
+        input: &OwnedFtsDocumentInput,
+    ) -> DbManagerResult<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO fts_document_contents (
+              document_id,
+              file_id,
+              path,
+              language,
+              content,
+              updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(document_id) DO UPDATE SET
+              file_id = excluded.file_id,
+              path = excluded.path,
+              language = excluded.language,
+              content = excluded.content,
+              updated_at = CURRENT_TIMESTAMP
+            "#,
+        )
+        .bind(document_id)
+        .bind(input.file_id)
+        .bind(&input.path)
+        .bind(&input.language)
+        .bind(&input.content)
+        .execute(&self.pool)
+        .await
+        .map_err(DbManagerError::database)?;
+
+        Ok(())
+    }
+
+    async fn upsert_fts_document(&self, input: OwnedFtsDocumentInput) -> DbManagerResult<i64> {
+        let document_id = self.upsert_fts_document_metadata(&input).await?;
+        self.upsert_fts_document_content(document_id, &input)
+            .await?;
 
         sqlx::query("DELETE FROM fts_document_trigram_ci WHERE document_id = ?")
             .bind(document_id)
@@ -1275,6 +1365,140 @@ impl WriteWorker {
         Ok(())
     }
 
+    async fn write_fts_batch(&self, input: FtsWriteBatchInput) -> DbManagerResult<()> {
+        for seen_document in input.seen_documents {
+            self.mark_fts_document_seen(seen_document).await?;
+        }
+        for document in input.documents {
+            self.upsert_fts_batch_document(document).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn write_fts_content_batch(&self, input: FtsWriteBatchInput) -> DbManagerResult<()> {
+        for seen_document in input.seen_documents {
+            self.mark_fts_document_seen(seen_document).await?;
+        }
+        for document in input.documents {
+            self.upsert_fts_content_batch_document(document).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn mark_fts_document_seen(
+        &self,
+        input: FtsWriteBatchSeenDocumentInput,
+    ) -> DbManagerResult<()> {
+        sqlx::query(
+            r#"
+            UPDATE files
+            SET content_hash = ?,
+                last_seen_run_id = ?
+            WHERE workspace_id = ?
+              AND uri = ?
+            "#,
+        )
+        .bind(&input.content_hash)
+        .bind(input.run_id)
+        .bind(input.workspace_id)
+        .bind(&input.uri)
+        .execute(&self.pool)
+        .await
+        .map_err(DbManagerError::database)?;
+
+        sqlx::query(
+            r#"
+            UPDATE fts_documents
+            SET last_seen_run_id = ?,
+                valid_to_run_id = NULL
+            WHERE workspace_id = ?
+              AND content_hash = ?
+              AND file_id = (
+                SELECT id
+                FROM files
+                WHERE workspace_id = ?
+                  AND uri = ?
+              )
+            "#,
+        )
+        .bind(input.run_id)
+        .bind(input.workspace_id)
+        .bind(&input.content_hash)
+        .bind(input.workspace_id)
+        .bind(&input.uri)
+        .execute(&self.pool)
+        .await
+        .map_err(DbManagerError::database)?;
+
+        Ok(())
+    }
+
+    async fn upsert_fts_batch_document(
+        &self,
+        input: FtsWriteBatchDocumentInput,
+    ) -> DbManagerResult<i64> {
+        let file_id = self
+            .upsert_file(OwnedFileInput {
+                workspace_id: input.workspace_id,
+                uri: input.uri,
+                path: input.path.clone(),
+                language: input.language.clone(),
+                content_hash: Some(input.content_hash.clone()),
+                last_seen_run_id: Some(input.run_id),
+                properties_json: input.properties_json.clone(),
+            })
+            .await?;
+
+        self.upsert_fts_document(OwnedFtsDocumentInput {
+            workspace_id: input.workspace_id,
+            file_id,
+            path: input.path,
+            language: input.language,
+            content_hash: input.content_hash,
+            byte_len: input.byte_len,
+            run_id: input.run_id,
+            content: input.content,
+            properties_json: input.properties_json,
+        })
+        .await
+    }
+
+    async fn upsert_fts_content_batch_document(
+        &self,
+        input: FtsWriteBatchDocumentInput,
+    ) -> DbManagerResult<i64> {
+        let file_id = self
+            .upsert_file(OwnedFileInput {
+                workspace_id: input.workspace_id,
+                uri: input.uri,
+                path: input.path.clone(),
+                language: input.language.clone(),
+                content_hash: Some(input.content_hash.clone()),
+                last_seen_run_id: Some(input.run_id),
+                properties_json: input.properties_json.clone(),
+            })
+            .await?;
+
+        let document = OwnedFtsDocumentInput {
+            workspace_id: input.workspace_id,
+            file_id,
+            path: input.path,
+            language: input.language,
+            content_hash: input.content_hash,
+            byte_len: input.byte_len,
+            run_id: input.run_id,
+            content: input.content,
+            properties_json: input.properties_json,
+        };
+        let document_id = self.upsert_fts_document_metadata(&document).await?;
+        self.upsert_fts_document_content(document_id, &document)
+            .await?;
+
+        Ok(document_id)
+    }
+
     async fn write_document_symbol_batch(
         &self,
         input: DocumentSymbolWriteBatchInput,
@@ -1754,6 +1978,11 @@ impl WriteWorker {
 
         for document_id in &stale_document_ids {
             sqlx::query("DELETE FROM fts_document_trigram_ci WHERE document_id = ?")
+                .bind(document_id)
+                .execute(&self.pool)
+                .await
+                .map_err(DbManagerError::database)?;
+            sqlx::query("DELETE FROM fts_document_contents WHERE document_id = ?")
                 .bind(document_id)
                 .execute(&self.pool)
                 .await

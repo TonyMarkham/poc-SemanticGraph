@@ -1,10 +1,14 @@
-use crate::fts::FtsSkipReason;
+use crate::{benchmark::BenchmarkSummary, fts::FtsSkipReason};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct FtsExtractionSummary {
+    pub benchmark: BenchmarkSummary,
     pub workspace_id: i64,
     pub run_id: i64,
     pub scanned_files: usize,
+    pub files_hashed: usize,
+    pub files_hash_unchanged: usize,
+    pub files_changed: usize,
     pub indexed_files: usize,
     pub skipped_files: usize,
     pub skipped_directories: usize,

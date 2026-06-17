@@ -2,9 +2,9 @@ use crate::{
     ActiveFileSymbols, CloseStaleFileInput, CloseStaleFtsDocumentsInput, CloseStaleRouteInput,
     DbManagerError, DbManagerResult, DemoSeedSummary, DocumentSymbolWriteBatchInput,
     DocumentSymbolWriteBatchSummary, EdgeEvidenceInput, EdgeInput, FileInput, FtsDocumentInput,
-    NodeInput, OccurrenceInput, RouteObservationInput, RouteStatusCompleteInput,
-    RouteStatusFailInput, RouteStatusStartInput, RouteWriteBatchInput, StaleFileSummary,
-    WriteProgress, WriteSummary, commands::Commands,
+    FtsWriteBatchInput, NodeInput, OccurrenceInput, RouteObservationInput,
+    RouteStatusCompleteInput, RouteStatusFailInput, RouteStatusStartInput, RouteWriteBatchInput,
+    StaleFileSummary, WriteProgress, WriteSummary, commands::Commands,
 };
 
 use std::collections::HashMap;
@@ -91,6 +91,20 @@ impl WriteHandle {
                 workspace_id,
                 route: route.to_string(),
                 provider: provider.to_string(),
+                response,
+            })
+            .await?;
+        receiver.await?
+    }
+
+    pub async fn active_fts_document_hashes(
+        &self,
+        workspace_id: i64,
+    ) -> DbManagerResult<HashMap<String, String>> {
+        let (response, receiver) = oneshot::channel();
+        self.sender
+            .send(Commands::ActiveFtsDocumentHashes {
+                workspace_id,
                 response,
             })
             .await?;
@@ -290,6 +304,22 @@ impl WriteHandle {
         let (response, receiver) = oneshot::channel();
         self.sender
             .send(Commands::WriteDocumentSymbolBatch { input, response })
+            .await?;
+        receiver.await?
+    }
+
+    pub async fn write_fts_batch(&self, input: FtsWriteBatchInput) -> DbManagerResult<()> {
+        let (response, receiver) = oneshot::channel();
+        self.sender
+            .send(Commands::WriteFtsBatch { input, response })
+            .await?;
+        receiver.await?
+    }
+
+    pub async fn write_fts_content_batch(&self, input: FtsWriteBatchInput) -> DbManagerResult<()> {
+        let (response, receiver) = oneshot::channel();
+        self.sender
+            .send(Commands::WriteFtsContentBatch { input, response })
             .await?;
         receiver.await?
     }

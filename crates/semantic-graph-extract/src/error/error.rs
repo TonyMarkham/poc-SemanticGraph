@@ -1,6 +1,7 @@
 use error_location::ErrorLocation;
 use semantic_graph_config::ConfigError;
 use semantic_graph_db_manager::DbManagerError;
+use semantic_graph_search_tantivy::TantivySearchError;
 use std::{io, panic::Location, path::PathBuf};
 use thiserror::Error;
 
@@ -102,6 +103,14 @@ pub enum ExtractError {
     Config {
         #[source]
         source: Box<ConfigError>,
+        location: ErrorLocation,
+    },
+
+    #[error("tantivy search error during {context} at {location}")]
+    TantivySearch {
+        context: String,
+        #[source]
+        source: Box<TantivySearchError>,
         location: ErrorLocation,
     },
 }
@@ -240,6 +249,15 @@ impl ExtractError {
         }
     }
 
+    #[track_caller]
+    pub fn tantivy_search(context: impl Into<String>, source: TantivySearchError) -> Self {
+        Self::TantivySearch {
+            context: context.into(),
+            source: Box::new(source),
+            location: ErrorLocation::from(Location::caller()),
+        }
+    }
+
     pub fn message(&self) -> &'static str {
         match self {
             Self::Storage { .. } => "storage error",
@@ -253,6 +271,7 @@ impl ExtractError {
             Self::RustAnalyzerLib { .. } => "rust-analyzer-lib error",
             Self::CSharpLsLib { .. } => "csharp-ls-lib error",
             Self::Config { .. } => "configuration error",
+            Self::TantivySearch { .. } => "tantivy search error",
         }
     }
 
@@ -268,7 +287,8 @@ impl ExtractError {
             | Self::InvalidPath { location, .. }
             | Self::RustAnalyzerLib { location, .. }
             | Self::CSharpLsLib { location, .. }
-            | Self::Config { location, .. } => *location,
+            | Self::Config { location, .. }
+            | Self::TantivySearch { location, .. } => *location,
         }
     }
 }

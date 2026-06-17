@@ -17,6 +17,7 @@ csharp-ls-lib             = { workspace = true }
 rust-analyzer-lib         = { workspace = true }
 semantic-graph-config     = { workspace = true }
 semantic-graph-db-manager = { workspace = true }
+semantic-graph-search-tantivy = { workspace = true }
 semantic-graph-store      = { workspace = true }
 
 [dev-dependencies]

@@ -1,6 +1,7 @@
 use crate::{
     ActiveFileSymbols, DbManagerResult, DemoSeedSummary, DocumentSymbolWriteBatchInput,
-    DocumentSymbolWriteBatchSummary, RouteWriteBatchInput, StaleFileSummary, WriteSummary,
+    DocumentSymbolWriteBatchSummary, FtsWriteBatchInput, RouteWriteBatchInput, StaleFileSummary,
+    WriteSummary,
     models::{
         OwnedCloseStaleFileInput, OwnedCloseStaleFtsDocumentsInput, OwnedCloseStaleRouteInput,
         OwnedEdgeEvidenceInput, OwnedEdgeInput, OwnedFileInput, OwnedFtsDocumentInput,
@@ -35,6 +36,10 @@ pub(crate) enum Commands {
         route: String,
         provider: String,
         response: oneshot::Sender<DbManagerResult<HashMap<String, Option<String>>>>,
+    },
+    ActiveFtsDocumentHashes {
+        workspace_id: i64,
+        response: oneshot::Sender<DbManagerResult<HashMap<String, String>>>,
     },
     ActiveFileSymbols {
         workspace_id: i64,
@@ -105,6 +110,14 @@ pub(crate) enum Commands {
         input: DocumentSymbolWriteBatchInput,
         response: oneshot::Sender<DbManagerResult<DocumentSymbolWriteBatchSummary>>,
     },
+    WriteFtsBatch {
+        input: FtsWriteBatchInput,
+        response: oneshot::Sender<DbManagerResult<()>>,
+    },
+    WriteFtsContentBatch {
+        input: FtsWriteBatchInput,
+        response: oneshot::Sender<DbManagerResult<()>>,
+    },
     CloseStaleNodesForRoute {
         input: OwnedCloseStaleRouteInput,
         response: oneshot::Sender<DbManagerResult<u64>>,
@@ -142,6 +155,7 @@ impl Commands {
             Self::WorkspaceId { .. } => "workspace_id",
             Self::FileId { .. } => "file_id",
             Self::FileRouteContentHashes { .. } => "file_route_content_hashes",
+            Self::ActiveFtsDocumentHashes { .. } => "active_fts_document_hashes",
             Self::ActiveFileSymbols { .. } => "active_file_symbols",
             Self::NodeExists { .. } => "node_exists",
             Self::StartRun { .. } => "start_run",
@@ -158,6 +172,8 @@ impl Commands {
             Self::RecordRouteObservation { .. } => "record_route_observation",
             Self::WriteRouteBatch { .. } => "write_route_batch",
             Self::WriteDocumentSymbolBatch { .. } => "write_document_symbol_batch",
+            Self::WriteFtsBatch { .. } => "write_fts_batch",
+            Self::WriteFtsContentBatch { .. } => "write_fts_content_batch",
             Self::CloseStaleNodesForRoute { .. } => "close_stale_nodes_for_route",
             Self::CloseStaleFile { .. } => "close_stale_file",
             Self::CloseStaleFtsDocumentsForWorkspace { .. } => {
@@ -178,6 +194,7 @@ impl Commands {
             Self::WorkspaceId { .. }
                 | Self::FileId { .. }
                 | Self::FileRouteContentHashes { .. }
+                | Self::ActiveFtsDocumentHashes { .. }
                 | Self::ActiveFileSymbols { .. }
                 | Self::NodeExists { .. }
                 | Self::Shutdown { .. }

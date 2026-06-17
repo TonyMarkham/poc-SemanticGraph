@@ -1,0 +1,12 @@
+[package]
+name = "semantic-graph-search-tantivy"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+error-location = { workspace = true }
+tantivy        = { workspace = true }
+thiserror      = { workspace = true }
+
+[lints]
+workspace      = true

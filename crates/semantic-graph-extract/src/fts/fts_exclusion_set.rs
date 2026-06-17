@@ -14,6 +14,8 @@ use std::{
 pub struct FtsExclusionSet {
     config_directories: BTreeSet<String>,
     config_files: BTreeSet<String>,
+    runtime_directories: BTreeSet<String>,
+    runtime_files: BTreeSet<String>,
     submodule_directories: BTreeSet<String>,
     options: FtsExtractionOptions,
 }
@@ -33,19 +35,29 @@ impl FtsExclusionSet {
         Ok(Self {
             config_directories: config.ignore_directories().iter().cloned().collect(),
             config_files: config.ignore_files().iter().cloned().collect(),
+            runtime_directories: BTreeSet::new(),
+            runtime_files: BTreeSet::new(),
             submodule_directories,
             options,
         })
+    }
+
+    pub fn with_runtime_exclusions(
+        mut self,
+        directories: impl IntoIterator<Item = String>,
+        files: impl IntoIterator<Item = String>,
+    ) -> Self {
+        self.runtime_directories.extend(directories);
+        self.runtime_files.extend(files);
+        self
     }
 
     pub fn skip_directory_reason(&self, relative_path: &str) -> Option<FtsSkipReason> {
         if relative_path.is_empty() {
             return None;
         }
-        if self
-            .config_directories
-            .iter()
-            .any(|directory| path_is_equal_or_descendant(relative_path, directory))
+        if self.directory_is_config_excluded(relative_path)
+            || self.directory_is_runtime_excluded(relative_path)
         {
             return Some(FtsSkipReason::Config);
         }
@@ -66,11 +78,10 @@ impl FtsExclusionSet {
         relative_path: &str,
         language: FtsFileLanguage,
     ) -> Option<FtsSkipReason> {
-        if self
-            .config_directories
-            .iter()
-            .any(|directory| path_is_equal_or_descendant(relative_path, directory))
+        if self.directory_is_config_excluded(relative_path)
             || self.config_files.contains(relative_path)
+            || self.directory_is_runtime_excluded(relative_path)
+            || self.runtime_files.contains(relative_path)
         {
             return Some(FtsSkipReason::Config);
         }
@@ -90,6 +101,18 @@ impl FtsExclusionSet {
         }
 
         None
+    }
+
+    fn directory_is_config_excluded(&self, relative_path: &str) -> bool {
+        self.config_directories
+            .iter()
+            .any(|directory| path_is_equal_or_descendant(relative_path, directory))
+    }
+
+    fn directory_is_runtime_excluded(&self, relative_path: &str) -> bool {
+        self.runtime_directories
+            .iter()
+            .any(|directory| path_is_equal_or_descendant(relative_path, directory))
     }
 }
 

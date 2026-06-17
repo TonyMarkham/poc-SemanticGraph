@@ -8,6 +8,22 @@ pub enum Command {
         #[arg(long)]
         db: Option<PathBuf>,
         #[arg(long)]
+        analysis_workers: Option<usize>,
+        #[arg(long)]
+        no_rust: bool,
+        #[arg(long)]
+        no_csharp: bool,
+        #[arg(long)]
+        no_submodules: bool,
+    },
+
+    #[command(name = "fts-tantivy")]
+    FtsTantivy {
+        #[arg(long)]
+        db: PathBuf,
+        #[arg(long)]
+        analysis_workers: Option<usize>,
+        #[arg(long)]
         no_rust: bool,
         #[arg(long)]
         no_csharp: bool,

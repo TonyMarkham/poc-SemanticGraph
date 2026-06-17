@@ -24,11 +24,13 @@ fn fts_defaults_to_all_text_files() -> Result<(), Box<dyn Error>> {
     match cli.command {
         Command::Fts {
             db,
+            analysis_workers,
             no_rust,
             no_csharp,
             no_submodules,
         } => {
             assert_eq!(db, None);
+            assert_eq!(analysis_workers, None);
             assert!(!no_rust);
             assert!(!no_csharp);
             assert!(!no_submodules);
@@ -46,6 +48,8 @@ fn fts_accepts_exclusion_flags_and_db() -> Result<(), Box<dyn Error>> {
         "fts",
         "--db",
         "scratch.db",
+        "--analysis-workers",
+        "3",
         "--no-rust",
         "--no-csharp",
         "--no-submodules",
@@ -54,16 +58,58 @@ fn fts_accepts_exclusion_flags_and_db() -> Result<(), Box<dyn Error>> {
     match cli.command {
         Command::Fts {
             db,
+            analysis_workers,
             no_rust,
             no_csharp,
             no_submodules,
         } => {
             assert_eq!(db, Some(PathBuf::from("scratch.db")));
+            assert_eq!(analysis_workers, Some(3));
             assert!(no_rust);
             assert!(no_csharp);
             assert!(no_submodules);
         }
         _ => return Err("expected fts command".into()),
+    }
+
+    Ok(())
+}
+
+#[test]
+fn fts_tantivy_requires_db() {
+    let result = Cli::try_parse_from(["semantic-graph-extract", "fts-tantivy"]);
+    assert!(result.is_err());
+}
+
+#[test]
+fn fts_tantivy_accepts_required_db_and_options() -> Result<(), Box<dyn Error>> {
+    let cli = Cli::try_parse_from([
+        "semantic-graph-extract",
+        "fts-tantivy",
+        "--db",
+        "scratch-tantivy.db",
+        "--analysis-workers",
+        "4",
+        "--no-rust",
+        "--no-csharp",
+        "--no-submodules",
+    ])?;
+
+    match cli.command {
+        Command::FtsTantivy {
+            db,
+            analysis_workers,
+            no_rust,
+            no_csharp,
+            no_submodules,
+        } => {
+            assert_eq!(db, PathBuf::from("scratch-tantivy.db"));
+            assert_eq!(analysis_workers, Some(4));
+            assert!(no_rust);
+            assert!(no_csharp);
+            assert!(no_submodules);
+        }
+        _ => return Err("expected fts-tantivy command".into()),
     }
 
     Ok(())

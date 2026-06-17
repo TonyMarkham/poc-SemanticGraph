@@ -409,11 +409,35 @@ without adding semantic nodes or edges:
 The command scans from the current directory, honors `[fts].ignore-directories`
 and `[fts].ignore-files` in `.refactor-radar/config.toml`, stores original
 UTF-8 text in `fts_document_trigram_ci`, and closes stale FTS documents after a
-successful run. Add `--no-rust`, `--no-csharp`, or `--no-submodules` to exclude
-those file sets for the run. The trigram index is a candidate source for
-substrings with at least one three-character sequence; one- and two-character
-literal searches need a later read-path fallback. Text query, MCP, and
-visualizer integration are separate later work.
+successful run. Repeated runs hash each discovered file, skip rewriting
+unchanged FTS documents, mark unchanged documents seen in a single write batch,
+and close removed documents at the end of the run. File reads and hashes run
+through a worker pool; pass `--analysis-workers N` to override
+`[extractor].analysis_workers`. Add `--no-rust`, `--no-csharp`, or
+`--no-submodules` to exclude those file sets for the run. The trigram index is
+a candidate source for substrings with at least one three-character sequence;
+one-character and two-character literal searches need a later read-path
+fallback. Text query, MCP, and visualizer integration are separate later work.
+
+Use `fts-tantivy` for the isolated Tantivy POC route. This command requires an
+explicit `--db` so it does not reuse an existing SQLite FTS5 database, stores
+file/document metadata and original UTF-8 text in ordinary SQLite tables, and
+writes the derived search index to a sidecar directory next to the database:
+
+```sh
+./target/release/semantic-graph-extract fts-tantivy \
+  --db .local/fts-tantivy-poc.db \
+  --analysis-workers 8
+```
+
+For `.local/fts-tantivy-poc.db`, the Tantivy index directory is
+`.local/fts-tantivy-poc.tantivy`. The POC route uses the same discovery,
+hashing, unchanged-file skip, stale-document closing, and worker-pool file
+processing as `fts`, but it does not write to SQLite's FTS5 virtual table.
+When those POC artifacts are inside the scanned workspace, the route excludes
+its own SQLite DB sidecars and Tantivy index directory from discovery. Tantivy
+remains a rebuildable sidecar artifact; SQLite remains the source of truth for
+file identity and stored content.
 
 ## Visualize A Rust Workspace
 

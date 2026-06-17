@@ -5,6 +5,10 @@ obj/
 
 # Local generated state
 .local/
+.refactor-radar/fts.tantivy/**
+.refactor-radar/fts.db
+.refactor-radar/content.db
+!.refactor-radar/config.toml
 *.db
 *.db-*
 
