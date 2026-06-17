@@ -4,7 +4,7 @@ use crate::{
     document_symbols::paths::file_uri,
     model::{
         CallRouteSummary, DocumentSymbolBatchExtraction, DocumentSymbolBatchRequest,
-        ReferenceRouteSummary,
+        ReferenceRouteSummary, RouteName,
     },
     persist::{ExtractionPersister, PersistenceSummary},
     providers::rust_analyzer::RustAnalyzerProvider,
@@ -89,7 +89,14 @@ impl SharedWorkspaceExtractionRunner {
 
         let unchanged_file_uri_timer = Stopwatch::start_new();
         let fresh_unchanged_file_uris = if let Some(workspace_id) = existing_workspace_id_value {
-            fresh_unchanged_file_uris(store, workspace_id, provider, &file_hashes).await?
+            fresh_unchanged_file_uris(
+                store,
+                workspace_id,
+                RouteName::RUST_DOCUMENT_SYMBOLS.as_str(),
+                provider.provider_id(),
+                &file_hashes,
+            )
+            .await?
         } else {
             HashSet::new()
         };
@@ -104,7 +111,8 @@ impl SharedWorkspaceExtractionRunner {
                 load_unchanged_document_symbol_extractions(
                     store,
                     workspace_id,
-                    provider,
+                    provider.provider_id(),
+                    rust_analyzer_lib::provider_version(),
                     &fresh_unchanged_file_uris,
                 )
                 .await?
@@ -190,7 +198,8 @@ impl SharedWorkspaceExtractionRunner {
         let changed_document_symbols =
             provider.map_document_symbol_items(changed_document_request, document_symbol_items)?;
         let document_symbols = combined_document_symbols(
-            provider,
+            provider.provider_id(),
+            "rust-analyzer-lib",
             changed_document_symbols.clone(),
             loaded_document_symbol_extractions,
         );
@@ -263,6 +272,7 @@ impl SharedWorkspaceExtractionRunner {
             .map(|file_hash| file_hash.file_path.clone())
             .collect::<HashSet<_>>();
         let changed_file_uri_set = changed_file_uris.iter().cloned().collect::<HashSet<_>>();
+        let use_origin_file_relation_batches = !loaded_file_uris.is_empty();
         let reference_targets = if routes.includes_references() && !changed_file_uris.is_empty() {
             provider.reference_targets_for_document_symbols(&document_request, &document_symbols)?
         } else {
@@ -326,27 +336,45 @@ impl SharedWorkspaceExtractionRunner {
                     reference_sets,
                     reference_target_count,
                 )?;
-                reference_route_summary = reference_route_summary_for_origin_files(
-                    &reference_extraction,
-                    &changed_file_uri_set,
-                );
+                reference_route_summary = if use_origin_file_relation_batches {
+                    reference_route_summary_for_origin_files(
+                        &reference_extraction,
+                        &changed_file_uri_set,
+                    )
+                } else {
+                    reference_extraction.summary.clone()
+                };
                 benchmark.insert_duration_ms(
                     "shared_workspace.references_map",
                     reference_map_timer.elapsed(),
                 );
 
                 let reference_persist_timer = Stopwatch::start_new();
-                reference_summary = ExtractionPersister
-                    .persist_reference_origin_file_batches_with_route_write_batch(
-                        store,
-                        &workspace_root_uri,
-                        &reference_extraction,
-                        &changed_file_uris,
-                    )
-                    .await?;
+                reference_summary = if use_origin_file_relation_batches {
+                    ExtractionPersister
+                        .persist_reference_origin_file_batches_with_route_write_batch(
+                            store,
+                            &workspace_root_uri,
+                            &reference_extraction,
+                            &changed_file_uris,
+                        )
+                        .await?
+                } else {
+                    ExtractionPersister
+                        .persist_reference_batch_with_route_write_batch(
+                            store,
+                            &workspace_root_uri,
+                            &reference_extraction,
+                        )
+                        .await?
+                };
                 benchmark.insert_label(
                     "shared_workspace.references_write_mode",
-                    "route_write_batch_origin_file",
+                    if use_origin_file_relation_batches {
+                        "route_write_batch_origin_file"
+                    } else {
+                        "route_write_batch"
+                    },
                 );
                 benchmark.insert_duration_ms(
                     "shared_workspace.references_persist",
@@ -366,23 +394,40 @@ impl SharedWorkspaceExtractionRunner {
                     call_sets,
                     call_target_count,
                 )?;
-                call_route_summary =
-                    call_route_summary_for_origin_files(&call_extraction, &changed_file_uri_set);
+                call_route_summary = if use_origin_file_relation_batches {
+                    call_route_summary_for_origin_files(&call_extraction, &changed_file_uri_set)
+                } else {
+                    call_extraction.summary.clone()
+                };
                 benchmark
                     .insert_duration_ms("shared_workspace.calls_map", call_map_timer.elapsed());
 
                 let call_persist_timer = Stopwatch::start_new();
-                call_summary = ExtractionPersister
-                    .persist_call_origin_file_batches_with_route_write_batch(
-                        store,
-                        &workspace_root_uri,
-                        &call_extraction,
-                        &changed_file_uris,
-                    )
-                    .await?;
+                call_summary = if use_origin_file_relation_batches {
+                    ExtractionPersister
+                        .persist_call_origin_file_batches_with_route_write_batch(
+                            store,
+                            &workspace_root_uri,
+                            &call_extraction,
+                            &changed_file_uris,
+                        )
+                        .await?
+                } else {
+                    ExtractionPersister
+                        .persist_call_batch_with_route_write_batch(
+                            store,
+                            &workspace_root_uri,
+                            &call_extraction,
+                        )
+                        .await?
+                };
                 benchmark.insert_label(
                     "shared_workspace.calls_write_mode",
-                    "route_write_batch_origin_file",
+                    if use_origin_file_relation_batches {
+                        "route_write_batch_origin_file"
+                    } else {
+                        "route_write_batch"
+                    },
                 );
                 benchmark.insert_duration_ms(
                     "shared_workspace.calls_persist",

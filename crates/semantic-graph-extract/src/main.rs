@@ -14,7 +14,7 @@ use semantic_graph_extract::{
     fts::{FtsExtractionOptions, FtsExtractionRunner, FtsExtractionSummary},
     model::{
         CallBatchExtraction, CallRouteSummary, DocumentSymbolBatchExtraction,
-        DocumentSymbolBatchRequest, GraphLanguage, ProviderId, ReferenceRouteSummary,
+        DocumentSymbolBatchRequest, GraphLanguage, ProviderId, ReferenceRouteSummary, RouteName,
     },
     persist::{ExtractionPersister, PersistenceSummary},
     providers::csharp_ls::CSharpLsProvider,
@@ -22,14 +22,17 @@ use semantic_graph_extract::{
     workspace_extraction::{
         CSharpRouteBatchContext, CSharpRouteBatchScope, SharedWorkspaceExtractionRunner,
         ThreadedWorkspaceExtractionConfig, ThreadedWorkspaceExtractionRunner,
-        WorkspaceExtractionRoutes, WorkspaceExtractionSummary,
+        WorkspaceExtractionRoutes, WorkspaceExtractionSummary, call_route_summary_for_origin_files,
+        combined_document_symbols, fresh_unchanged_file_uris,
+        load_unchanged_document_symbol_extractions, reference_route_summary_for_origin_files,
+        workspace_file_hashes,
     },
 };
 
 use clap::Parser;
 use sha2::Digest;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashSet},
     error::Error,
     path::{Path, PathBuf},
 };
@@ -1261,42 +1264,168 @@ async fn run_csharp_route_batch(
     let store = start_writer(db, config, &document_request.workspace_root).await?;
     benchmark.insert_duration_ms("writer_ready", writer_ready_timer.elapsed());
 
+    let incremental_solution = scope == CSharpRouteBatchScope::Solution;
+    let file_hash_timer = Stopwatch::start_new();
+    let file_hashes = if incremental_solution {
+        workspace_file_hashes(&document_request)?
+    } else {
+        Vec::new()
+    };
+    benchmark.insert_duration_ms(
+        &format!("{route_prefix}.file_hashes"),
+        file_hash_timer.elapsed(),
+    );
+    benchmark.insert_count(&format!("{route_prefix}.files_hashed"), file_hashes.len());
+
+    let workspace_id_timer = Stopwatch::start_new();
+    let existing_workspace_id_value = if incremental_solution {
+        store
+            .workspace_id(&workspace_root_uri)
+            .await
+            .map_err(ExtractError::storage)?
+    } else {
+        None
+    };
+    benchmark.insert_duration_ms(
+        &format!("{route_prefix}.existing_workspace_id"),
+        workspace_id_timer.elapsed(),
+    );
+
+    let unchanged_file_uri_timer = Stopwatch::start_new();
+    let fresh_unchanged_file_uris = if let Some(workspace_id) = existing_workspace_id_value {
+        fresh_unchanged_file_uris(
+            &store,
+            workspace_id,
+            RouteName::CSHARP_DOCUMENT_SYMBOLS.as_str(),
+            provider.provider_id(),
+            &file_hashes,
+        )
+        .await?
+    } else {
+        HashSet::new()
+    };
+    benchmark.insert_duration_ms(
+        &format!("{route_prefix}.unchanged_file_hash_lookup"),
+        unchanged_file_uri_timer.elapsed(),
+    );
+
+    let loaded_symbols_timer = Stopwatch::start_new();
+    let loaded_document_symbol_extractions = if let Some(workspace_id) = existing_workspace_id_value
+    {
+        load_unchanged_document_symbol_extractions(
+            &store,
+            workspace_id,
+            provider.provider_id(),
+            csharp_ls_lib::provider_version(),
+            &fresh_unchanged_file_uris,
+        )
+        .await?
+    } else {
+        Vec::new()
+    };
+    let loaded_file_uris = loaded_document_symbol_extractions
+        .iter()
+        .map(|extraction| extraction.source_file.uri.clone())
+        .collect::<HashSet<_>>();
+    benchmark.insert_duration_ms(
+        &format!("{route_prefix}.unchanged_symbols_load"),
+        loaded_symbols_timer.elapsed(),
+    );
+
+    let changed_file_hashes = if incremental_solution {
+        file_hashes
+            .iter()
+            .filter(|file_hash| !loaded_file_uris.contains(&file_hash.uri))
+            .cloned()
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    let changed_file_paths = if incremental_solution {
+        changed_file_hashes
+            .iter()
+            .map(|file_hash| file_hash.file_path.clone())
+            .collect::<Vec<_>>()
+    } else {
+        document_request.file_paths.clone()
+    };
+    let changed_file_uris = changed_file_hashes
+        .iter()
+        .map(|file_hash| file_hash.uri.clone())
+        .collect::<Vec<_>>();
+    let changed_file_uri_set = changed_file_uris.iter().cloned().collect::<HashSet<_>>();
+    let use_origin_file_relation_batches = incremental_solution && !loaded_file_uris.is_empty();
+    benchmark.insert_count(
+        &format!("{route_prefix}.files_hash_unchanged"),
+        loaded_file_uris.len(),
+    );
+    benchmark.insert_count(
+        &format!("{route_prefix}.files_changed"),
+        changed_file_paths.len(),
+    );
+
     let process_pool_start_timer = Stopwatch::start_new();
-    let mut worker_pool = csharp_ls_lib::CSharpLsWorkerPool::start(
-        plan.binary().clone(),
-        plan.solution().clone(),
-        plan.log_level().to_string(),
-        plan.features().to_vec(),
-        plan.startup_timeout_ms(),
-        plan.request_timeout_ms(),
-        plan.process_workers(),
-    )
-    .await
-    .map_err(|source| ExtractError::csharp_ls_lib("start C# worker pool", source))?;
+    let mut worker_pool = if incremental_solution && changed_file_paths.is_empty() {
+        None
+    } else {
+        Some(
+            csharp_ls_lib::CSharpLsWorkerPool::start(
+                plan.binary().clone(),
+                plan.solution().clone(),
+                plan.log_level().to_string(),
+                plan.features().to_vec(),
+                plan.startup_timeout_ms(),
+                plan.request_timeout_ms(),
+                plan.process_workers(),
+            )
+            .await
+            .map_err(|source| ExtractError::csharp_ls_lib("start C# worker pool", source))?,
+        )
+    };
     benchmark.insert_duration_ms(
         &format!("{route_prefix}.process_pool_start"),
         process_pool_start_timer.elapsed(),
     );
-    benchmark.insert_count("actual_process_workers", worker_pool.worker_count());
+    let actual_process_workers = worker_pool
+        .as_ref()
+        .map(csharp_ls_lib::CSharpLsWorkerPool::worker_count)
+        .unwrap_or(0);
+    benchmark.insert_count("actual_process_workers", actual_process_workers);
     benchmark.insert_count(
         &format!("{route_prefix}.actual_process_workers"),
-        worker_pool.worker_count(),
+        actual_process_workers,
     );
 
+    let mut changed_document_request = document_request.clone();
+    changed_document_request.file_paths = changed_file_paths.clone();
     let document_symbols_query_timer = Stopwatch::start_new();
-    let document_symbol_items = worker_pool
-        .document_symbols_for_files(document_request.file_paths.clone())
-        .await
-        .map_err(|source| {
-            ExtractError::csharp_ls_lib("csharp-ls-lib document_symbols_for_files", source)
-        })?;
+    let document_symbol_items = if let Some(worker_pool) = worker_pool.as_mut() {
+        worker_pool
+            .document_symbols_for_files(changed_file_paths.clone())
+            .await
+            .map_err(|source| {
+                ExtractError::csharp_ls_lib("csharp-ls-lib document_symbols_for_files", source)
+            })?
+    } else {
+        Vec::new()
+    };
     benchmark.insert_duration_ms(
         &format!("{route_prefix}.document_symbols_query"),
         document_symbols_query_timer.elapsed(),
     );
     let document_symbols_map_timer = Stopwatch::start_new();
-    let document_symbols =
-        provider.map_document_symbol_items(document_request.clone(), document_symbol_items)?;
+    let changed_document_symbols =
+        provider.map_document_symbol_items(changed_document_request, document_symbol_items)?;
+    let document_symbols = if incremental_solution {
+        combined_document_symbols(
+            provider.provider_id(),
+            "csharp-ls-lib",
+            changed_document_symbols.clone(),
+            loaded_document_symbol_extractions,
+        )
+    } else {
+        changed_document_symbols.clone()
+    };
     benchmark.insert_duration_ms(
         &format!("{route_prefix}.document_symbols_map"),
         document_symbols_map_timer.elapsed(),
@@ -1310,12 +1439,35 @@ async fn run_csharp_route_batch(
         &format!("{route_prefix}.document_symbols"),
         document_symbol_count(&document_symbols),
     );
+    benchmark.insert_count(
+        &format!("{route_prefix}.document_files_extracted"),
+        changed_document_symbols.extractions.len(),
+    );
+    benchmark.insert_count(
+        &format!("{route_prefix}.document_files_loaded"),
+        document_symbols.extractions.len() - changed_document_symbols.extractions.len(),
+    );
 
     let mut document_summary = if routes.includes_symbols() {
         let document_symbols_persist_timer = Stopwatch::start_new();
-        let summary = ExtractionPersister
-            .persist_document_symbol_batch(&store, &workspace_root_uri, &document_symbols)
-            .await?;
+        let summary = if incremental_solution && changed_document_symbols.extractions.is_empty() {
+            let workspace_id = existing_workspace_id_value.ok_or_else(|| {
+                ExtractError::response_shape(
+                    provider.provider_id().as_str(),
+                    "csharp-solution --symbols",
+                    format!("workspace {workspace_root_uri} is missing"),
+                )
+            })?;
+            empty_persistence_summary(workspace_id, 0)
+        } else {
+            ExtractionPersister
+                .persist_document_symbol_batch(
+                    &store,
+                    &workspace_root_uri,
+                    &changed_document_symbols,
+                )
+                .await?
+        };
         benchmark.insert_duration_ms(
             &format!("{route_prefix}.document_symbols_persist"),
             document_symbols_persist_timer.elapsed(),
@@ -1338,7 +1490,7 @@ async fn run_csharp_route_batch(
     let mut reference_route_summary = empty_reference_route_summary();
     let mut call_route_summary = empty_call_route_summary();
 
-    if routes.includes_references() {
+    if routes.includes_references() && (!incremental_solution || !changed_file_uris.is_empty()) {
         let reference_targets_timer = Stopwatch::start_new();
         let reference_targets = provider
             .reference_targets_for_document_symbols(&document_request, &document_symbols)?;
@@ -1362,10 +1514,22 @@ async fn run_csharp_route_batch(
             reference_work_build_timer.elapsed(),
         );
         let reference_work_timer = Stopwatch::start_new();
-        let file_results = worker_pool
-            .file_semantic_work_items(work_items)
-            .await
-            .map_err(|source| ExtractError::csharp_ls_lib("C# reference work items", source))?;
+        let file_results = if work_items.is_empty() {
+            Vec::new()
+        } else {
+            worker_pool
+                .as_mut()
+                .ok_or_else(|| {
+                    ExtractError::response_shape(
+                        provider.provider_id().as_str(),
+                        "csharp-solution",
+                        "reference work was scheduled without a C# worker pool",
+                    )
+                })?
+                .file_semantic_work_items(work_items)
+                .await
+                .map_err(|source| ExtractError::csharp_ls_lib("C# reference work items", source))?
+        };
         benchmark.insert_duration_ms(
             &format!("{route_prefix}.reference_work"),
             reference_work_timer.elapsed(),
@@ -1386,25 +1550,44 @@ async fn run_csharp_route_batch(
             references_map_timer.elapsed(),
         );
         extraction.workspace_fingerprint = workspace_fingerprint.clone();
-        reference_route_summary = extraction.summary.clone();
+        reference_route_summary = if use_origin_file_relation_batches {
+            reference_route_summary_for_origin_files(&extraction, &changed_file_uri_set)
+        } else {
+            extraction.summary.clone()
+        };
         let references_persist_timer = Stopwatch::start_new();
-        reference_summary = ExtractionPersister
-            .persist_reference_batch(&store, &workspace_root_uri, &extraction)
-            .await?;
+        reference_summary = if use_origin_file_relation_batches {
+            ExtractionPersister
+                .persist_reference_origin_file_batches_with_route_write_batch(
+                    &store,
+                    &workspace_root_uri,
+                    &extraction,
+                    &changed_file_uris,
+                )
+                .await?
+        } else {
+            ExtractionPersister
+                .persist_reference_batch(&store, &workspace_root_uri, &extraction)
+                .await?
+        };
         benchmark.insert_duration_ms(
             &format!("{route_prefix}.references_persist"),
             references_persist_timer.elapsed(),
         );
         benchmark.insert_label(
             &format!("{route_prefix}.references_write_mode"),
-            "reference_batch",
+            if use_origin_file_relation_batches {
+                "route_write_batch_origin_file"
+            } else {
+                "reference_batch"
+            },
         );
         if document_summary.workspace_id == 0 {
             document_summary.workspace_id = reference_summary.workspace_id;
         }
     }
 
-    if routes.includes_calls() {
+    if routes.includes_calls() && (!incremental_solution || !changed_file_uris.is_empty()) {
         let call_targets_timer = Stopwatch::start_new();
         let call_targets =
             provider.call_targets_for_document_symbols(&document_request, &document_symbols)?;
@@ -1422,10 +1605,22 @@ async fn run_csharp_route_batch(
             call_work_build_timer.elapsed(),
         );
         let call_work_timer = Stopwatch::start_new();
-        let file_results = worker_pool
-            .file_semantic_work_items(work_items)
-            .await
-            .map_err(|source| ExtractError::csharp_ls_lib("C# call work items", source))?;
+        let file_results = if work_items.is_empty() {
+            Vec::new()
+        } else {
+            worker_pool
+                .as_mut()
+                .ok_or_else(|| {
+                    ExtractError::response_shape(
+                        provider.provider_id().as_str(),
+                        "csharp-solution",
+                        "call work was scheduled without a C# worker pool",
+                    )
+                })?
+                .file_semantic_work_items(work_items)
+                .await
+                .map_err(|source| ExtractError::csharp_ls_lib("C# call work items", source))?
+        };
         benchmark.insert_duration_ms(
             &format!("{route_prefix}.call_work"),
             call_work_timer.elapsed(),
@@ -1446,26 +1641,50 @@ async fn run_csharp_route_batch(
             calls_map_timer.elapsed(),
         );
         extraction.workspace_fingerprint = workspace_fingerprint;
-        call_route_summary = extraction.summary.clone();
+        call_route_summary = if use_origin_file_relation_batches {
+            call_route_summary_for_origin_files(&extraction, &changed_file_uri_set)
+        } else {
+            extraction.summary.clone()
+        };
         let calls_persist_timer = Stopwatch::start_new();
-        call_summary = ExtractionPersister
-            .persist_call_batch(&store, &workspace_root_uri, &extraction)
-            .await?;
+        call_summary = if use_origin_file_relation_batches {
+            ExtractionPersister
+                .persist_call_origin_file_batches_with_route_write_batch(
+                    &store,
+                    &workspace_root_uri,
+                    &extraction,
+                    &changed_file_uris,
+                )
+                .await?
+        } else {
+            ExtractionPersister
+                .persist_call_batch(&store, &workspace_root_uri, &extraction)
+                .await?
+        };
         benchmark.insert_duration_ms(
             &format!("{route_prefix}.calls_persist"),
             calls_persist_timer.elapsed(),
         );
-        benchmark.insert_label(&format!("{route_prefix}.calls_write_mode"), "call_batch");
+        benchmark.insert_label(
+            &format!("{route_prefix}.calls_write_mode"),
+            if use_origin_file_relation_batches {
+                "route_write_batch_origin_file"
+            } else {
+                "call_batch"
+            },
+        );
         if document_summary.workspace_id == 0 {
             document_summary.workspace_id = call_summary.workspace_id;
         }
     }
 
     let process_pool_shutdown_timer = Stopwatch::start_new();
-    worker_pool
-        .shutdown()
-        .await
-        .map_err(|source| ExtractError::csharp_ls_lib("shutdown C# worker pool", source))?;
+    if let Some(worker_pool) = worker_pool {
+        worker_pool
+            .shutdown()
+            .await
+            .map_err(|source| ExtractError::csharp_ls_lib("shutdown C# worker pool", source))?;
+    }
     benchmark.insert_duration_ms(
         &format!("{route_prefix}.process_pool_shutdown"),
         process_pool_shutdown_timer.elapsed(),

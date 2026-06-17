@@ -65,12 +65,13 @@ Language intelligence:
   symbols are persisted in a DB-manager batch before relation extraction.
   Reference/call extraction runs only for changed origin files while resolving
   against the full active symbol graph, including unchanged files loaded from
-  SQLite, and persists file-scoped route rows in DB-manager batches after
-  relation extraction. Fresh workspace DB files skip document-symbol stale
-  closing; existing workspace DB files keep stale closing enabled. `--symbols`,
-  `--references`, and `--calls` are combinable route selectors; relation-only
-  runs require the selected files' symbol graph to already exist in the
-  database.
+  SQLite. Fresh runs and other runs where no files were skipped keep workspace
+  relation batches; partial incremental runs persist file-scoped route rows in
+  DB-manager batches after relation extraction. Fresh workspace DB files skip
+  document-symbol stale closing; existing workspace DB files keep stale closing
+  enabled. `--symbols`, `--references`, and `--calls` are combinable route
+  selectors; relation-only runs require the selected files' symbol graph to
+  already exist in the database.
 - The `rust-file-deleted` command is the file-watcher remove-event path. It
   accepts a deleted Rust file path that may no longer exist on disk, defaults
   `--workspace-root` to `.`, records file-scoped document-symbol/reference/call
@@ -82,6 +83,15 @@ Language intelligence:
 - `csharp-language-server` currently supports incoming call hierarchy, but its
   outgoing call hierarchy handler returns no result. Do not assume C# outgoing
   call edges are available from that LSP path without verifying source.
+- The `csharp-solution` command hashes discovered files before starting
+  `csharp-ls`, loads active symbols for unchanged files from SQLite when their
+  completed `csharp.document_symbols` route hash matches, and skips starting the
+  C# worker pool when every file is unchanged. Fresh solution runs and other
+  runs where no files were skipped keep solution relation batches; partial
+  incremental relation persistence is origin-file scoped for changed files.
+  Because the C# call route is currently incoming-call based, changed solution
+  relation passes still query the active symbol graph as targets so calls from
+  changed files to unchanged symbols can be refreshed.
 
 Visualization:
 

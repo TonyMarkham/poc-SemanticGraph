@@ -7,7 +7,7 @@ use crate::{
 
 use std::fs;
 
-pub(crate) fn workspace_file_hashes(
+pub fn workspace_file_hashes(
     document_request: &DocumentSymbolBatchRequest,
 ) -> ExtractResult<Vec<WorkspaceFileHash>> {
     let mut hashes = Vec::with_capacity(document_request.file_paths.len());

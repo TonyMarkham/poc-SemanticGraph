@@ -264,11 +264,13 @@ When changed files remain, `rust-workspace` loads the rust-analyzer workspace
 once, creates per-worker `ide::Analysis` snapshots, persists changed document
 symbols in one DB-manager batch, then extracts references and outgoing calls for
 the changed origin files. Relation extraction still resolves against the active
-symbol graph, including unchanged files loaded from SQLite, and relation routes
-are persisted per processed origin file with origin-file stale closing. Fresh
-database files skip document-symbol stale closing because there is no prior
-graph state; existing database files keep stale closing enabled. If every file
-is unchanged, the command skips starting the shared rust-analyzer analysis pool.
+symbol graph, including unchanged files loaded from SQLite. Fresh runs and other
+runs where no files were skipped keep the original workspace relation batches;
+partial incremental runs persist relation routes per processed origin file with
+origin-file stale closing. Fresh database files skip document-symbol stale
+closing because there is no prior graph state; existing database files keep
+stale closing enabled. If every file is unchanged, the command skips starting
+the shared rust-analyzer analysis pool.
 
 The command prints the normal workspace summary with `scope=workspace` and
 benchmark lines labeled `shared_analysis_snapshot` and `shared_workspace.*`.
@@ -368,6 +370,17 @@ Run one project boundary:
 files' symbol graph to already exist in the target database unless `--symbols`
 is selected in the same invocation. Use `--process-workers <N>` to start more
 than one `csharp-ls` worker process for project or solution batches.
+
+`csharp-solution` hashes discovered files before starting `csharp-ls`. When a
+file's hash matches a completed `csharp.document_symbols` file route in the
+database, the command loads that file's active symbols from SQLite and skips
+document-symbol extraction for that file. If every discovered file is unchanged,
+default full runs and `--symbols` runs skip starting the C# worker pool.
+References and calls are persisted per changed origin file; because the current
+C# call route uses incoming call hierarchy, partial incremental relation passes
+still query the active symbol graph as targets so calls from changed files to
+unchanged symbols can be refreshed. Fresh solution runs and other runs where no
+files were skipped keep the original solution relation batches.
 
 Mark a removed C# file stale without starting `csharp-ls`:
 

@@ -1,18 +1,18 @@
 use crate::{
     ExtractError, ExtractResult,
     document_symbols::paths::file_symbol_key,
-    model::{DocumentSymbolExtraction, ExtractedSymbol, GraphLanguage, SourceFile},
-    providers::rust_analyzer::RustAnalyzerProvider,
+    model::{DocumentSymbolExtraction, ExtractedSymbol, GraphLanguage, ProviderId, SourceFile},
 };
 
 use semantic_graph_db_manager::{ActiveFileSymbols, TextRange, WriteHandle};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 
-pub(crate) async fn load_unchanged_document_symbol_extractions(
+pub async fn load_unchanged_document_symbol_extractions(
     store: &WriteHandle,
     workspace_id: i64,
-    provider: &RustAnalyzerProvider,
+    provider: ProviderId,
+    provider_version: Option<String>,
     file_uris: &HashSet<String>,
 ) -> ExtractResult<Vec<DocumentSymbolExtraction>> {
     if file_uris.is_empty() {
@@ -29,6 +29,7 @@ pub(crate) async fn load_unchanged_document_symbol_extractions(
     for active_file in active_files {
         extractions.push(document_symbol_extraction_from_active_file(
             provider,
+            provider_version.clone(),
             active_file,
         )?);
     }
@@ -37,11 +38,12 @@ pub(crate) async fn load_unchanged_document_symbol_extractions(
 }
 
 fn document_symbol_extraction_from_active_file(
-    provider: &RustAnalyzerProvider,
+    provider: ProviderId,
+    provider_version: Option<String>,
     active_file: ActiveFileSymbols,
 ) -> ExtractResult<DocumentSymbolExtraction> {
     let language = graph_language_from_store(
-        provider.provider_id().as_str(),
+        provider.as_str(),
         "load active document symbols",
         &active_file.language,
     )?;
@@ -68,7 +70,7 @@ fn document_symbol_extraction_from_active_file(
     for active_symbol in active_file.symbols {
         let range = active_symbol.range.ok_or_else(|| {
             ExtractError::response_shape(
-                provider.provider_id().as_str(),
+                provider.as_str(),
                 "load active document symbols",
                 format!(
                     "active symbol {} is missing its range",
@@ -80,7 +82,7 @@ fn document_symbol_extraction_from_active_file(
             .map_err(|source| ExtractError::json("parse active symbol properties_json", source))?;
         let raw_json = properties.get("raw").cloned().ok_or_else(|| {
             ExtractError::response_shape(
-                provider.provider_id().as_str(),
+                provider.as_str(),
                 "load active document symbols",
                 format!(
                     "active symbol {} is missing raw document-symbol metadata",
@@ -103,7 +105,7 @@ fn document_symbol_extraction_from_active_file(
             .cloned();
 
         symbols.push(ExtractedSymbol {
-            provider: provider.provider_id(),
+            provider,
             language,
             file_uri: active_file.uri.clone(),
             symbol_key: active_symbol.symbol_key,
@@ -119,8 +121,8 @@ fn document_symbol_extraction_from_active_file(
     }
 
     Ok(DocumentSymbolExtraction {
-        provider: provider.provider_id(),
-        provider_version: rust_analyzer_lib::provider_version(),
+        provider,
+        provider_version,
         source_file,
         symbols,
         relations: Vec::new(),
@@ -129,7 +131,7 @@ fn document_symbol_extraction_from_active_file(
 }
 
 fn selection_range_from_symbol_raw(
-    provider: &RustAnalyzerProvider,
+    provider: ProviderId,
     raw_json: &Value,
 ) -> ExtractResult<TextRange> {
     let range = raw_json
@@ -138,7 +140,7 @@ fn selection_range_from_symbol_raw(
         .or_else(|| raw_json.get("selectionRange"))
         .ok_or_else(|| {
             ExtractError::response_shape(
-                provider.provider_id().as_str(),
+                provider.as_str(),
                 "load active document symbols",
                 "active symbol raw metadata is missing selectionRange",
             )
@@ -147,20 +149,17 @@ fn selection_range_from_symbol_raw(
     text_range_from_lsp_json(provider, range)
 }
 
-fn text_range_from_lsp_json(
-    provider: &RustAnalyzerProvider,
-    range: &Value,
-) -> ExtractResult<TextRange> {
+fn text_range_from_lsp_json(provider: ProviderId, range: &Value) -> ExtractResult<TextRange> {
     let start = range.get("start").ok_or_else(|| {
         ExtractError::response_shape(
-            provider.provider_id().as_str(),
+            provider.as_str(),
             "load active document symbols",
             "LSP range is missing start",
         )
     })?;
     let end = range.get("end").ok_or_else(|| {
         ExtractError::response_shape(
-            provider.provider_id().as_str(),
+            provider.as_str(),
             "load active document symbols",
             "LSP range is missing end",
         )
@@ -174,10 +173,10 @@ fn text_range_from_lsp_json(
     })
 }
 
-fn json_i64(provider: &RustAnalyzerProvider, value: &Value, field: &str) -> ExtractResult<i64> {
+fn json_i64(provider: ProviderId, value: &Value, field: &str) -> ExtractResult<i64> {
     value.get(field).and_then(Value::as_i64).ok_or_else(|| {
         ExtractError::response_shape(
-            provider.provider_id().as_str(),
+            provider.as_str(),
             "load active document symbols",
             format!("LSP position is missing numeric {field}"),
         )

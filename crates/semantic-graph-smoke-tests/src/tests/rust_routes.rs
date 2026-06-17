@@ -483,11 +483,11 @@ fn assert_shared_matches_threaded(
     );
     assert_eq!(
         shared.reference_summary.routes_complete,
-        shared.document_summary.files
+        threaded.reference_summary.routes_complete
     );
     assert_eq!(
         shared.call_summary.routes_complete,
-        shared.document_summary.files
+        threaded.call_summary.routes_complete
     );
 }
 

@@ -4,7 +4,7 @@ use crate::model::{
 
 use std::collections::HashSet;
 
-pub(crate) fn reference_route_summary_for_origin_files(
+pub fn reference_route_summary_for_origin_files(
     extraction: &ReferenceBatchExtraction,
     origin_file_uris: &HashSet<String>,
 ) -> ReferenceRouteSummary {
@@ -38,7 +38,7 @@ pub(crate) fn reference_route_summary_for_origin_files(
     }
 }
 
-pub(crate) fn call_route_summary_for_origin_files(
+pub fn call_route_summary_for_origin_files(
     extraction: &CallBatchExtraction,
     origin_file_uris: &HashSet<String>,
 ) -> CallRouteSummary {

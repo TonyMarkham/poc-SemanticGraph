@@ -1,12 +1,10 @@
-use crate::{
-    model::{DocumentSymbolBatchExtraction, DocumentSymbolExtraction},
-    providers::rust_analyzer::RustAnalyzerProvider,
-};
+use crate::model::{DocumentSymbolBatchExtraction, DocumentSymbolExtraction, ProviderId};
 
 use serde_json::json;
 
-pub(crate) fn combined_document_symbols(
-    provider: &RustAnalyzerProvider,
+pub fn combined_document_symbols(
+    provider: ProviderId,
+    facade: &str,
     changed_document_symbols: DocumentSymbolBatchExtraction,
     mut loaded_extractions: Vec<DocumentSymbolExtraction>,
 ) -> DocumentSymbolBatchExtraction {
@@ -20,11 +18,11 @@ pub(crate) fn combined_document_symbols(
     });
 
     DocumentSymbolBatchExtraction {
-        provider: provider.provider_id(),
+        provider,
         provider_version,
         extractions,
         raw_metadata: json!({
-            "facade": "rust-analyzer-lib",
+            "facade": facade,
             "incremental": true,
         }),
     }

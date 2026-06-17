@@ -20,20 +20,20 @@ mod workspace_file_hashes;
 
 // ---------------------------------------------------------------------------------------------- //
 
-pub(crate) use combined_document_symbols::combined_document_symbols;
+pub use combined_document_symbols::combined_document_symbols;
 pub(crate) use file_relation_context::FileRelationContext;
 pub(crate) use file_relation_route_start::FileRelationRouteStart;
 pub(crate) use file_relation_worker_join_handle::FileRelationWorkerJoinHandle;
 pub(crate) use file_relation_worker_metric::FileRelationWorkerMetric;
 pub(crate) use file_relation_worker_result::FileRelationWorkerResult;
 pub(crate) use file_relation_worker_summary::FileRelationWorkerSummary;
-pub(crate) use fresh_unchanged_file_uris::fresh_unchanged_file_uris;
-pub(crate) use origin_file_route_summary::{
+pub use fresh_unchanged_file_uris::fresh_unchanged_file_uris;
+pub use origin_file_route_summary::{
     call_route_summary_for_origin_files, reference_route_summary_for_origin_files,
 };
-pub(crate) use unchanged_document_symbol_extractions::load_unchanged_document_symbol_extractions;
-pub(crate) use workspace_file_hash::WorkspaceFileHash;
-pub(crate) use workspace_file_hashes::workspace_file_hashes;
+pub use unchanged_document_symbol_extractions::load_unchanged_document_symbol_extractions;
+pub use workspace_file_hash::WorkspaceFileHash;
+pub use workspace_file_hashes::workspace_file_hashes;
 
 pub use csharp_route_batch_context::CSharpRouteBatchContext;
 pub use csharp_route_batch_scope::CSharpRouteBatchScope;

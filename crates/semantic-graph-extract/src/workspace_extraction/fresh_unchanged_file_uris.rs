@@ -1,23 +1,19 @@
 use crate::{
-    ExtractError, ExtractResult, model::RouteName, providers::rust_analyzer::RustAnalyzerProvider,
-    workspace_extraction::WorkspaceFileHash,
+    ExtractError, ExtractResult, model::ProviderId, workspace_extraction::WorkspaceFileHash,
 };
 
 use semantic_graph_db_manager::WriteHandle;
 use std::collections::HashSet;
 
-pub(crate) async fn fresh_unchanged_file_uris(
+pub async fn fresh_unchanged_file_uris(
     store: &WriteHandle,
     workspace_id: i64,
-    provider: &RustAnalyzerProvider,
+    route: &str,
+    provider_id: ProviderId,
     file_hashes: &[WorkspaceFileHash],
 ) -> ExtractResult<HashSet<String>> {
     let stored_hashes = store
-        .file_route_content_hashes(
-            workspace_id,
-            RouteName::RUST_DOCUMENT_SYMBOLS.as_str(),
-            provider.provider_id().as_str(),
-        )
+        .file_route_content_hashes(workspace_id, route, provider_id.as_str())
         .await
         .map_err(ExtractError::storage)?;
     let unchanged = file_hashes
