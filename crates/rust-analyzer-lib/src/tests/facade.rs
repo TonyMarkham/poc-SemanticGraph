@@ -5,8 +5,9 @@ use std::sync::Mutex;
 
 use crate::{
     AnalysisWorker, AnalysisWorkerPool, FileSemanticWork, ResolvedCallTarget,
-    ResolvedReferenceTarget, document_symbols_for_file, load_workspace, outgoing_calls_for_symbols,
-    package_source_files, provider_version, references_for_symbols, workspace_source_files,
+    ResolvedReferenceTarget, SharedAnalysisWorkerPool, document_symbols_for_file, load_workspace,
+    outgoing_calls_for_symbols, package_source_files, provider_version, references_for_symbols,
+    workspace_source_files,
 };
 use lsp_types::DocumentSymbol;
 
@@ -255,6 +256,66 @@ async fn analysis_worker_pool_serves_parallel_query_lanes() -> Result<(), Box<dy
             && relative_path(&repo_root, &call.target_file_path).as_deref()
                 == Some("crates/wip/src/pipeline.rs")
     }));
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[allow(clippy::await_holding_lock)]
+async fn shared_analysis_worker_pool_matches_current_pool_for_wip() -> Result<(), Box<dyn Error>> {
+    // Serialize rust-analyzer workspace-load tests; this guard is intentionally held across awaits.
+    let _guard = workspace_load_guard()?;
+    let repo_root = repo_root()?;
+    let target_file_path = repo_root.join("crates/wip/src/pipeline.rs");
+    let current_pool = AnalysisWorkerPool::start(&repo_root, 2)?;
+    let shared_pool = SharedAnalysisWorkerPool::start(&repo_root, 2)?;
+
+    let current_symbols = current_pool
+        .document_symbols_for_files(vec![target_file_path.clone()])
+        .await?;
+    let shared_symbols = shared_pool
+        .document_symbols_for_files(vec![target_file_path.clone()])
+        .await?;
+    assert_eq!(shared_symbols, current_symbols);
+
+    let symbols = current_symbols
+        .first()
+        .ok_or_else(|| io::Error::other("analysis worker pool returned no document symbols"))?
+        .1
+        .as_slice();
+    let reference_target_symbol = find_symbol(symbols, "WidgetProcessor")
+        .ok_or_else(|| io::Error::other("WidgetProcessor symbol was not found"))?;
+    let call_target_symbol = find_symbol(symbols, "ingest")
+        .ok_or_else(|| io::Error::other("WidgetProcessor::ingest symbol was not found"))?;
+    let work = FileSemanticWork {
+        file_path: target_file_path.clone(),
+        reference_targets: vec![ResolvedReferenceTarget {
+            file_path: target_file_path.clone(),
+            selection_range: reference_target_symbol.selection_range,
+            name: reference_target_symbol.name.clone(),
+        }],
+        call_targets: vec![ResolvedCallTarget {
+            file_path: target_file_path,
+            selection_range: call_target_symbol.selection_range,
+            name: call_target_symbol.name.clone(),
+        }],
+    };
+    let current_worker = current_pool
+        .worker_handles()
+        .first()
+        .cloned()
+        .ok_or_else(|| io::Error::other("analysis worker pool returned no worker handles"))?;
+    let shared_worker = shared_pool
+        .worker_handles()
+        .first()
+        .cloned()
+        .ok_or_else(|| io::Error::other("shared analysis pool returned no worker handles"))?;
+    let current_result = current_worker.file_semantic_work(work.clone()).await?;
+    let shared_result = shared_worker.file_semantic_work(work).await?;
+
+    current_pool.shutdown().await?;
+    shared_pool.shutdown().await?;
+
+    assert_eq!(shared_result, current_result);
     Ok(())
 }
 

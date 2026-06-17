@@ -1,6 +1,9 @@
 use crate::{
     RustAnalyzerLibError, RustAnalyzerLibResult,
-    semantic::{loaded_analysis::LoadedAnalysis, loaded_analysis::absolute_path, lsp_range::range},
+    semantic::{
+        analysis_context::AnalysisContext, loaded_analysis::LoadedAnalysis,
+        loaded_analysis::absolute_path, lsp_range::range,
+    },
 };
 
 use ide::{FileStructureConfig, StructureNodeKind, SymbolKind};
@@ -16,17 +19,17 @@ pub fn document_symbols_for_file(
 }
 
 pub(super) fn document_symbols_for_path(
-    loaded: &LoadedAnalysis,
+    context: &impl AnalysisContext,
     file_path: &Path,
 ) -> RustAnalyzerLibResult<Vec<DocumentSymbol>> {
     let file_path = absolute_path(file_path, "canonicalize Rust source file")?;
-    let file_id = loaded.file_id_for_path(&file_path)?;
-    let line_index = loaded
-        .analysis
+    let file_id = context.file_id_for_path(&file_path)?;
+    let line_index = context
+        .analysis()
         .file_line_index(file_id)
         .map_err(|source| RustAnalyzerLibError::analysis("load file line index", source))?;
-    let structure_nodes = loaded
-        .analysis
+    let structure_nodes = context
+        .analysis()
         .file_structure(
             &FileStructureConfig {
                 exclude_locals: true,

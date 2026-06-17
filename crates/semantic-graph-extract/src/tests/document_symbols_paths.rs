@@ -8,7 +8,7 @@ use crate::error::ExtractError;
 use crate::model::DocumentSymbolRequest;
 
 #[test]
-fn rejects_file_outside_workspace_root() -> std::result::Result<(), Box<dyn Error>> {
+fn rejects_file_outside_workspace_root() -> Result<(), Box<dyn Error>> {
     let repo_root = repo_root()?;
     let workspace_root = repo_root.join("crates/wip");
     let outside_file = repo_root.join("Cargo.toml");
@@ -24,13 +24,13 @@ fn rejects_file_outside_workspace_root() -> std::result::Result<(), Box<dyn Erro
 }
 
 #[test]
-fn file_uri_percent_encodes_spaces() -> std::result::Result<(), Box<dyn Error>> {
+fn file_uri_percent_encodes_spaces() -> Result<(), Box<dyn Error>> {
     let uri = file_uri(Path::new("/tmp/a path/lib.rs"))?;
     assert_eq!(uri, "file:///tmp/a%20path/lib.rs");
     Ok(())
 }
 
-fn repo_root() -> std::result::Result<PathBuf, Box<dyn Error>> {
+fn repo_root() -> Result<PathBuf, Box<dyn Error>> {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let crates_dir = manifest_dir
         .parent()

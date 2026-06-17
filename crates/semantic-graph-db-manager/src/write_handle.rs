@@ -1,9 +1,10 @@
 use crate::{
     CloseStaleFileInput, CloseStaleFtsDocumentsInput, CloseStaleRouteInput, DbManagerError,
-    DbManagerResult, DemoSeedSummary, EdgeEvidenceInput, EdgeInput, FileInput, FtsDocumentInput,
+    DbManagerResult, DemoSeedSummary, DocumentSymbolWriteBatchInput,
+    DocumentSymbolWriteBatchSummary, EdgeEvidenceInput, EdgeInput, FileInput, FtsDocumentInput,
     NodeInput, OccurrenceInput, RouteObservationInput, RouteStatusCompleteInput,
-    RouteStatusFailInput, RouteStatusStartInput, StaleFileSummary, WriteProgress, WriteSummary,
-    commands::Commands,
+    RouteStatusFailInput, RouteStatusStartInput, RouteWriteBatchInput, StaleFileSummary,
+    WriteProgress, WriteSummary, commands::Commands,
 };
 
 use std::sync::Arc;
@@ -235,6 +236,25 @@ impl WriteHandle {
                 input: input.into(),
                 response,
             })
+            .await?;
+        receiver.await?
+    }
+
+    pub async fn write_route_batch(&self, input: RouteWriteBatchInput) -> DbManagerResult<()> {
+        let (response, receiver) = oneshot::channel();
+        self.sender
+            .send(Commands::WriteRouteBatch { input, response })
+            .await?;
+        receiver.await?
+    }
+
+    pub async fn write_document_symbol_batch(
+        &self,
+        input: DocumentSymbolWriteBatchInput,
+    ) -> DbManagerResult<DocumentSymbolWriteBatchSummary> {
+        let (response, receiver) = oneshot::channel();
+        self.sender
+            .send(Commands::WriteDocumentSymbolBatch { input, response })
             .await?;
         receiver.await?
     }

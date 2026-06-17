@@ -4,7 +4,7 @@ use crate::{
         ResolvedCallTarget, ResolvedOutgoingCallSet, ResolvedReferenceSet, ResolvedReferenceTarget,
     },
     semantic::{
-        document_symbols_for_file::document_symbols_for_path,
+        analysis_context::AnalysisContext, document_symbols_for_file::document_symbols_for_path,
         file_semantic_result::FileSemanticResult, file_semantic_work::FileSemanticWork,
         outgoing_calls_for_symbols::outgoing_calls_for_target,
         references_for_symbols::references_for_target,
@@ -134,6 +134,20 @@ impl LoadedAnalysis {
             .file_path(file_id)
             .as_path()
             .map(|abs_path| PathBuf::from(abs_path.to_path_buf()))
+    }
+}
+
+impl AnalysisContext for LoadedAnalysis {
+    fn analysis(&self) -> &ide::Analysis {
+        &self.analysis
+    }
+
+    fn file_id_for_path(&self, file_path: &Path) -> RustAnalyzerLibResult<FileId> {
+        LoadedAnalysis::file_id_for_path(self, file_path)
+    }
+
+    fn file_path_for_id(&self, file_id: FileId) -> Option<PathBuf> {
+        LoadedAnalysis::file_path_for_id(self, file_id)
     }
 }
 

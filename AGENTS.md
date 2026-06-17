@@ -56,8 +56,13 @@ Language intelligence:
   are special route-only modes; `--references` and `--calls` require the file's
   symbol graph to already exist in the database.
 - The `rust-crate` and `rust-workspace` commands are the crate/workspace refresh
-  paths. With no mode flag, they extract symbols, references, and calls using
-  the threaded in-process `rust-analyzer-lib` worker-pool path. `--symbols`,
+  paths. With no mode flag, they extract symbols, references, and calls.
+  `rust-crate` uses the threaded in-process `rust-analyzer-lib` worker-pool
+  path. `rust-workspace` uses the shared rust-analyzer analysis snapshot path,
+  persists document symbols in a DB-manager batch before relation extraction,
+  and persists reference/call route rows in DB-manager batches after relation
+  extraction. Fresh workspace DB files skip document-symbol stale closing;
+  existing workspace DB files keep stale closing enabled. `--symbols`,
   `--references`, and `--calls` are combinable route selectors; relation-only
   runs require the selected files' symbol graph to already exist in the
   database.

@@ -22,9 +22,16 @@ pub use demo_seed_summary::DemoSeedSummary;
 pub use error::{DbManagerError, DbManagerResult};
 pub use ids::{edge_id, node_id};
 pub use input::{
-    CloseStaleFileInput, CloseStaleFtsDocumentsInput, CloseStaleRouteInput, EdgeEvidenceInput,
-    EdgeInput, FileInput, FtsDocumentInput, NodeInput, OccurrenceInput, RouteObservationInput,
-    RouteStatusCompleteInput, RouteStatusFailInput, RouteStatusStartInput, TextRange,
+    CloseStaleFileInput, CloseStaleFtsDocumentsInput, CloseStaleRouteInput,
+    DocumentSymbolWriteBatchCloseStaleRouteInput, DocumentSymbolWriteBatchEdgeEvidenceInput,
+    DocumentSymbolWriteBatchFileInput, DocumentSymbolWriteBatchInput,
+    DocumentSymbolWriteBatchNodeInput, DocumentSymbolWriteBatchObservationInput,
+    DocumentSymbolWriteBatchOccurrenceInput, DocumentSymbolWriteBatchRouteStatusCompleteInput,
+    DocumentSymbolWriteBatchRouteStatusStartInput, DocumentSymbolWriteBatchSummary,
+    EdgeEvidenceInput, EdgeInput, FileInput, FtsDocumentInput, NodeInput, OccurrenceInput,
+    RouteObservationInput, RouteStatusCompleteInput, RouteStatusFailInput, RouteStatusStartInput,
+    RouteWriteBatchEdgeEvidenceInput, RouteWriteBatchEdgeInput, RouteWriteBatchInput,
+    RouteWriteBatchObservationInput, RouteWriteBatchOccurrenceInput, TextRange,
 };
 pub use stale_file_summary::StaleFileSummary;
 pub use write_handle::WriteHandle;

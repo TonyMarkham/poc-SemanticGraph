@@ -1,7 +1,9 @@
 use crate::{
     RustAnalyzerLibError, RustAnalyzerLibResult,
     model::{ResolvedReferenceLocation, ResolvedReferenceSet, ResolvedReferenceTarget},
-    semantic::{loaded_analysis::LoadedAnalysis, lsp_range::range},
+    semantic::{
+        analysis_context::AnalysisContext, loaded_analysis::LoadedAnalysis, lsp_range::range,
+    },
 };
 
 use ide::{FilePosition, FindAllRefsConfig, RaFixtureConfig};
@@ -26,20 +28,20 @@ pub fn references_for_symbols(
 }
 
 pub(super) fn references_for_target(
-    loaded: &LoadedAnalysis,
+    context: &impl AnalysisContext,
     target: &ResolvedReferenceTarget,
 ) -> RustAnalyzerLibResult<ResolvedReferenceSet> {
-    let file_id = loaded.file_id_for_path(&target.file_path)?;
-    let line_index = loaded
-        .analysis
+    let file_id = context.file_id_for_path(&target.file_path)?;
+    let line_index = context
+        .analysis()
         .file_line_index(file_id)
         .map_err(|source| RustAnalyzerLibError::analysis("load file line index", source))?;
     let position = FilePosition {
         file_id,
         offset: text_size_for_position(&line_index, target.selection_range.start)?,
     };
-    let Some(search_results) = loaded
-        .analysis
+    let Some(search_results) = context
+        .analysis()
         .find_all_refs(
             position,
             &FindAllRefsConfig {
@@ -66,19 +68,18 @@ pub(super) fn references_for_target(
     for search_result in search_results {
         for (reference_file_id, reference_ranges) in search_result.references {
             let reference_file_path =
-                loaded.file_path_for_id(reference_file_id).ok_or_else(|| {
+                context.file_path_for_id(reference_file_id).ok_or_else(|| {
                     RustAnalyzerLibError::analysis_message(
                         "resolve reference file path",
                         "reference file is virtual and has no filesystem path",
                     )
                 })?;
-            let reference_line_index =
-                loaded
-                    .analysis
-                    .file_line_index(reference_file_id)
-                    .map_err(|source| {
-                        RustAnalyzerLibError::analysis("load reference file line index", source)
-                    })?;
+            let reference_line_index = context
+                .analysis()
+                .file_line_index(reference_file_id)
+                .map_err(|source| {
+                    RustAnalyzerLibError::analysis("load reference file line index", source)
+                })?;
 
             for (reference_range, _category) in reference_ranges {
                 if reference_file_id == file_id && reference_range == target_text_range {

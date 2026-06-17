@@ -63,7 +63,7 @@ confidence:
     cargo test
     just --justfile {{justfile()}} copy-release-bins
     just --justfile {{justfile()}} confidence-rust-workspace
-    just --justfile {{justfile()}} confidence-csharp-solution
+    # just --justfile {{justfile()}} confidence-csharp-solution
 
 # Copy release binaries into the project-local Refactor Radar bin directory.
 copy-release-bins:

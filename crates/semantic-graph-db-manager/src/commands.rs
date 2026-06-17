@@ -1,5 +1,6 @@
 use crate::{
-    DbManagerResult, DemoSeedSummary, StaleFileSummary, WriteSummary,
+    DbManagerResult, DemoSeedSummary, DocumentSymbolWriteBatchInput,
+    DocumentSymbolWriteBatchSummary, RouteWriteBatchInput, StaleFileSummary, WriteSummary,
     models::{
         OwnedCloseStaleFileInput, OwnedCloseStaleFtsDocumentsInput, OwnedCloseStaleRouteInput,
         OwnedEdgeEvidenceInput, OwnedEdgeInput, OwnedFileInput, OwnedFtsDocumentInput,
@@ -84,6 +85,14 @@ pub(crate) enum Commands {
         input: OwnedRouteObservationInput,
         response: oneshot::Sender<DbManagerResult<()>>,
     },
+    WriteRouteBatch {
+        input: RouteWriteBatchInput,
+        response: oneshot::Sender<DbManagerResult<()>>,
+    },
+    WriteDocumentSymbolBatch {
+        input: DocumentSymbolWriteBatchInput,
+        response: oneshot::Sender<DbManagerResult<DocumentSymbolWriteBatchSummary>>,
+    },
     CloseStaleNodesForRoute {
         input: OwnedCloseStaleRouteInput,
         response: oneshot::Sender<DbManagerResult<u64>>,
@@ -129,6 +138,8 @@ impl Commands {
             Self::CompleteRouteStatus { .. } => "complete_route_status",
             Self::FailRouteStatus { .. } => "fail_route_status",
             Self::RecordRouteObservation { .. } => "record_route_observation",
+            Self::WriteRouteBatch { .. } => "write_route_batch",
+            Self::WriteDocumentSymbolBatch { .. } => "write_document_symbol_batch",
             Self::CloseStaleNodesForRoute { .. } => "close_stale_nodes_for_route",
             Self::CloseStaleFile { .. } => "close_stale_file",
             Self::CloseStaleFtsDocumentsForWorkspace { .. } => {

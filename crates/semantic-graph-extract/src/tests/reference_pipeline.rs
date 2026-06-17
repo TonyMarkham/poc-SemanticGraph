@@ -18,7 +18,7 @@ use tokio::runtime::Builder;
 static RUST_ANALYZER_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
-fn extracts_rust_references_from_wip() -> std::result::Result<(), Box<dyn Error>> {
+fn extracts_rust_references_from_wip() -> Result<(), Box<dyn Error>> {
     run_with_rust_analyzer(async {
         let repo_root = repo_root()?;
         let provider = RustAnalyzerProvider::new();
@@ -50,7 +50,7 @@ fn extracts_rust_references_from_wip() -> std::result::Result<(), Box<dyn Error>
 }
 
 #[test]
-fn persists_reference_edges_occurrences_and_evidence() -> std::result::Result<(), Box<dyn Error>> {
+fn persists_reference_edges_occurrences_and_evidence() -> Result<(), Box<dyn Error>> {
     run_with_rust_analyzer(async {
         let repo_root = repo_root()?;
         let provider = RustAnalyzerProvider::new();
@@ -117,8 +117,8 @@ fn persists_reference_edges_occurrences_and_evidence() -> std::result::Result<()
 }
 
 #[test]
-fn later_successful_reference_run_closes_unobserved_reference_edges()
--> std::result::Result<(), Box<dyn Error>> {
+fn later_successful_reference_run_closes_unobserved_reference_edges() -> Result<(), Box<dyn Error>>
+{
     run_with_rust_analyzer(async {
         let repo_root = repo_root()?;
         let provider = RustAnalyzerProvider::new();
@@ -169,7 +169,7 @@ fn later_successful_reference_run_closes_unobserved_reference_edges()
 fn reference_request(
     provider: &RustAnalyzerProvider,
     repo_root: &Path,
-) -> std::result::Result<ReferenceBatchRequest, Box<dyn Error>> {
+) -> Result<ReferenceBatchRequest, Box<dyn Error>> {
     let package_path = repo_root.join("crates/wip");
     let file_paths = provider.discover_rust_source_files(repo_root, &package_path)?;
     Ok(ReferenceBatchRequest {
@@ -179,7 +179,7 @@ fn reference_request(
     })
 }
 
-fn repo_root() -> std::result::Result<PathBuf, Box<dyn Error>> {
+fn repo_root() -> Result<PathBuf, Box<dyn Error>> {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let crates_dir = manifest_dir
         .parent()
@@ -191,7 +191,7 @@ fn repo_root() -> std::result::Result<PathBuf, Box<dyn Error>> {
     Ok(repo_root.to_path_buf())
 }
 
-fn temp_db_path() -> std::result::Result<PathBuf, Box<dyn Error>> {
+fn temp_db_path() -> Result<PathBuf, Box<dyn Error>> {
     let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
     Ok(env::temp_dir().join(format!(
         "poc-semanticgraph-reference-extract-{}-{stamp}.db",
@@ -199,21 +199,20 @@ fn temp_db_path() -> std::result::Result<PathBuf, Box<dyn Error>> {
     )))
 }
 
-async fn sqlite_pool(path: &Path) -> std::result::Result<SqlitePool, Box<dyn Error>> {
+async fn sqlite_pool(path: &Path) -> Result<SqlitePool, Box<dyn Error>> {
     Ok(SqlitePool::connect(&format!("sqlite://{}", path.display())).await?)
 }
 
-fn run_with_rust_analyzer<F>(future: F) -> std::result::Result<(), Box<dyn Error>>
+fn run_with_rust_analyzer<F>(future: F) -> Result<(), Box<dyn Error>>
 where
-    F: Future<Output = std::result::Result<(), Box<dyn Error>>>,
+    F: Future<Output = Result<(), Box<dyn Error>>>,
 {
     let _guard = rust_analyzer_guard()?;
     let runtime = Builder::new_current_thread().enable_all().build()?;
     runtime.block_on(future)
 }
 
-fn rust_analyzer_guard() -> std::result::Result<std::sync::MutexGuard<'static, ()>, Box<dyn Error>>
-{
+fn rust_analyzer_guard() -> Result<std::sync::MutexGuard<'static, ()>, Box<dyn Error>> {
     RUST_ANALYZER_LOCK
         .lock()
         .map_err(|_| io::Error::other("rust-analyzer test mutex was poisoned").into())

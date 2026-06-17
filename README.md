@@ -254,6 +254,16 @@ combinable:
 and require the symbol graph for the selected files to already exist in the
 target database unless `--symbols` is selected in the same invocation.
 
+`rust-workspace` loads the rust-analyzer workspace once, creates per-worker
+`ide::Analysis` snapshots, persists document symbols in one DB-manager batch,
+then extracts references and outgoing calls before persisting each relation route
+in one batch. Fresh database files skip document-symbol stale closing because
+there is no prior graph state; existing database files keep stale closing
+enabled.
+
+The command prints the normal workspace summary with `scope=workspace` and
+benchmark lines labeled `shared_analysis_snapshot` and `shared_workspace.*`.
+
 Inspect the result:
 
 ```sh
@@ -479,6 +489,14 @@ just rust-workspace-call-route-smoke
 just rust-workspace-smoke
 ```
 
+The shared-vs-threaded workspace comparison is an ignored smoke test because it
+runs both workspace implementations over the WIP crate:
+
+```sh
+SQLX_OFFLINE=true cargo test -p semantic-graph-smoke-tests \
+  workspace_shared_matches_threaded_wip_counts -- --ignored --nocapture
+```
+
 C# smoke routes require `csharp-ls` on `PATH`:
 
 ```sh
@@ -564,6 +582,12 @@ workspace.calls.route.evidence=<call_occurrences>
 workspace.calls.route.routes_complete=1
 workspace.calls.route.stale_nodes_closed=0
 workspace.calls.route.stale_edges_closed=0
+workspace.shared_vs_threaded.threaded.files=<files>
+workspace.shared_vs_threaded.shared.files=<files>
+workspace.shared_vs_threaded.threaded.reference_edges=<references_edges>
+workspace.shared_vs_threaded.shared.reference_edges=<references_edges>
+workspace.shared_vs_threaded.threaded.call_edges=<calls_edges>
+workspace.shared_vs_threaded.shared.call_edges=<calls_edges>
 csharp.solution.discovery.count=1
 csharp.solution.discovery.file=Project/Worker.cs
 csharp.solution.symbols.files=1

@@ -1,7 +1,14 @@
 use crate::{
-    CloseStaleFileInput, CloseStaleRouteInput, Config, EdgeEvidenceInput, EdgeInput, FileInput,
+    CloseStaleFileInput, CloseStaleRouteInput, Config,
+    DocumentSymbolWriteBatchCloseStaleRouteInput, DocumentSymbolWriteBatchEdgeEvidenceInput,
+    DocumentSymbolWriteBatchFileInput, DocumentSymbolWriteBatchInput,
+    DocumentSymbolWriteBatchNodeInput, DocumentSymbolWriteBatchObservationInput,
+    DocumentSymbolWriteBatchOccurrenceInput, DocumentSymbolWriteBatchRouteStatusCompleteInput,
+    DocumentSymbolWriteBatchRouteStatusStartInput, EdgeEvidenceInput, EdgeInput, FileInput,
     NodeInput, RouteObservationInput, RouteStatusCompleteInput, RouteStatusStartInput,
-    WriteManager, edge_id, node_id,
+    RouteWriteBatchEdgeEvidenceInput, RouteWriteBatchEdgeInput, RouteWriteBatchInput,
+    RouteWriteBatchObservationInput, RouteWriteBatchOccurrenceInput, TextRange, WriteManager,
+    edge_id, node_id,
 };
 use serde_json::json;
 use sqlx::SqlitePool;
@@ -54,6 +61,481 @@ async fn shutdown_waits_for_sqlite_pool_cleanup() -> Result<(), Box<dyn Error>> 
 
     assert!(!sidecar_path(&path, "shm").exists());
     assert!(!sidecar_path(&path, "wal").exists());
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn route_write_batch_writes_related_route_rows() -> Result<(), Box<dyn Error>> {
+    let path = temp_db_path()?;
+    let writer = WriteManager::start(&path).await?;
+    writer.migrate().await?;
+
+    let workspace_uri = "file:///tmp/db-manager-route-write-batch";
+    let workspace_id = writer.create_workspace(workspace_uri, "rust").await?;
+    let run_id = writer
+        .start_run(workspace_id, "rust-analyzer", Some("test"), None)
+        .await?;
+    let file_uri = "file:///tmp/db-manager-route-write-batch/src/lib.rs";
+    let file_id = writer
+        .upsert_file(FileInput {
+            workspace_id,
+            uri: file_uri,
+            path: "src/lib.rs",
+            language: "rust",
+            content_hash: None,
+            last_seen_run_id: Some(run_id),
+            properties_json: json!({}),
+        })
+        .await?;
+    let source_symbol_key = format!("{file_uri}#function:source:1:0");
+    let target_symbol_key = format!("{file_uri}#function:target:5:0");
+    let source_node_id = writer
+        .upsert_node(NodeInput {
+            workspace_id,
+            language: "rust",
+            kind: "function",
+            name: "source",
+            qualified_name: Some("source"),
+            display_name: Some("source"),
+            symbol_key: &source_symbol_key,
+            file_id: Some(file_id),
+            range: None,
+            selection_range: None,
+            container_node_id: None,
+            properties_json: json!({}),
+            run_id: Some(run_id),
+        })
+        .await?;
+    let target_node_id = writer
+        .upsert_node(NodeInput {
+            workspace_id,
+            language: "rust",
+            kind: "function",
+            name: "target",
+            qualified_name: Some("target"),
+            display_name: Some("target"),
+            symbol_key: &target_symbol_key,
+            file_id: Some(file_id),
+            range: None,
+            selection_range: None,
+            container_node_id: None,
+            properties_json: json!({}),
+            run_id: Some(run_id),
+        })
+        .await?;
+    let edge_id = edge_id(
+        workspace_id,
+        &source_node_id,
+        &target_node_id,
+        "references",
+        Some("symbol"),
+    );
+    let range = TextRange {
+        start_line: 3,
+        start_col: 4,
+        end_line: 3,
+        end_col: 10,
+    };
+
+    writer
+        .write_route_batch(RouteWriteBatchInput {
+            edges: vec![RouteWriteBatchEdgeInput {
+                workspace_id,
+                src_node_id: source_node_id.clone(),
+                dst_node_id: target_node_id.clone(),
+                relation: "references".to_string(),
+                context: Some("symbol".to_string()),
+                confidence: "EXTRACTED".to_string(),
+                confidence_score: 1.0,
+                weight: 1.0,
+                properties_json: json!({ "route": "rust.references" }),
+                run_id: Some(run_id),
+            }],
+            occurrences: vec![RouteWriteBatchOccurrenceInput {
+                node_id: target_node_id,
+                run_id,
+                file_id,
+                role: "reference".to_string(),
+                range,
+                enclosing_node_id: Some(source_node_id),
+                raw_json: Some(json!({ "kind": "occurrence" })),
+            }],
+            edge_evidence: vec![RouteWriteBatchEdgeEvidenceInput {
+                edge_id: edge_id.clone(),
+                run_id,
+                provider: "rust-analyzer".to_string(),
+                lsp_method: Some("textDocument/references".to_string()),
+                file_id: Some(file_id),
+                range: Some(range),
+                raw_json: Some(json!({ "kind": "evidence" })),
+            }],
+            route_observations: vec![RouteWriteBatchObservationInput {
+                workspace_id,
+                run_id,
+                route: "rust.references".to_string(),
+                scope: "workspace".to_string(),
+                scope_key: workspace_uri.to_string(),
+                provider: "rust-analyzer".to_string(),
+                entity_kind: "edge".to_string(),
+                entity_id: edge_id.clone(),
+                source_file_id: Some(file_id),
+                properties_json: json!({ "source": "textDocument/references" }),
+            }],
+        })
+        .await?;
+    writer.finish_run(run_id, "complete").await?;
+    writer.shutdown().await?;
+
+    let pool = sqlite_pool(&path).await?;
+    let edge_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM edges WHERE id = ?")
+        .bind(&edge_id)
+        .fetch_one(&pool)
+        .await?;
+    let occurrence_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM occurrences WHERE run_id = ?")
+            .bind(run_id)
+            .fetch_one(&pool)
+            .await?;
+    let evidence_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM edge_evidence WHERE edge_id = ?")
+            .bind(&edge_id)
+            .fetch_one(&pool)
+            .await?;
+    let observation_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM route_observations WHERE entity_id = ?")
+            .bind(&edge_id)
+            .fetch_one(&pool)
+            .await?;
+
+    assert_eq!(edge_count, 1);
+    assert_eq!(occurrence_count, 1);
+    assert_eq!(evidence_count, 1);
+    assert_eq!(observation_count, 1);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn document_symbol_write_batch_writes_file_route_rows() -> Result<(), Box<dyn Error>> {
+    let path = temp_db_path()?;
+    let writer = WriteManager::start(&path).await?;
+    writer.migrate().await?;
+
+    let workspace_uri = "file:///tmp/db-manager-document-symbol-write-batch";
+    let workspace_id = writer.create_workspace(workspace_uri, "rust").await?;
+    let run_id = writer
+        .start_run(workspace_id, "rust-analyzer", Some("test"), None)
+        .await?;
+    let file_uri = "file:///tmp/db-manager-document-symbol-write-batch/src/lib.rs";
+    let file_symbol_key = format!("{file_uri}#file");
+    let function_symbol_key = format!("{file_uri}#function:process:3:0");
+    let file_node_id = node_id(workspace_id, "rust", &file_symbol_key);
+    let function_node_id = node_id(workspace_id, "rust", &function_symbol_key);
+    let contains_edge_id = edge_id(
+        workspace_id,
+        &file_node_id,
+        &function_node_id,
+        "contains",
+        None,
+    );
+    let range = TextRange {
+        start_line: 3,
+        start_col: 0,
+        end_line: 3,
+        end_col: 7,
+    };
+
+    let summary = writer
+        .write_document_symbol_batch(DocumentSymbolWriteBatchInput {
+            files: vec![DocumentSymbolWriteBatchFileInput {
+                workspace_id,
+                uri: file_uri.to_string(),
+                path: "src/lib.rs".to_string(),
+                language: "rust".to_string(),
+                content_hash: Some("hash".to_string()),
+                last_seen_run_id: Some(run_id),
+                properties_json: json!({ "provider": "rust-analyzer" }),
+            }],
+            route_status_starts: vec![DocumentSymbolWriteBatchRouteStatusStartInput {
+                workspace_id,
+                route: "rust.document_symbols".to_string(),
+                scope: "file".to_string(),
+                scope_key: file_uri.to_string(),
+                file_uri: Some(file_uri.to_string()),
+                provider: "rust-analyzer".to_string(),
+                provider_version: Some("test".to_string()),
+                content_hash: Some("hash".to_string()),
+                run_id,
+                diagnostics_json: json!({}),
+            }],
+            nodes: vec![
+                DocumentSymbolWriteBatchNodeInput {
+                    workspace_id,
+                    language: "rust".to_string(),
+                    kind: "file".to_string(),
+                    name: "lib.rs".to_string(),
+                    qualified_name: Some("src/lib.rs".to_string()),
+                    display_name: Some("lib.rs".to_string()),
+                    symbol_key: file_symbol_key,
+                    file_uri: Some(file_uri.to_string()),
+                    range: None,
+                    selection_range: None,
+                    container_node_id: None,
+                    properties_json: json!({ "kind": "file" }),
+                    run_id: Some(run_id),
+                },
+                DocumentSymbolWriteBatchNodeInput {
+                    workspace_id,
+                    language: "rust".to_string(),
+                    kind: "function".to_string(),
+                    name: "process".to_string(),
+                    qualified_name: Some("process".to_string()),
+                    display_name: Some("process".to_string()),
+                    symbol_key: function_symbol_key,
+                    file_uri: Some(file_uri.to_string()),
+                    range: Some(range),
+                    selection_range: Some(range),
+                    container_node_id: Some(file_node_id.clone()),
+                    properties_json: json!({ "kind": "function" }),
+                    run_id: Some(run_id),
+                },
+            ],
+            occurrences: vec![DocumentSymbolWriteBatchOccurrenceInput {
+                node_id: function_node_id.clone(),
+                run_id,
+                file_uri: file_uri.to_string(),
+                role: "definition".to_string(),
+                range,
+                enclosing_node_id: Some(file_node_id.clone()),
+                raw_json: Some(json!({ "kind": "definition" })),
+            }],
+            edges: vec![RouteWriteBatchEdgeInput {
+                workspace_id,
+                src_node_id: file_node_id.clone(),
+                dst_node_id: function_node_id.clone(),
+                relation: "contains".to_string(),
+                context: None,
+                confidence: "EXTRACTED".to_string(),
+                confidence_score: 1.0,
+                weight: 1.0,
+                properties_json: json!({ "source": "textDocument/documentSymbol" }),
+                run_id: Some(run_id),
+            }],
+            edge_evidence: vec![DocumentSymbolWriteBatchEdgeEvidenceInput {
+                edge_id: contains_edge_id.clone(),
+                run_id,
+                provider: "rust-analyzer".to_string(),
+                lsp_method: Some("textDocument/documentSymbol".to_string()),
+                file_uri: Some(file_uri.to_string()),
+                range: Some(range),
+                raw_json: Some(json!({ "kind": "contains" })),
+            }],
+            route_observations: vec![
+                DocumentSymbolWriteBatchObservationInput {
+                    workspace_id,
+                    run_id,
+                    route: "rust.document_symbols".to_string(),
+                    scope: "file".to_string(),
+                    scope_key: file_uri.to_string(),
+                    provider: "rust-analyzer".to_string(),
+                    entity_kind: "node".to_string(),
+                    entity_id: function_node_id.clone(),
+                    source_file_uri: Some(file_uri.to_string()),
+                    properties_json: json!({ "source": "textDocument/documentSymbol" }),
+                },
+                DocumentSymbolWriteBatchObservationInput {
+                    workspace_id,
+                    run_id,
+                    route: "rust.document_symbols".to_string(),
+                    scope: "file".to_string(),
+                    scope_key: file_uri.to_string(),
+                    provider: "rust-analyzer".to_string(),
+                    entity_kind: "edge".to_string(),
+                    entity_id: contains_edge_id.clone(),
+                    source_file_uri: Some(file_uri.to_string()),
+                    properties_json: json!({ "source": "textDocument/documentSymbol" }),
+                },
+            ],
+            route_status_completes: vec![DocumentSymbolWriteBatchRouteStatusCompleteInput {
+                workspace_id,
+                route: "rust.document_symbols".to_string(),
+                scope: "file".to_string(),
+                scope_key: file_uri.to_string(),
+                provider: "rust-analyzer".to_string(),
+                provider_version: Some("test".to_string()),
+                content_hash: Some("hash".to_string()),
+                run_id,
+                diagnostics_json: json!({ "nodes": 2, "contains_edges": 1 }),
+            }],
+            close_stale_nodes: vec![DocumentSymbolWriteBatchCloseStaleRouteInput {
+                workspace_id,
+                run_id,
+                route: "rust.document_symbols".to_string(),
+                scope: "file".to_string(),
+                scope_key: file_uri.to_string(),
+                provider: "rust-analyzer".to_string(),
+            }],
+            close_stale_edges: vec![DocumentSymbolWriteBatchCloseStaleRouteInput {
+                workspace_id,
+                run_id,
+                route: "rust.document_symbols".to_string(),
+                scope: "file".to_string(),
+                scope_key: file_uri.to_string(),
+                provider: "rust-analyzer".to_string(),
+            }],
+        })
+        .await?;
+    writer.finish_run(run_id, "complete").await?;
+
+    let second_run_id = writer
+        .start_run(workspace_id, "rust-analyzer", Some("test"), None)
+        .await?;
+    let second_summary = writer
+        .write_document_symbol_batch(DocumentSymbolWriteBatchInput {
+            files: vec![DocumentSymbolWriteBatchFileInput {
+                workspace_id,
+                uri: file_uri.to_string(),
+                path: "src/lib.rs".to_string(),
+                language: "rust".to_string(),
+                content_hash: Some("hash-2".to_string()),
+                last_seen_run_id: Some(second_run_id),
+                properties_json: json!({ "provider": "rust-analyzer" }),
+            }],
+            route_status_starts: vec![DocumentSymbolWriteBatchRouteStatusStartInput {
+                workspace_id,
+                route: "rust.document_symbols".to_string(),
+                scope: "file".to_string(),
+                scope_key: file_uri.to_string(),
+                file_uri: Some(file_uri.to_string()),
+                provider: "rust-analyzer".to_string(),
+                provider_version: Some("test".to_string()),
+                content_hash: Some("hash-2".to_string()),
+                run_id: second_run_id,
+                diagnostics_json: json!({}),
+            }],
+            nodes: vec![DocumentSymbolWriteBatchNodeInput {
+                workspace_id,
+                language: "rust".to_string(),
+                kind: "file".to_string(),
+                name: "lib.rs".to_string(),
+                qualified_name: Some("src/lib.rs".to_string()),
+                display_name: Some("lib.rs".to_string()),
+                symbol_key: format!("{file_uri}#file"),
+                file_uri: Some(file_uri.to_string()),
+                range: None,
+                selection_range: None,
+                container_node_id: None,
+                properties_json: json!({ "kind": "file" }),
+                run_id: Some(second_run_id),
+            }],
+            occurrences: Vec::new(),
+            edges: Vec::new(),
+            edge_evidence: Vec::new(),
+            route_observations: vec![DocumentSymbolWriteBatchObservationInput {
+                workspace_id,
+                run_id: second_run_id,
+                route: "rust.document_symbols".to_string(),
+                scope: "file".to_string(),
+                scope_key: file_uri.to_string(),
+                provider: "rust-analyzer".to_string(),
+                entity_kind: "node".to_string(),
+                entity_id: file_node_id.clone(),
+                source_file_uri: Some(file_uri.to_string()),
+                properties_json: json!({ "source": "textDocument/documentSymbol" }),
+            }],
+            route_status_completes: vec![DocumentSymbolWriteBatchRouteStatusCompleteInput {
+                workspace_id,
+                route: "rust.document_symbols".to_string(),
+                scope: "file".to_string(),
+                scope_key: file_uri.to_string(),
+                provider: "rust-analyzer".to_string(),
+                provider_version: Some("test".to_string()),
+                content_hash: Some("hash-2".to_string()),
+                run_id: second_run_id,
+                diagnostics_json: json!({ "nodes": 1, "contains_edges": 0 }),
+            }],
+            close_stale_nodes: vec![DocumentSymbolWriteBatchCloseStaleRouteInput {
+                workspace_id,
+                run_id: second_run_id,
+                route: "rust.document_symbols".to_string(),
+                scope: "file".to_string(),
+                scope_key: file_uri.to_string(),
+                provider: "rust-analyzer".to_string(),
+            }],
+            close_stale_edges: vec![DocumentSymbolWriteBatchCloseStaleRouteInput {
+                workspace_id,
+                run_id: second_run_id,
+                route: "rust.document_symbols".to_string(),
+                scope: "file".to_string(),
+                scope_key: file_uri.to_string(),
+                provider: "rust-analyzer".to_string(),
+            }],
+        })
+        .await?;
+    writer.finish_run(second_run_id, "complete").await?;
+    writer.shutdown().await?;
+
+    assert_eq!(summary.stale_nodes_closed, 0);
+    assert_eq!(summary.stale_edges_closed, 0);
+    assert_eq!(second_summary.stale_nodes_closed, 1);
+    assert_eq!(second_summary.stale_edges_closed, 1);
+
+    let pool = sqlite_pool(&path).await?;
+    let file_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM files WHERE uri = ?")
+        .bind(file_uri)
+        .fetch_one(&pool)
+        .await?;
+    let node_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM nodes WHERE file_id IN (SELECT id FROM files WHERE uri = ?)",
+    )
+    .bind(file_uri)
+    .fetch_one(&pool)
+    .await?;
+    let occurrence_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM occurrences WHERE run_id = ?")
+            .bind(run_id)
+            .fetch_one(&pool)
+            .await?;
+    let edge_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM edges WHERE id = ?")
+        .bind(&contains_edge_id)
+        .fetch_one(&pool)
+        .await?;
+    let evidence_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM edge_evidence WHERE edge_id = ?")
+            .bind(&contains_edge_id)
+            .fetch_one(&pool)
+            .await?;
+    let route_status: String = sqlx::query_scalar(
+        "SELECT last_status FROM extraction_route_status WHERE route = 'rust.document_symbols'",
+    )
+    .fetch_one(&pool)
+    .await?;
+    let file_node_valid_to: Option<i64> =
+        sqlx::query_scalar("SELECT valid_to_run_id FROM nodes WHERE id = ?")
+            .bind(&file_node_id)
+            .fetch_one(&pool)
+            .await?;
+    let function_node_valid_to: Option<i64> =
+        sqlx::query_scalar("SELECT valid_to_run_id FROM nodes WHERE id = ?")
+            .bind(&function_node_id)
+            .fetch_one(&pool)
+            .await?;
+    let contains_edge_valid_to: Option<i64> =
+        sqlx::query_scalar("SELECT valid_to_run_id FROM edges WHERE id = ?")
+            .bind(&contains_edge_id)
+            .fetch_one(&pool)
+            .await?;
+
+    assert_eq!(file_count, 1);
+    assert_eq!(node_count, 2);
+    assert_eq!(occurrence_count, 1);
+    assert_eq!(edge_count, 1);
+    assert_eq!(evidence_count, 1);
+    assert_eq!(route_status, "complete");
+    assert_eq!(file_node_valid_to, None);
+    assert_eq!(function_node_valid_to, Some(second_run_id));
+    assert_eq!(contains_edge_valid_to, Some(second_run_id));
 
     Ok(())
 }

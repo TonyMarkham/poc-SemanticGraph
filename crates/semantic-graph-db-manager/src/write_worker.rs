@@ -1,7 +1,14 @@
 use crate::{
-    DbManagerError, DbManagerResult, DbWriteProgressKind, DemoSeedSummary, EdgeEvidenceInput,
-    EdgeInput, FileInput, NodeInput, OccurrenceInput, StaleFileSummary, TextRange, WriteProgress,
-    WriteSummary,
+    DbManagerError, DbManagerResult, DbWriteProgressKind, DemoSeedSummary,
+    DocumentSymbolWriteBatchCloseStaleRouteInput, DocumentSymbolWriteBatchEdgeEvidenceInput,
+    DocumentSymbolWriteBatchFileInput, DocumentSymbolWriteBatchInput,
+    DocumentSymbolWriteBatchNodeInput, DocumentSymbolWriteBatchObservationInput,
+    DocumentSymbolWriteBatchOccurrenceInput, DocumentSymbolWriteBatchRouteStatusCompleteInput,
+    DocumentSymbolWriteBatchRouteStatusStartInput, DocumentSymbolWriteBatchSummary,
+    EdgeEvidenceInput, EdgeInput, FileInput, NodeInput, OccurrenceInput,
+    RouteWriteBatchEdgeEvidenceInput, RouteWriteBatchEdgeInput, RouteWriteBatchInput,
+    RouteWriteBatchObservationInput, RouteWriteBatchOccurrenceInput, StaleFileSummary, TextRange,
+    WriteProgress, WriteSummary,
     commands::Commands,
     edge_id,
     models::{
@@ -15,6 +22,7 @@ use crate::{
 
 use serde_json::json;
 use sqlx::{Executor, SqlitePool};
+use std::collections::HashMap;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 const FILE_ROUTE_SCOPE: &str = "file";
@@ -176,6 +184,14 @@ impl WriteWorker {
             }
             Commands::RecordRouteObservation { input, response } => {
                 let result = run_write_command!(self, self.record_route_observation(input));
+                self.send_write_response(response, result).await;
+            }
+            Commands::WriteRouteBatch { input, response } => {
+                let result = run_write_command!(self, self.write_route_batch(input));
+                self.send_write_response(response, result).await;
+            }
+            Commands::WriteDocumentSymbolBatch { input, response } => {
+                let result = run_write_command!(self, self.write_document_symbol_batch(input));
                 self.send_write_response(response, result).await;
             }
             Commands::CloseStaleNodesForRoute { input, response } => {
@@ -567,6 +583,81 @@ impl WriteWorker {
         Ok(stored_id)
     }
 
+    async fn upsert_node_without_select(&self, input: OwnedNodeInput) -> DbManagerResult<()> {
+        let id = node_id(input.workspace_id, &input.language, &input.symbol_key);
+        let properties_json = input.properties_json.to_string();
+        let range = input.range;
+        let selection_range = input.selection_range;
+
+        sqlx::query(
+            r#"
+            INSERT INTO nodes (
+              id,
+              workspace_id,
+              language,
+              kind,
+              name,
+              qualified_name,
+              display_name,
+              symbol_key,
+              file_id,
+              start_line,
+              start_col,
+              end_line,
+              end_col,
+              selection_start_line,
+              selection_start_col,
+              container_node_id,
+              properties_json,
+              first_seen_run_id,
+              last_seen_run_id,
+              valid_to_run_id
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+            ON CONFLICT(workspace_id, language, symbol_key) DO UPDATE SET
+              kind = excluded.kind,
+              name = excluded.name,
+              qualified_name = excluded.qualified_name,
+              display_name = excluded.display_name,
+              file_id = excluded.file_id,
+              start_line = excluded.start_line,
+              start_col = excluded.start_col,
+              end_line = excluded.end_line,
+              end_col = excluded.end_col,
+              selection_start_line = excluded.selection_start_line,
+              selection_start_col = excluded.selection_start_col,
+              container_node_id = excluded.container_node_id,
+              properties_json = excluded.properties_json,
+              last_seen_run_id = excluded.last_seen_run_id,
+              valid_to_run_id = NULL
+            "#,
+        )
+        .bind(&id)
+        .bind(input.workspace_id)
+        .bind(&input.language)
+        .bind(&input.kind)
+        .bind(&input.name)
+        .bind(input.qualified_name.as_deref())
+        .bind(input.display_name.as_deref())
+        .bind(&input.symbol_key)
+        .bind(input.file_id)
+        .bind(range.map(|value| value.start_line))
+        .bind(range.map(|value| value.start_col))
+        .bind(range.map(|value| value.end_line))
+        .bind(range.map(|value| value.end_col))
+        .bind(selection_range.map(|value| value.start_line))
+        .bind(selection_range.map(|value| value.start_col))
+        .bind(input.container_node_id.as_deref())
+        .bind(properties_json)
+        .bind(input.run_id)
+        .bind(input.run_id)
+        .execute(&self.pool)
+        .await
+        .map_err(DbManagerError::database)?;
+
+        Ok(())
+    }
+
     async fn upsert_edge(&self, input: OwnedEdgeInput) -> DbManagerResult<String> {
         let id = edge_id(
             input.workspace_id,
@@ -660,6 +751,46 @@ impl WriteWorker {
         Ok(result.last_insert_rowid())
     }
 
+    async fn insert_occurrence_without_rowid(
+        &self,
+        input: OwnedOccurrenceInput,
+    ) -> DbManagerResult<()> {
+        let raw_json = input.raw_json.map(|value| value.to_string());
+
+        sqlx::query(
+            r#"
+            INSERT INTO occurrences (
+              node_id,
+              run_id,
+              file_id,
+              role,
+              start_line,
+              start_col,
+              end_line,
+              end_col,
+              enclosing_node_id,
+              raw_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(&input.node_id)
+        .bind(input.run_id)
+        .bind(input.file_id)
+        .bind(&input.role)
+        .bind(input.range.start_line)
+        .bind(input.range.start_col)
+        .bind(input.range.end_line)
+        .bind(input.range.end_col)
+        .bind(input.enclosing_node_id.as_deref())
+        .bind(raw_json)
+        .execute(&self.pool)
+        .await
+        .map_err(DbManagerError::database)?;
+
+        Ok(())
+    }
+
     async fn insert_edge_evidence(&self, input: OwnedEdgeEvidenceInput) -> DbManagerResult<i64> {
         let raw_json = input.raw_json.map(|value| value.to_string());
         let range = input.range;
@@ -696,6 +827,47 @@ impl WriteWorker {
         .map_err(DbManagerError::database)?;
 
         Ok(result.last_insert_rowid())
+    }
+
+    async fn insert_edge_evidence_without_rowid(
+        &self,
+        input: OwnedEdgeEvidenceInput,
+    ) -> DbManagerResult<()> {
+        let raw_json = input.raw_json.map(|value| value.to_string());
+        let range = input.range;
+
+        sqlx::query(
+            r#"
+            INSERT INTO edge_evidence (
+              edge_id,
+              run_id,
+              provider,
+              lsp_method,
+              file_id,
+              start_line,
+              start_col,
+              end_line,
+              end_col,
+              raw_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(&input.edge_id)
+        .bind(input.run_id)
+        .bind(&input.provider)
+        .bind(input.lsp_method.as_deref())
+        .bind(input.file_id)
+        .bind(range.map(|value| value.start_line))
+        .bind(range.map(|value| value.start_col))
+        .bind(range.map(|value| value.end_line))
+        .bind(range.map(|value| value.end_col))
+        .bind(raw_json)
+        .execute(&self.pool)
+        .await
+        .map_err(DbManagerError::database)?;
+
+        Ok(())
     }
 
     async fn start_route_status(&self, input: OwnedRouteStatusStartInput) -> DbManagerResult<i64> {
@@ -750,6 +922,56 @@ impl WriteWorker {
             &input.provider,
         )
         .await
+    }
+
+    async fn start_route_status_without_select(
+        &self,
+        input: OwnedRouteStatusStartInput,
+    ) -> DbManagerResult<()> {
+        let diagnostics_json = input.diagnostics_json.to_string();
+
+        sqlx::query(
+            r#"
+            INSERT INTO extraction_route_status (
+              workspace_id,
+              route,
+              scope,
+              scope_key,
+              file_id,
+              provider,
+              provider_version,
+              content_hash,
+              last_started_run_id,
+              last_status,
+              diagnostics_json,
+              updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(workspace_id, route, scope, scope_key, provider) DO UPDATE SET
+              file_id = excluded.file_id,
+              provider_version = excluded.provider_version,
+              content_hash = excluded.content_hash,
+              last_started_run_id = excluded.last_started_run_id,
+              last_status = 'running',
+              diagnostics_json = excluded.diagnostics_json,
+              updated_at = CURRENT_TIMESTAMP
+            "#,
+        )
+        .bind(input.workspace_id)
+        .bind(&input.route)
+        .bind(&input.scope)
+        .bind(&input.scope_key)
+        .bind(input.file_id)
+        .bind(&input.provider)
+        .bind(input.provider_version.as_deref())
+        .bind(input.content_hash.as_deref())
+        .bind(input.run_id)
+        .bind(diagnostics_json)
+        .execute(&self.pool)
+        .await
+        .map_err(DbManagerError::database)?;
+
+        Ok(())
     }
 
     async fn complete_route_status(
@@ -870,6 +1092,320 @@ impl WriteWorker {
         .map_err(DbManagerError::database)?;
 
         Ok(())
+    }
+
+    async fn write_route_batch(&self, input: RouteWriteBatchInput) -> DbManagerResult<()> {
+        for edge in input.edges {
+            self.upsert_edge(owned_edge_input(edge)).await?;
+        }
+        for occurrence in input.occurrences {
+            self.insert_occurrence(owned_occurrence_input(occurrence))
+                .await?;
+        }
+        for edge_evidence in input.edge_evidence {
+            self.insert_edge_evidence(owned_edge_evidence_input(edge_evidence))
+                .await?;
+        }
+        for route_observation in input.route_observations {
+            self.record_route_observation(owned_route_observation_input(route_observation))
+                .await?;
+        }
+
+        Ok(())
+    }
+
+    async fn write_document_symbol_batch(
+        &self,
+        input: DocumentSymbolWriteBatchInput,
+    ) -> DbManagerResult<DocumentSymbolWriteBatchSummary> {
+        let mut file_ids = HashMap::new();
+        for file in input.files {
+            let uri = file.uri.clone();
+            let file_id = self.upsert_file(owned_file_input(file)).await?;
+            file_ids.insert(uri, file_id);
+        }
+
+        for route_status in input.route_status_starts {
+            self.start_route_status_without_select(owned_document_symbol_route_status_start_input(
+                route_status,
+                &file_ids,
+            )?)
+            .await?;
+        }
+        for node in input.nodes {
+            self.upsert_node_without_select(owned_document_symbol_node_input(node, &file_ids)?)
+                .await?;
+        }
+        for occurrence in input.occurrences {
+            self.insert_occurrence_without_rowid(owned_document_symbol_occurrence_input(
+                occurrence, &file_ids,
+            )?)
+            .await?;
+        }
+        for edge in input.edges {
+            self.upsert_edge(owned_edge_input(edge)).await?;
+        }
+        for edge_evidence in input.edge_evidence {
+            self.insert_edge_evidence_without_rowid(owned_document_symbol_edge_evidence_input(
+                edge_evidence,
+                &file_ids,
+            )?)
+            .await?;
+        }
+        for route_observation in input.route_observations {
+            self.record_route_observation(owned_document_symbol_route_observation_input(
+                route_observation,
+                &file_ids,
+            )?)
+            .await?;
+        }
+        for route_status in input.route_status_completes {
+            self.complete_route_status(owned_document_symbol_route_status_complete_input(
+                route_status,
+            ))
+            .await?;
+        }
+
+        self.close_stale_document_symbol_batch(&input.close_stale_nodes, &input.close_stale_edges)
+            .await
+    }
+
+    async fn close_stale_document_symbol_batch(
+        &self,
+        close_stale_nodes: &[DocumentSymbolWriteBatchCloseStaleRouteInput],
+        close_stale_edges: &[DocumentSymbolWriteBatchCloseStaleRouteInput],
+    ) -> DbManagerResult<DocumentSymbolWriteBatchSummary> {
+        if close_stale_nodes.is_empty() && close_stale_edges.is_empty() {
+            return Ok(DocumentSymbolWriteBatchSummary::default());
+        }
+
+        self.reset_document_symbol_close_stale_requests().await?;
+        for close_stale in close_stale_nodes {
+            self.insert_document_symbol_close_stale_request("node", close_stale)
+                .await?;
+        }
+        for close_stale in close_stale_edges {
+            self.insert_document_symbol_close_stale_request("edge", close_stale)
+                .await?;
+        }
+
+        let stale_nodes_closed = self.close_stale_document_symbol_batch_nodes().await?;
+        let stale_edges_closed = self.close_stale_document_symbol_batch_edges().await?;
+        self.clear_document_symbol_close_stale_requests().await?;
+
+        Ok(DocumentSymbolWriteBatchSummary {
+            stale_nodes_closed,
+            stale_edges_closed,
+        })
+    }
+
+    async fn reset_document_symbol_close_stale_requests(&self) -> DbManagerResult<()> {
+        sqlx::query(
+            r#"
+            CREATE TEMP TABLE IF NOT EXISTS document_symbol_close_stale_requests (
+              target_kind TEXT NOT NULL,
+              workspace_id INTEGER NOT NULL,
+              run_id INTEGER NOT NULL,
+              route TEXT NOT NULL,
+              scope TEXT NOT NULL,
+              scope_key TEXT NOT NULL,
+              provider TEXT NOT NULL,
+              file_id INTEGER,
+              PRIMARY KEY (
+                target_kind,
+                workspace_id,
+                run_id,
+                route,
+                scope,
+                scope_key,
+                provider
+              )
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(DbManagerError::database)?;
+
+        self.clear_document_symbol_close_stale_requests().await
+    }
+
+    async fn clear_document_symbol_close_stale_requests(&self) -> DbManagerResult<()> {
+        sqlx::query("DELETE FROM document_symbol_close_stale_requests")
+            .execute(&self.pool)
+            .await
+            .map_err(DbManagerError::database)?;
+
+        Ok(())
+    }
+
+    async fn insert_document_symbol_close_stale_request(
+        &self,
+        target_kind: &str,
+        input: &DocumentSymbolWriteBatchCloseStaleRouteInput,
+    ) -> DbManagerResult<()> {
+        sqlx::query(
+            r#"
+            INSERT OR IGNORE INTO document_symbol_close_stale_requests (
+              target_kind,
+              workspace_id,
+              run_id,
+              route,
+              scope,
+              scope_key,
+              provider,
+              file_id
+            )
+            VALUES (
+              ?,
+              ?,
+              ?,
+              ?,
+              ?,
+              ?,
+              ?,
+              (
+                SELECT id
+                FROM files
+                WHERE workspace_id = ?
+                  AND uri = ?
+              )
+            )
+            "#,
+        )
+        .bind(target_kind)
+        .bind(input.workspace_id)
+        .bind(input.run_id)
+        .bind(&input.route)
+        .bind(&input.scope)
+        .bind(&input.scope_key)
+        .bind(&input.provider)
+        .bind(input.workspace_id)
+        .bind(&input.scope_key)
+        .execute(&self.pool)
+        .await
+        .map_err(DbManagerError::database)?;
+
+        Ok(())
+    }
+
+    async fn close_stale_document_symbol_batch_nodes(&self) -> DbManagerResult<u64> {
+        let result = sqlx::query(
+            r#"
+            WITH completed_requests AS (
+              SELECT DISTINCT
+                request.workspace_id,
+                request.run_id,
+                request.file_id
+              FROM document_symbol_close_stale_requests request
+              JOIN extraction_route_status status
+                ON status.workspace_id = request.workspace_id
+               AND status.route = request.route
+               AND status.scope = request.scope
+               AND status.scope_key = request.scope_key
+               AND status.provider = request.provider
+               AND status.last_complete_run_id = request.run_id
+               AND status.last_status = 'complete'
+              WHERE request.target_kind = 'node'
+                AND request.scope = ?
+                AND request.file_id IS NOT NULL
+            )
+            UPDATE nodes
+            SET valid_to_run_id = (
+              SELECT completed_requests.run_id
+              FROM completed_requests
+              WHERE completed_requests.workspace_id = nodes.workspace_id
+                AND completed_requests.file_id = nodes.file_id
+              LIMIT 1
+            )
+            WHERE valid_to_run_id IS NULL
+              AND EXISTS (
+                SELECT 1
+                FROM completed_requests
+                WHERE completed_requests.workspace_id = nodes.workspace_id
+                  AND completed_requests.file_id = nodes.file_id
+                  AND (
+                    nodes.last_seen_run_id IS NULL
+                    OR nodes.last_seen_run_id <> completed_requests.run_id
+                  )
+              )
+            "#,
+        )
+        .bind(FILE_ROUTE_SCOPE)
+        .execute(&self.pool)
+        .await
+        .map_err(DbManagerError::database)?;
+
+        Ok(result.rows_affected())
+    }
+
+    async fn close_stale_document_symbol_batch_edges(&self) -> DbManagerResult<u64> {
+        let result = sqlx::query(
+            r#"
+            WITH completed_requests AS (
+              SELECT DISTINCT
+                request.workspace_id,
+                request.run_id,
+                request.file_id
+              FROM document_symbol_close_stale_requests request
+              JOIN extraction_route_status status
+                ON status.workspace_id = request.workspace_id
+               AND status.route = request.route
+               AND status.scope = request.scope
+               AND status.scope_key = request.scope_key
+               AND status.provider = request.provider
+               AND status.last_complete_run_id = request.run_id
+               AND status.last_status = 'complete'
+              WHERE request.target_kind = 'edge'
+                AND request.scope = ?
+                AND request.file_id IS NOT NULL
+            ),
+            stale_edges AS (
+              SELECT DISTINCT
+                edges.workspace_id,
+                edges.id AS entity_id,
+                completed_requests.run_id
+              FROM edges
+              JOIN nodes src
+                ON src.id = edges.src_node_id
+              JOIN nodes dst
+                ON dst.id = edges.dst_node_id
+              JOIN completed_requests
+                ON completed_requests.workspace_id = edges.workspace_id
+              WHERE edges.valid_to_run_id IS NULL
+                AND edges.relation = 'contains'
+                AND (
+                  src.file_id = completed_requests.file_id
+                  OR dst.file_id = completed_requests.file_id
+                )
+                AND (
+                  edges.last_seen_run_id IS NULL
+                  OR edges.last_seen_run_id <> completed_requests.run_id
+                )
+            )
+            UPDATE edges
+            SET valid_to_run_id = (
+              SELECT stale_edges.run_id
+              FROM stale_edges
+              WHERE stale_edges.workspace_id = edges.workspace_id
+                AND stale_edges.entity_id = edges.id
+              LIMIT 1
+            )
+            WHERE valid_to_run_id IS NULL
+              AND EXISTS (
+                SELECT 1
+                FROM stale_edges
+                WHERE stale_edges.workspace_id = edges.workspace_id
+                  AND stale_edges.entity_id = edges.id
+              )
+            "#,
+        )
+        .bind(FILE_ROUTE_SCOPE)
+        .execute(&self.pool)
+        .await
+        .map_err(DbManagerError::database)?;
+
+        Ok(result.rows_affected())
     }
 
     async fn close_stale_nodes_for_route(
@@ -1490,4 +2026,207 @@ impl WriteWorker {
 
         Ok(count > 0)
     }
+}
+
+fn owned_edge_input(input: RouteWriteBatchEdgeInput) -> OwnedEdgeInput {
+    OwnedEdgeInput {
+        workspace_id: input.workspace_id,
+        src_node_id: input.src_node_id,
+        dst_node_id: input.dst_node_id,
+        relation: input.relation,
+        context: input.context,
+        confidence: input.confidence,
+        confidence_score: input.confidence_score,
+        weight: input.weight,
+        properties_json: input.properties_json,
+        run_id: input.run_id,
+    }
+}
+
+fn owned_file_input(input: DocumentSymbolWriteBatchFileInput) -> OwnedFileInput {
+    OwnedFileInput {
+        workspace_id: input.workspace_id,
+        uri: input.uri,
+        path: input.path,
+        language: input.language,
+        content_hash: input.content_hash,
+        last_seen_run_id: input.last_seen_run_id,
+        properties_json: input.properties_json,
+    }
+}
+
+fn owned_document_symbol_node_input(
+    input: DocumentSymbolWriteBatchNodeInput,
+    file_ids: &HashMap<String, i64>,
+) -> DbManagerResult<OwnedNodeInput> {
+    let file_id = input
+        .file_uri
+        .as_deref()
+        .map(|file_uri| file_id_for_uri(file_ids, file_uri))
+        .transpose()?;
+
+    Ok(OwnedNodeInput {
+        workspace_id: input.workspace_id,
+        language: input.language,
+        kind: input.kind,
+        name: input.name,
+        qualified_name: input.qualified_name,
+        display_name: input.display_name,
+        symbol_key: input.symbol_key,
+        file_id,
+        range: input.range,
+        selection_range: input.selection_range,
+        container_node_id: input.container_node_id,
+        properties_json: input.properties_json,
+        run_id: input.run_id,
+    })
+}
+
+fn owned_document_symbol_occurrence_input(
+    input: DocumentSymbolWriteBatchOccurrenceInput,
+    file_ids: &HashMap<String, i64>,
+) -> DbManagerResult<OwnedOccurrenceInput> {
+    Ok(OwnedOccurrenceInput {
+        node_id: input.node_id,
+        run_id: input.run_id,
+        file_id: file_id_for_uri(file_ids, &input.file_uri)?,
+        role: input.role,
+        range: input.range,
+        enclosing_node_id: input.enclosing_node_id,
+        raw_json: input.raw_json,
+    })
+}
+
+fn owned_document_symbol_edge_evidence_input(
+    input: DocumentSymbolWriteBatchEdgeEvidenceInput,
+    file_ids: &HashMap<String, i64>,
+) -> DbManagerResult<OwnedEdgeEvidenceInput> {
+    let file_id = input
+        .file_uri
+        .as_deref()
+        .map(|file_uri| file_id_for_uri(file_ids, file_uri))
+        .transpose()?;
+
+    Ok(OwnedEdgeEvidenceInput {
+        edge_id: input.edge_id,
+        run_id: input.run_id,
+        provider: input.provider,
+        lsp_method: input.lsp_method,
+        file_id,
+        range: input.range,
+        raw_json: input.raw_json,
+    })
+}
+
+fn owned_document_symbol_route_observation_input(
+    input: DocumentSymbolWriteBatchObservationInput,
+    file_ids: &HashMap<String, i64>,
+) -> DbManagerResult<OwnedRouteObservationInput> {
+    let source_file_id = input
+        .source_file_uri
+        .as_deref()
+        .map(|file_uri| file_id_for_uri(file_ids, file_uri))
+        .transpose()?;
+
+    Ok(OwnedRouteObservationInput {
+        workspace_id: input.workspace_id,
+        run_id: input.run_id,
+        route: input.route,
+        scope: input.scope,
+        scope_key: input.scope_key,
+        provider: input.provider,
+        entity_kind: input.entity_kind,
+        entity_id: input.entity_id,
+        source_file_id,
+        properties_json: input.properties_json,
+    })
+}
+
+fn owned_document_symbol_route_status_start_input(
+    input: DocumentSymbolWriteBatchRouteStatusStartInput,
+    file_ids: &HashMap<String, i64>,
+) -> DbManagerResult<OwnedRouteStatusStartInput> {
+    let file_id = input
+        .file_uri
+        .as_deref()
+        .map(|file_uri| file_id_for_uri(file_ids, file_uri))
+        .transpose()?;
+
+    Ok(OwnedRouteStatusStartInput {
+        workspace_id: input.workspace_id,
+        route: input.route,
+        scope: input.scope,
+        scope_key: input.scope_key,
+        file_id,
+        provider: input.provider,
+        provider_version: input.provider_version,
+        content_hash: input.content_hash,
+        run_id: input.run_id,
+        diagnostics_json: input.diagnostics_json,
+    })
+}
+
+fn owned_document_symbol_route_status_complete_input(
+    input: DocumentSymbolWriteBatchRouteStatusCompleteInput,
+) -> OwnedRouteStatusCompleteInput {
+    OwnedRouteStatusCompleteInput {
+        workspace_id: input.workspace_id,
+        route: input.route,
+        scope: input.scope,
+        scope_key: input.scope_key,
+        provider: input.provider,
+        provider_version: input.provider_version,
+        content_hash: input.content_hash,
+        run_id: input.run_id,
+        diagnostics_json: input.diagnostics_json,
+    }
+}
+
+fn owned_occurrence_input(input: RouteWriteBatchOccurrenceInput) -> OwnedOccurrenceInput {
+    OwnedOccurrenceInput {
+        node_id: input.node_id,
+        run_id: input.run_id,
+        file_id: input.file_id,
+        role: input.role,
+        range: input.range,
+        enclosing_node_id: input.enclosing_node_id,
+        raw_json: input.raw_json,
+    }
+}
+
+fn owned_edge_evidence_input(input: RouteWriteBatchEdgeEvidenceInput) -> OwnedEdgeEvidenceInput {
+    OwnedEdgeEvidenceInput {
+        edge_id: input.edge_id,
+        run_id: input.run_id,
+        provider: input.provider,
+        lsp_method: input.lsp_method,
+        file_id: input.file_id,
+        range: input.range,
+        raw_json: input.raw_json,
+    }
+}
+
+fn owned_route_observation_input(
+    input: RouteWriteBatchObservationInput,
+) -> OwnedRouteObservationInput {
+    OwnedRouteObservationInput {
+        workspace_id: input.workspace_id,
+        run_id: input.run_id,
+        route: input.route,
+        scope: input.scope,
+        scope_key: input.scope_key,
+        provider: input.provider,
+        entity_kind: input.entity_kind,
+        entity_id: input.entity_id,
+        source_file_id: input.source_file_id,
+        properties_json: input.properties_json,
+    }
+}
+
+fn file_id_for_uri(file_ids: &HashMap<String, i64>, file_uri: &str) -> DbManagerResult<i64> {
+    file_ids.get(file_uri).copied().ok_or_else(|| {
+        DbManagerError::invalid_input(format!(
+            "document symbol write batch referenced file URI {file_uri} before upserting it"
+        ))
+    })
 }

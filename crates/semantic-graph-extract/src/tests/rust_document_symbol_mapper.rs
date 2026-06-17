@@ -8,7 +8,7 @@ use lsp_types::DocumentSymbolResponse;
 use serde_json::json;
 
 #[test]
-fn rejects_flat_symbol_information_response() -> std::result::Result<(), Box<dyn Error>> {
+fn rejects_flat_symbol_information_response() -> Result<(), Box<dyn Error>> {
     let value = serde_json::json!([
         {
             "name": "flat",

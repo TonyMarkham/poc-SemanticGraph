@@ -18,11 +18,11 @@ use semantic_graph_store::{GraphStore, GraphStoreStats};
 use serde_json::json;
 use sqlx::SqlitePool;
 
-fn request() -> std::result::Result<DocumentSymbolRequest, Box<dyn Error>> {
+fn request() -> Result<DocumentSymbolRequest, Box<dyn Error>> {
     request_for("crates/wip/src/lib.rs")
 }
 
-fn request_for(relative_path: &str) -> std::result::Result<DocumentSymbolRequest, Box<dyn Error>> {
+fn request_for(relative_path: &str) -> Result<DocumentSymbolRequest, Box<dyn Error>> {
     let cwd = repo_root()?;
 
     Ok(DocumentSymbolRequest {
@@ -32,7 +32,7 @@ fn request_for(relative_path: &str) -> std::result::Result<DocumentSymbolRequest
     })
 }
 
-fn repo_root() -> std::result::Result<PathBuf, Box<dyn Error>> {
+fn repo_root() -> Result<PathBuf, Box<dyn Error>> {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let crates_dir = manifest_dir
         .parent()
@@ -44,23 +44,22 @@ fn repo_root() -> std::result::Result<PathBuf, Box<dyn Error>> {
     Ok(repo_root.to_path_buf())
 }
 
-fn fixture_response() -> std::result::Result<DocumentSymbolResponse, Box<dyn Error>> {
+fn fixture_response() -> Result<DocumentSymbolResponse, Box<dyn Error>> {
     let fixture = include_str!("fixtures/rust_document_symbols_lib.json");
     Ok(serde_json::from_str(fixture)?)
 }
 
-fn models_fixture_response() -> std::result::Result<DocumentSymbolResponse, Box<dyn Error>> {
+fn models_fixture_response() -> Result<DocumentSymbolResponse, Box<dyn Error>> {
     let fixture = include_str!("fixtures/rust_document_symbols_models.json");
     Ok(serde_json::from_str(fixture)?)
 }
 
-fn pipeline_fixture_response() -> std::result::Result<DocumentSymbolResponse, Box<dyn Error>> {
+fn pipeline_fixture_response() -> Result<DocumentSymbolResponse, Box<dyn Error>> {
     let fixture = include_str!("fixtures/rust_document_symbols_pipeline.json");
     Ok(serde_json::from_str(fixture)?)
 }
 
-fn batch_fixture_extraction() -> std::result::Result<DocumentSymbolBatchExtraction, Box<dyn Error>>
-{
+fn batch_fixture_extraction() -> Result<DocumentSymbolBatchExtraction, Box<dyn Error>> {
     let provider_version = Some("fixture-rust-analyzer".to_string());
     let extractions = vec![
         RustDocumentSymbolMapper::map_response(
@@ -91,7 +90,7 @@ fn batch_fixture_extraction() -> std::result::Result<DocumentSymbolBatchExtracti
     })
 }
 
-fn temp_db_path() -> std::result::Result<PathBuf, Box<dyn Error>> {
+fn temp_db_path() -> Result<PathBuf, Box<dyn Error>> {
     let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
     Ok(env::temp_dir().join(format!(
         "poc-semanticgraph-extract-{}-{stamp}.db",
@@ -99,7 +98,7 @@ fn temp_db_path() -> std::result::Result<PathBuf, Box<dyn Error>> {
     )))
 }
 
-fn temp_workspace_path(name: &str) -> std::result::Result<PathBuf, Box<dyn Error>> {
+fn temp_workspace_path(name: &str) -> Result<PathBuf, Box<dyn Error>> {
     let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
     Ok(env::temp_dir().join(format!(
         "poc-semanticgraph-extract-{name}-{}-{stamp}",
@@ -108,8 +107,7 @@ fn temp_workspace_path(name: &str) -> std::result::Result<PathBuf, Box<dyn Error
 }
 
 #[test]
-fn batch_validation_rejects_files_outside_workspace_root() -> std::result::Result<(), Box<dyn Error>>
-{
+fn batch_validation_rejects_files_outside_workspace_root() -> Result<(), Box<dyn Error>> {
     let workspace_root = temp_workspace_path("workspace")?;
     let package_path = workspace_root.join("crates/example");
     let outside_root = temp_workspace_path("outside")?;
@@ -129,8 +127,7 @@ fn batch_validation_rejects_files_outside_workspace_root() -> std::result::Resul
 }
 
 #[test]
-fn maps_hierarchical_fixture_to_provider_neutral_records() -> std::result::Result<(), Box<dyn Error>>
-{
+fn maps_hierarchical_fixture_to_provider_neutral_records() -> Result<(), Box<dyn Error>> {
     let extraction =
         RustDocumentSymbolMapper::map_response(request()?, fixture_response()?, None, json!({}))?;
 
@@ -158,7 +155,7 @@ fn maps_hierarchical_fixture_to_provider_neutral_records() -> std::result::Resul
 }
 
 #[tokio::test]
-async fn persists_fixture_symbols_into_sqlite() -> std::result::Result<(), Box<dyn Error>> {
+async fn persists_fixture_symbols_into_sqlite() -> Result<(), Box<dyn Error>> {
     let db_path = temp_db_path()?;
     let writer = WriteManager::start(&db_path).await?;
     writer.migrate().await?;
@@ -217,8 +214,7 @@ async fn persists_fixture_symbols_into_sqlite() -> std::result::Result<(), Box<d
 }
 
 #[tokio::test]
-async fn persists_batch_fixture_symbols_into_one_sqlite_run()
--> std::result::Result<(), Box<dyn Error>> {
+async fn persists_batch_fixture_symbols_into_one_sqlite_run() -> Result<(), Box<dyn Error>> {
     let db_path = temp_db_path()?;
     let writer = WriteManager::start(&db_path).await?;
     writer.migrate().await?;
@@ -301,7 +297,7 @@ async fn persists_batch_fixture_symbols_into_one_sqlite_run()
 }
 
 #[tokio::test]
-async fn deleted_rust_file_marks_file_symbols_stale() -> std::result::Result<(), Box<dyn Error>> {
+async fn deleted_rust_file_marks_file_symbols_stale() -> Result<(), Box<dyn Error>> {
     let db_path = temp_db_path()?;
     let writer = WriteManager::start(&db_path).await?;
     writer.migrate().await?;

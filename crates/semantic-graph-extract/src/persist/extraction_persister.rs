@@ -11,9 +11,16 @@ use crate::{
 };
 
 use semantic_graph_db_manager::{
-    CloseStaleFileInput, CloseStaleRouteInput, EdgeEvidenceInput, EdgeInput, FileInput, NodeInput,
-    OccurrenceInput, RouteObservationInput, RouteStatusCompleteInput, RouteStatusFailInput,
-    RouteStatusStartInput, WriteHandle, node_id,
+    CloseStaleFileInput, CloseStaleRouteInput, DocumentSymbolWriteBatchCloseStaleRouteInput,
+    DocumentSymbolWriteBatchEdgeEvidenceInput, DocumentSymbolWriteBatchFileInput,
+    DocumentSymbolWriteBatchInput, DocumentSymbolWriteBatchNodeInput,
+    DocumentSymbolWriteBatchObservationInput, DocumentSymbolWriteBatchOccurrenceInput,
+    DocumentSymbolWriteBatchRouteStatusCompleteInput,
+    DocumentSymbolWriteBatchRouteStatusStartInput, EdgeEvidenceInput, EdgeInput, FileInput,
+    NodeInput, OccurrenceInput, RouteObservationInput, RouteStatusCompleteInput,
+    RouteStatusFailInput, RouteStatusStartInput, RouteWriteBatchEdgeEvidenceInput,
+    RouteWriteBatchEdgeInput, RouteWriteBatchInput, RouteWriteBatchObservationInput,
+    RouteWriteBatchOccurrenceInput, WriteHandle, edge_id, node_id,
 };
 
 use serde_json::{Value, json};
@@ -260,6 +267,65 @@ impl ExtractionPersister {
         }
     }
 
+    pub async fn persist_document_symbol_batch_with_write_batch(
+        &self,
+        store: &WriteHandle,
+        workspace_root_uri: &str,
+        extraction: &DocumentSymbolBatchExtraction,
+        close_stale: bool,
+    ) -> ExtractResult<PersistenceSummary> {
+        let first_extraction = extraction.extractions.first().ok_or_else(|| {
+            ExtractError::response_shape(
+                extraction.provider.as_str(),
+                "textDocument/documentSymbol",
+                "document symbol batch contained no files",
+            )
+        })?;
+        let workspace_id = store
+            .create_workspace(
+                workspace_root_uri,
+                first_extraction.source_file.language.workspace_kind(),
+            )
+            .await
+            .map_err(ExtractError::storage)?;
+        let run_id = store
+            .start_run(
+                workspace_id,
+                extraction.provider.as_str(),
+                extraction.provider_version.as_deref(),
+                None,
+            )
+            .await
+            .map_err(ExtractError::storage)?;
+
+        let result = self
+            .persist_batch_with_write_batch_after_run_started(
+                store,
+                workspace_id,
+                run_id,
+                extraction,
+                close_stale,
+            )
+            .await;
+
+        match result {
+            Ok(summary) => {
+                store
+                    .finish_run(run_id, "complete")
+                    .await
+                    .map_err(ExtractError::storage)?;
+                Ok(summary)
+            }
+            Err(error) => {
+                let finish_result = store.finish_run(run_id, "failed").await;
+                if let Err(finish_error) = finish_result {
+                    return Err(ExtractError::storage(finish_error));
+                }
+                Err(error)
+            }
+        }
+    }
+
     pub async fn persist_reference_batch_with_document_symbols(
         &self,
         store: &WriteHandle,
@@ -355,6 +421,64 @@ impl ExtractionPersister {
 
         let result = self
             .persist_reference_batch_route_only_after_run_started(
+                store,
+                workspace_id,
+                run_id,
+                workspace_root_uri,
+                extraction,
+            )
+            .await;
+
+        match result {
+            Ok(summary) => {
+                store
+                    .finish_run(run_id, "complete")
+                    .await
+                    .map_err(ExtractError::storage)?;
+                Ok(summary)
+            }
+            Err(error) => {
+                let finish_result = store.finish_run(run_id, "failed").await;
+                if let Err(finish_error) = finish_result {
+                    return Err(ExtractError::storage(finish_error));
+                }
+                Err(error)
+            }
+        }
+    }
+
+    pub async fn persist_reference_batch_with_route_write_batch(
+        &self,
+        store: &WriteHandle,
+        workspace_root_uri: &str,
+        extraction: &ReferenceBatchExtraction,
+    ) -> ExtractResult<PersistenceSummary> {
+        let language = document_symbol_batch_language(
+            extraction.provider.as_str(),
+            "textDocument/references",
+            &extraction.document_symbols,
+        )?;
+        let workspace_id = self
+            .existing_workspace_id(
+                store,
+                workspace_root_uri,
+                language,
+                extraction.provider.as_str(),
+                "textDocument/references",
+            )
+            .await?;
+        let run_id = store
+            .start_run(
+                workspace_id,
+                extraction.provider.as_str(),
+                extraction.provider_version.as_deref(),
+                None,
+            )
+            .await
+            .map_err(ExtractError::storage)?;
+
+        let result = self
+            .persist_reference_batch_with_route_write_batch_after_run_started(
                 store,
                 workspace_id,
                 run_id,
@@ -530,6 +654,126 @@ impl ExtractionPersister {
                         content_hash: Some(&extraction.workspace_fingerprint),
                         run_id,
                         diagnostics_json: json!({
+                            "targets_queried": extraction.summary.targets_queried,
+                            "reference_edges": summary.reference_edges,
+                            "reference_occurrences": summary.reference_occurrences,
+                            "file_fallbacks": extraction.summary.file_fallbacks,
+                            "skipped_external": extraction.summary.skipped_external,
+                        }),
+                    })
+                    .await
+                    .map_err(ExtractError::storage)?;
+                let stale_edges_closed = store
+                    .close_stale_edges_for_route(CloseStaleRouteInput {
+                        workspace_id,
+                        run_id,
+                        route: route_name.as_str(),
+                        scope: RouteScope::WORKSPACE.as_str(),
+                        scope_key: workspace_root_uri,
+                        provider: extraction.provider.as_str(),
+                    })
+                    .await
+                    .map_err(ExtractError::storage)?;
+
+                summary.routes_complete = 1;
+                summary.stale_edges_closed = stale_edges_closed as usize;
+
+                Ok(summary)
+            }
+            Err(error) => {
+                store
+                    .fail_route_status(RouteStatusFailInput {
+                        workspace_id,
+                        route: route_name.as_str(),
+                        scope: RouteScope::WORKSPACE.as_str(),
+                        scope_key: workspace_root_uri,
+                        provider: extraction.provider.as_str(),
+                        run_id,
+                        diagnostics_json: json!({
+                            "kind": error.message(),
+                            "error": error.to_string(),
+                        }),
+                    })
+                    .await
+                    .map_err(ExtractError::storage)?;
+                Err(error)
+            }
+        }
+    }
+
+    async fn persist_reference_batch_with_route_write_batch_after_run_started(
+        &self,
+        store: &WriteHandle,
+        workspace_id: i64,
+        run_id: i64,
+        workspace_root_uri: &str,
+        extraction: &ReferenceBatchExtraction,
+    ) -> ExtractResult<PersistenceSummary> {
+        let language = document_symbol_batch_language(
+            extraction.provider.as_str(),
+            "textDocument/references",
+            &extraction.document_symbols,
+        )?;
+        let route_name = RouteName::references_for_language(language);
+        let file_ids = self
+            .existing_document_symbol_file_ids(
+                store,
+                workspace_id,
+                language,
+                extraction.provider.as_str(),
+                "textDocument/references",
+                &extraction.document_symbols,
+            )
+            .await?;
+        self.validate_reference_nodes(store, workspace_id, language, extraction)
+            .await?;
+
+        store
+            .start_route_status(RouteStatusStartInput {
+                workspace_id,
+                route: route_name.as_str(),
+                scope: RouteScope::WORKSPACE.as_str(),
+                scope_key: workspace_root_uri,
+                file_id: None,
+                provider: extraction.provider.as_str(),
+                provider_version: extraction.provider_version.as_deref(),
+                content_hash: Some(&extraction.workspace_fingerprint),
+                run_id,
+                diagnostics_json: json!({
+                    "write_mode": "route_write_batch",
+                }),
+            })
+            .await
+            .map_err(ExtractError::storage)?;
+
+        let result = self
+            .persist_references_with_route_write_batch_after_scoped_route_started(
+                store,
+                PersistenceRun {
+                    workspace_id,
+                    run_id,
+                },
+                ScopedRoute::workspace(workspace_root_uri),
+                extraction,
+                &file_ids,
+                language,
+            )
+            .await;
+
+        match result {
+            Ok(mut summary) => {
+                store
+                    .complete_route_status(RouteStatusCompleteInput {
+                        workspace_id,
+                        route: route_name.as_str(),
+                        scope: RouteScope::WORKSPACE.as_str(),
+                        scope_key: workspace_root_uri,
+                        provider: extraction.provider.as_str(),
+                        provider_version: extraction.provider_version.as_deref(),
+                        content_hash: Some(&extraction.workspace_fingerprint),
+                        run_id,
+                        diagnostics_json: json!({
+                            "write_mode": "route_write_batch",
                             "targets_queried": extraction.summary.targets_queried,
                             "reference_edges": summary.reference_edges,
                             "reference_occurrences": summary.reference_occurrences,
@@ -880,6 +1124,130 @@ impl ExtractionPersister {
         Ok(summary)
     }
 
+    async fn persist_references_with_route_write_batch_after_scoped_route_started(
+        &self,
+        store: &WriteHandle,
+        run: PersistenceRun,
+        route: ScopedRoute<'_>,
+        extraction: &ReferenceBatchExtraction,
+        file_ids: &HashMap<String, i64>,
+        language: GraphLanguage,
+    ) -> ExtractResult<PersistenceSummary> {
+        let provider = extraction.provider.as_str();
+        let route_name = RouteName::references_for_language(language);
+        let mut batch = RouteWriteBatchInput::default();
+        let mut summary = empty_summary(run.workspace_id, run.run_id);
+
+        for reference in &extraction.references {
+            let source_node_id = node_id(
+                run.workspace_id,
+                language.as_store_str(),
+                &reference.source_symbol_key,
+            );
+            let target_node_id = node_id(
+                run.workspace_id,
+                language.as_store_str(),
+                &reference.target_symbol_key,
+            );
+            let edge_id = edge_id(
+                run.workspace_id,
+                &source_node_id,
+                &target_node_id,
+                "references",
+                Some("symbol"),
+            );
+            let lsp_method = reference_lsp_method(reference);
+
+            batch.edges.push(RouteWriteBatchEdgeInput {
+                workspace_id: run.workspace_id,
+                src_node_id: source_node_id,
+                dst_node_id: target_node_id.clone(),
+                relation: "references".to_string(),
+                context: Some("symbol".to_string()),
+                confidence: reference.confidence.clone(),
+                confidence_score: reference.confidence_score,
+                weight: reference.occurrences.len() as f64,
+                properties_json: json!({
+                    "provider": reference.provider.as_str(),
+                    "route": route_name.as_str(),
+                    "source_resolution": reference.source_resolution,
+                    "source_symbol_key": reference.source_symbol_key,
+                    "target_symbol_key": reference.target_symbol_key,
+                }),
+                run_id: Some(run.run_id),
+            });
+            summary.edges += 1;
+            summary.reference_edges += 1;
+
+            for occurrence in &reference.occurrences {
+                let file_id = *file_ids.get(&occurrence.file_uri).ok_or_else(|| {
+                    ExtractError::response_shape(
+                        provider,
+                        "textDocument/references",
+                        format!(
+                            "reference occurrence file {} was not in the current document-symbol batch",
+                            occurrence.file_uri
+                        ),
+                    )
+                })?;
+                let enclosing_node_id =
+                    occurrence.enclosing_symbol_key.as_ref().map(|symbol_key| {
+                        node_id(run.workspace_id, language.as_store_str(), symbol_key)
+                    });
+
+                batch.occurrences.push(RouteWriteBatchOccurrenceInput {
+                    node_id: target_node_id.clone(),
+                    run_id: run.run_id,
+                    file_id,
+                    role: "reference".to_string(),
+                    range: occurrence.range,
+                    enclosing_node_id,
+                    raw_json: Some(occurrence.raw_json.clone()),
+                });
+                batch.edge_evidence.push(RouteWriteBatchEdgeEvidenceInput {
+                    edge_id: edge_id.clone(),
+                    run_id: run.run_id,
+                    provider: reference.provider.as_str().to_string(),
+                    lsp_method: Some(lsp_method.clone()),
+                    file_id: Some(file_id),
+                    range: Some(occurrence.range),
+                    raw_json: Some(json!({
+                        "edge": reference.raw_json.clone(),
+                        "occurrence": occurrence.raw_json.clone(),
+                    })),
+                });
+                batch
+                    .route_observations
+                    .push(RouteWriteBatchObservationInput {
+                        workspace_id: run.workspace_id,
+                        run_id: run.run_id,
+                        route: route_name.as_str().to_string(),
+                        scope: route.scope.to_string(),
+                        scope_key: route.scope_key.to_string(),
+                        provider: provider.to_string(),
+                        entity_kind: "edge".to_string(),
+                        entity_id: edge_id.clone(),
+                        source_file_id: Some(file_id),
+                        properties_json: json!({
+                            "source": lsp_method,
+                            "source_resolution": reference.source_resolution,
+                        }),
+                    });
+
+                summary.occurrences += 1;
+                summary.reference_occurrences += 1;
+                summary.evidence += 1;
+            }
+        }
+
+        store
+            .write_route_batch(batch)
+            .await
+            .map_err(ExtractError::storage)?;
+
+        Ok(summary)
+    }
+
     pub async fn persist_reference_after_route_started(
         &self,
         store: &WriteHandle,
@@ -1158,6 +1526,64 @@ impl ExtractionPersister {
         }
     }
 
+    pub async fn persist_call_batch_with_route_write_batch(
+        &self,
+        store: &WriteHandle,
+        workspace_root_uri: &str,
+        extraction: &CallBatchExtraction,
+    ) -> ExtractResult<PersistenceSummary> {
+        let language = document_symbol_batch_language(
+            extraction.provider.as_str(),
+            "callHierarchy/outgoingCalls",
+            &extraction.document_symbols,
+        )?;
+        let workspace_id = self
+            .existing_workspace_id(
+                store,
+                workspace_root_uri,
+                language,
+                extraction.provider.as_str(),
+                "callHierarchy/outgoingCalls",
+            )
+            .await?;
+        let run_id = store
+            .start_run(
+                workspace_id,
+                extraction.provider.as_str(),
+                extraction.provider_version.as_deref(),
+                None,
+            )
+            .await
+            .map_err(ExtractError::storage)?;
+
+        let result = self
+            .persist_call_batch_with_route_write_batch_after_run_started(
+                store,
+                workspace_id,
+                run_id,
+                workspace_root_uri,
+                extraction,
+            )
+            .await;
+
+        match result {
+            Ok(summary) => {
+                store
+                    .finish_run(run_id, "complete")
+                    .await
+                    .map_err(ExtractError::storage)?;
+                Ok(summary)
+            }
+            Err(error) => {
+                let finish_result = store.finish_run(run_id, "failed").await;
+                if let Err(finish_error) = finish_result {
+                    return Err(ExtractError::storage(finish_error));
+                }
+                Err(error)
+            }
+        }
+    }
+
     pub async fn persist_call_file_batch(
         &self,
         store: &WriteHandle,
@@ -1307,6 +1733,127 @@ impl ExtractionPersister {
                         content_hash: Some(&extraction.workspace_fingerprint),
                         run_id,
                         diagnostics_json: json!({
+                            "callable_nodes": extraction.summary.callable_nodes,
+                            "call_edges": summary.call_edges,
+                            "call_occurrences": summary.call_occurrences,
+                            "skipped_external_targets": extraction.summary.skipped_external_targets,
+                            "skipped_unresolved_targets": extraction.summary.skipped_unresolved_targets,
+                            "skipped_non_callable_prepare_items": extraction.summary.skipped_non_callable_prepare_items,
+                        }),
+                    })
+                    .await
+                    .map_err(ExtractError::storage)?;
+                let stale_edges_closed = store
+                    .close_stale_edges_for_route(CloseStaleRouteInput {
+                        workspace_id,
+                        run_id,
+                        route: route_name.as_str(),
+                        scope: RouteScope::WORKSPACE.as_str(),
+                        scope_key: workspace_root_uri,
+                        provider: extraction.provider.as_str(),
+                    })
+                    .await
+                    .map_err(ExtractError::storage)?;
+
+                summary.routes_complete = 1;
+                summary.stale_edges_closed = stale_edges_closed as usize;
+
+                Ok(summary)
+            }
+            Err(error) => {
+                store
+                    .fail_route_status(RouteStatusFailInput {
+                        workspace_id,
+                        route: route_name.as_str(),
+                        scope: RouteScope::WORKSPACE.as_str(),
+                        scope_key: workspace_root_uri,
+                        provider: extraction.provider.as_str(),
+                        run_id,
+                        diagnostics_json: json!({
+                            "kind": error.message(),
+                            "error": error.to_string(),
+                        }),
+                    })
+                    .await
+                    .map_err(ExtractError::storage)?;
+                Err(error)
+            }
+        }
+    }
+
+    async fn persist_call_batch_with_route_write_batch_after_run_started(
+        &self,
+        store: &WriteHandle,
+        workspace_id: i64,
+        run_id: i64,
+        workspace_root_uri: &str,
+        extraction: &CallBatchExtraction,
+    ) -> ExtractResult<PersistenceSummary> {
+        let language = document_symbol_batch_language(
+            extraction.provider.as_str(),
+            "callHierarchy/outgoingCalls",
+            &extraction.document_symbols,
+        )?;
+        let route_name = RouteName::calls_for_language(language);
+        let file_ids = self
+            .existing_document_symbol_file_ids(
+                store,
+                workspace_id,
+                language,
+                extraction.provider.as_str(),
+                "callHierarchy/outgoingCalls",
+                &extraction.document_symbols,
+            )
+            .await?;
+        self.validate_call_nodes(store, workspace_id, language, extraction)
+            .await?;
+
+        store
+            .start_route_status(RouteStatusStartInput {
+                workspace_id,
+                route: route_name.as_str(),
+                scope: RouteScope::WORKSPACE.as_str(),
+                scope_key: workspace_root_uri,
+                file_id: None,
+                provider: extraction.provider.as_str(),
+                provider_version: extraction.provider_version.as_deref(),
+                content_hash: Some(&extraction.workspace_fingerprint),
+                run_id,
+                diagnostics_json: json!({
+                    "write_mode": "route_write_batch",
+                }),
+            })
+            .await
+            .map_err(ExtractError::storage)?;
+
+        let result = self
+            .persist_calls_with_route_write_batch_after_scoped_route_started(
+                store,
+                PersistenceRun {
+                    workspace_id,
+                    run_id,
+                },
+                ScopedRoute::workspace(workspace_root_uri),
+                extraction,
+                &file_ids,
+                language,
+            )
+            .await;
+
+        match result {
+            Ok(mut summary) => {
+                store
+                    .complete_route_status(RouteStatusCompleteInput {
+                        workspace_id,
+                        route: route_name.as_str(),
+                        scope: RouteScope::WORKSPACE.as_str(),
+                        scope_key: workspace_root_uri,
+                        provider: extraction.provider.as_str(),
+                        provider_version: extraction.provider_version.as_deref(),
+                        content_hash: Some(&extraction.workspace_fingerprint),
+                        run_id,
+                        diagnostics_json: json!({
+                            "write_mode": "route_write_batch",
                             "callable_nodes": extraction.summary.callable_nodes,
                             "call_edges": summary.call_edges,
                             "call_occurrences": summary.call_occurrences,
@@ -1656,6 +2203,130 @@ impl ExtractionPersister {
 
             merge_summary(&mut summary, &call_summary);
         }
+
+        Ok(summary)
+    }
+
+    async fn persist_calls_with_route_write_batch_after_scoped_route_started(
+        &self,
+        store: &WriteHandle,
+        run: PersistenceRun,
+        route: ScopedRoute<'_>,
+        extraction: &CallBatchExtraction,
+        file_ids: &HashMap<String, i64>,
+        language: GraphLanguage,
+    ) -> ExtractResult<PersistenceSummary> {
+        let provider = extraction.provider.as_str();
+        let route_name = RouteName::calls_for_language(language);
+        let mut batch = RouteWriteBatchInput::default();
+        let mut summary = empty_summary(run.workspace_id, run.run_id);
+
+        for call in &extraction.calls {
+            let caller_node_id = node_id(
+                run.workspace_id,
+                language.as_store_str(),
+                &call.caller_symbol_key,
+            );
+            let callee_node_id = node_id(
+                run.workspace_id,
+                language.as_store_str(),
+                &call.callee_symbol_key,
+            );
+            let edge_id = edge_id(
+                run.workspace_id,
+                &caller_node_id,
+                &callee_node_id,
+                "calls",
+                Some(&call.context),
+            );
+            let lsp_method = call_lsp_method(call);
+
+            batch.edges.push(RouteWriteBatchEdgeInput {
+                workspace_id: run.workspace_id,
+                src_node_id: caller_node_id,
+                dst_node_id: callee_node_id.clone(),
+                relation: "calls".to_string(),
+                context: Some(call.context.clone()),
+                confidence: call.confidence.clone(),
+                confidence_score: call.confidence_score,
+                weight: call.occurrences.len() as f64,
+                properties_json: json!({
+                    "provider": call.provider.as_str(),
+                    "route": route_name.as_str(),
+                    "caller_symbol_key": call.caller_symbol_key,
+                    "callee_symbol_key": call.callee_symbol_key,
+                }),
+                run_id: Some(run.run_id),
+            });
+            summary.edges += 1;
+            summary.call_edges += 1;
+
+            for occurrence in &call.occurrences {
+                let file_id = *file_ids.get(&occurrence.file_uri).ok_or_else(|| {
+                    ExtractError::response_shape(
+                        provider,
+                        "callHierarchy/outgoingCalls",
+                        format!(
+                            "call occurrence file {} was not in the current document-symbol batch",
+                            occurrence.file_uri
+                        ),
+                    )
+                })?;
+                let enclosing_node_id = node_id(
+                    run.workspace_id,
+                    language.as_store_str(),
+                    &occurrence.enclosing_symbol_key,
+                );
+
+                batch.occurrences.push(RouteWriteBatchOccurrenceInput {
+                    node_id: callee_node_id.clone(),
+                    run_id: run.run_id,
+                    file_id,
+                    role: "call".to_string(),
+                    range: occurrence.range,
+                    enclosing_node_id: Some(enclosing_node_id),
+                    raw_json: Some(occurrence.raw_json.clone()),
+                });
+                batch.edge_evidence.push(RouteWriteBatchEdgeEvidenceInput {
+                    edge_id: edge_id.clone(),
+                    run_id: run.run_id,
+                    provider: call.provider.as_str().to_string(),
+                    lsp_method: Some(lsp_method.clone()),
+                    file_id: Some(file_id),
+                    range: Some(occurrence.range),
+                    raw_json: Some(json!({
+                        "edge": call.raw_json.clone(),
+                        "occurrence": occurrence.raw_json.clone(),
+                    })),
+                });
+                batch
+                    .route_observations
+                    .push(RouteWriteBatchObservationInput {
+                        workspace_id: run.workspace_id,
+                        run_id: run.run_id,
+                        route: route_name.as_str().to_string(),
+                        scope: route.scope.to_string(),
+                        scope_key: route.scope_key.to_string(),
+                        provider: provider.to_string(),
+                        entity_kind: "edge".to_string(),
+                        entity_id: edge_id.clone(),
+                        source_file_id: Some(file_id),
+                        properties_json: json!({
+                            "source": lsp_method,
+                            "context": call.context,
+                        }),
+                    });
+
+                summary.occurrences += 1;
+                summary.call_occurrences += 1;
+                summary.evidence += 1;
+            }
+        }
+
+        store
+            .write_route_batch(batch)
+            .await
+            .map_err(ExtractError::storage)?;
 
         Ok(summary)
     }
@@ -2317,6 +2988,332 @@ impl ExtractionPersister {
         }
 
         Ok(summary)
+    }
+
+    async fn persist_batch_with_write_batch_after_run_started(
+        &self,
+        store: &WriteHandle,
+        workspace_id: i64,
+        run_id: i64,
+        extraction: &DocumentSymbolBatchExtraction,
+        close_stale: bool,
+    ) -> ExtractResult<PersistenceSummary> {
+        let mut batch = DocumentSymbolWriteBatchInput::default();
+        let mut summary = empty_summary(workspace_id, run_id);
+
+        for file_extraction in &extraction.extractions {
+            self.push_document_symbol_file_write_batch(
+                &mut batch,
+                &mut summary,
+                workspace_id,
+                run_id,
+                file_extraction,
+                close_stale,
+            )?;
+        }
+
+        let batch_summary = store
+            .write_document_symbol_batch(batch)
+            .await
+            .map_err(ExtractError::storage)?;
+        summary.stale_nodes_closed = batch_summary.stale_nodes_closed as usize;
+        summary.stale_edges_closed = batch_summary.stale_edges_closed as usize;
+
+        Ok(summary)
+    }
+
+    fn push_document_symbol_file_write_batch(
+        &self,
+        batch: &mut DocumentSymbolWriteBatchInput,
+        summary: &mut PersistenceSummary,
+        workspace_id: i64,
+        run_id: i64,
+        extraction: &DocumentSymbolExtraction,
+        close_stale: bool,
+    ) -> ExtractResult<()> {
+        let route_name = RouteName::document_symbols_for_language(extraction.source_file.language);
+        let file_uri = &extraction.source_file.uri;
+        let file_node_id = node_id(
+            workspace_id,
+            extraction.source_file.language.as_store_str(),
+            &extraction.source_file.file_symbol_key,
+        );
+        let file_name = basename_from_relative_path(&extraction.source_file.relative_path);
+        let mut node_ids = HashMap::new();
+        node_ids.insert(
+            extraction.source_file.file_symbol_key.clone(),
+            file_node_id.clone(),
+        );
+
+        batch.files.push(DocumentSymbolWriteBatchFileInput {
+            workspace_id,
+            uri: file_uri.clone(),
+            path: extraction.source_file.relative_path.clone(),
+            language: extraction.source_file.language.as_store_str().to_string(),
+            content_hash: extraction.source_file.content_hash.clone(),
+            last_seen_run_id: Some(run_id),
+            properties_json: json!({
+                "provider": extraction.provider.as_str(),
+                "language": extraction.source_file.language.as_store_str(),
+                "raw_metadata": extraction.raw_metadata,
+            }),
+        });
+        batch
+            .route_status_starts
+            .push(DocumentSymbolWriteBatchRouteStatusStartInput {
+                workspace_id,
+                route: route_name.as_str().to_string(),
+                scope: RouteScope::FILE.as_str().to_string(),
+                scope_key: file_uri.clone(),
+                file_uri: Some(file_uri.clone()),
+                provider: extraction.provider.as_str().to_string(),
+                provider_version: extraction.provider_version.clone(),
+                content_hash: extraction.source_file.content_hash.clone(),
+                run_id,
+                diagnostics_json: json!({
+                    "write_mode": "document_symbol_write_batch",
+                }),
+            });
+
+        batch.nodes.push(DocumentSymbolWriteBatchNodeInput {
+            workspace_id,
+            language: extraction.source_file.language.as_store_str().to_string(),
+            kind: "file".to_string(),
+            name: file_name.clone(),
+            qualified_name: Some(extraction.source_file.relative_path.clone()),
+            display_name: Some(file_name),
+            symbol_key: extraction.source_file.file_symbol_key.clone(),
+            file_uri: Some(file_uri.clone()),
+            range: None,
+            selection_range: None,
+            container_node_id: None,
+            properties_json: json!({
+                "provider": extraction.provider.as_str(),
+                "language": extraction.source_file.language.as_store_str(),
+                "uri": extraction.source_file.uri,
+            }),
+            run_id: Some(run_id),
+        });
+        batch
+            .route_observations
+            .push(DocumentSymbolWriteBatchObservationInput {
+                workspace_id,
+                run_id,
+                route: route_name.as_str().to_string(),
+                scope: RouteScope::FILE.as_str().to_string(),
+                scope_key: file_uri.clone(),
+                provider: extraction.provider.as_str().to_string(),
+                entity_kind: "node".to_string(),
+                entity_id: file_node_id.clone(),
+                source_file_uri: Some(file_uri.clone()),
+                properties_json: json!({
+                    "source": "textDocument/documentSymbol",
+                }),
+            });
+
+        for symbol in &extraction.symbols {
+            let container_node_id = if let Some(parent_symbol_key) = &symbol.parent_symbol_key {
+                Some(
+                    node_ids
+                        .get(parent_symbol_key)
+                        .ok_or_else(|| {
+                            ExtractError::response_shape(
+                                extraction.provider.as_str(),
+                                "textDocument/documentSymbol",
+                                format!(
+                                    "symbol {} references missing parent {}",
+                                    symbol.symbol_key, parent_symbol_key
+                                ),
+                            )
+                        })?
+                        .clone(),
+                )
+            } else {
+                None
+            };
+            let node_id = node_id(
+                workspace_id,
+                symbol.language.as_store_str(),
+                &symbol.symbol_key,
+            );
+
+            batch.nodes.push(DocumentSymbolWriteBatchNodeInput {
+                workspace_id,
+                language: symbol.language.as_store_str().to_string(),
+                kind: symbol.kind.clone(),
+                name: symbol.name.clone(),
+                qualified_name: symbol.qualified_name.clone(),
+                display_name: Some(symbol.name.clone()),
+                symbol_key: symbol.symbol_key.clone(),
+                file_uri: Some(file_uri.clone()),
+                range: Some(symbol.range),
+                selection_range: Some(symbol.selection_range),
+                container_node_id: container_node_id.clone(),
+                properties_json: symbol_properties_json(symbol),
+                run_id: Some(run_id),
+            });
+            batch
+                .route_observations
+                .push(DocumentSymbolWriteBatchObservationInput {
+                    workspace_id,
+                    run_id,
+                    route: route_name.as_str().to_string(),
+                    scope: RouteScope::FILE.as_str().to_string(),
+                    scope_key: file_uri.clone(),
+                    provider: extraction.provider.as_str().to_string(),
+                    entity_kind: "node".to_string(),
+                    entity_id: node_id.clone(),
+                    source_file_uri: Some(file_uri.clone()),
+                    properties_json: json!({
+                        "source": "textDocument/documentSymbol",
+                    }),
+                });
+            batch
+                .occurrences
+                .push(DocumentSymbolWriteBatchOccurrenceInput {
+                    node_id: node_id.clone(),
+                    run_id,
+                    file_uri: file_uri.clone(),
+                    role: "definition".to_string(),
+                    range: symbol.selection_range,
+                    enclosing_node_id: container_node_id,
+                    raw_json: Some(symbol.raw_json.clone()),
+                });
+
+            node_ids.insert(symbol.symbol_key.clone(), node_id);
+        }
+
+        for relation in &extraction.relations {
+            let src_node_id = node_ids
+                .get(&relation.source_symbol_key)
+                .ok_or_else(|| {
+                    ExtractError::response_shape(
+                        extraction.provider.as_str(),
+                        "textDocument/documentSymbol",
+                        format!(
+                            "relation source {} was not persisted",
+                            relation.source_symbol_key
+                        ),
+                    )
+                })?
+                .clone();
+            let dst_node_id = node_ids
+                .get(&relation.target_symbol_key)
+                .ok_or_else(|| {
+                    ExtractError::response_shape(
+                        extraction.provider.as_str(),
+                        "textDocument/documentSymbol",
+                        format!(
+                            "relation target {} was not persisted",
+                            relation.target_symbol_key
+                        ),
+                    )
+                })?
+                .clone();
+            let edge_id = edge_id(
+                workspace_id,
+                &src_node_id,
+                &dst_node_id,
+                &relation.relation,
+                None,
+            );
+
+            batch.edges.push(RouteWriteBatchEdgeInput {
+                workspace_id,
+                src_node_id,
+                dst_node_id,
+                relation: relation.relation.clone(),
+                context: None,
+                confidence: relation.confidence.clone(),
+                confidence_score: relation.confidence_score,
+                weight: 1.0,
+                properties_json: json!({
+                    "provider": relation.provider.as_str(),
+                    "source": "textDocument/documentSymbol",
+                }),
+                run_id: Some(run_id),
+            });
+            batch
+                .route_observations
+                .push(DocumentSymbolWriteBatchObservationInput {
+                    workspace_id,
+                    run_id,
+                    route: route_name.as_str().to_string(),
+                    scope: RouteScope::FILE.as_str().to_string(),
+                    scope_key: file_uri.clone(),
+                    provider: extraction.provider.as_str().to_string(),
+                    entity_kind: "edge".to_string(),
+                    entity_id: edge_id.clone(),
+                    source_file_uri: Some(file_uri.clone()),
+                    properties_json: json!({
+                        "relation": "contains",
+                        "source": "textDocument/documentSymbol",
+                    }),
+                });
+            batch
+                .edge_evidence
+                .push(DocumentSymbolWriteBatchEdgeEvidenceInput {
+                    edge_id,
+                    run_id,
+                    provider: relation.provider.as_str().to_string(),
+                    lsp_method: Some("textDocument/documentSymbol".to_string()),
+                    file_uri: Some(file_uri.clone()),
+                    range: relation.range,
+                    raw_json: Some(relation.raw_json.clone()),
+                });
+        }
+
+        batch
+            .route_status_completes
+            .push(DocumentSymbolWriteBatchRouteStatusCompleteInput {
+                workspace_id,
+                route: route_name.as_str().to_string(),
+                scope: RouteScope::FILE.as_str().to_string(),
+                scope_key: file_uri.clone(),
+                provider: extraction.provider.as_str().to_string(),
+                provider_version: extraction.provider_version.clone(),
+                content_hash: extraction.source_file.content_hash.clone(),
+                run_id,
+                diagnostics_json: json!({
+                    "write_mode": "document_symbol_write_batch",
+                    "files": 1,
+                    "nodes": node_ids.len(),
+                    "contains_edges": extraction.relations.len(),
+                    "occurrences": extraction.symbols.len(),
+                    "evidence": extraction.relations.len(),
+                }),
+            });
+        if close_stale {
+            batch
+                .close_stale_nodes
+                .push(DocumentSymbolWriteBatchCloseStaleRouteInput {
+                    workspace_id,
+                    run_id,
+                    route: route_name.as_str().to_string(),
+                    scope: RouteScope::FILE.as_str().to_string(),
+                    scope_key: file_uri.clone(),
+                    provider: extraction.provider.as_str().to_string(),
+                });
+            batch
+                .close_stale_edges
+                .push(DocumentSymbolWriteBatchCloseStaleRouteInput {
+                    workspace_id,
+                    run_id,
+                    route: route_name.as_str().to_string(),
+                    scope: RouteScope::FILE.as_str().to_string(),
+                    scope_key: file_uri.clone(),
+                    provider: extraction.provider.as_str().to_string(),
+                });
+        }
+
+        summary.files += 1;
+        summary.nodes += node_ids.len();
+        summary.edges += extraction.relations.len();
+        summary.occurrences += extraction.symbols.len();
+        summary.evidence += extraction.relations.len();
+        summary.routes_complete += 1;
+
+        Ok(())
     }
 
     async fn persist_after_run_started(

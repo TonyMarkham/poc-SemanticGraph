@@ -19,7 +19,7 @@ const ROUTE_CALLS: &str = "rust.calls";
 const SCOPE_FILE: &str = "file";
 const SCOPE_WORKSPACE: &str = "workspace";
 
-fn temp_db_path() -> std::result::Result<PathBuf, Box<dyn Error>> {
+fn temp_db_path() -> Result<PathBuf, Box<dyn Error>> {
     let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
     Ok(env::temp_dir().join(format!(
         "poc-semanticgraph-store-{}-{stamp}.db",
@@ -106,12 +106,12 @@ impl TestStore {
     }
 }
 
-async fn migrated_store() -> std::result::Result<TestStore, Box<dyn Error>> {
+async fn migrated_store() -> Result<TestStore, Box<dyn Error>> {
     let (store, _path) = migrated_store_with_path().await?;
     Ok(store)
 }
 
-async fn migrated_store_with_path() -> std::result::Result<(TestStore, PathBuf), Box<dyn Error>> {
+async fn migrated_store_with_path() -> Result<(TestStore, PathBuf), Box<dyn Error>> {
     let path = temp_db_path()?;
     let writer = WriteManager::start(&path).await?;
     writer.migrate().await?;
@@ -123,7 +123,7 @@ async fn migrated_store_with_path() -> std::result::Result<(TestStore, PathBuf),
 }
 
 #[tokio::test]
-async fn migration_creates_empty_core_schema() -> std::result::Result<(), Box<dyn Error>> {
+async fn migration_creates_empty_core_schema() -> Result<(), Box<dyn Error>> {
     let path = temp_db_path()?;
     let writer = WriteManager::start(&path).await?;
     writer.migrate().await?;
@@ -233,7 +233,7 @@ fn deterministic_ids_are_stable() {
 }
 
 #[tokio::test]
-async fn demo_seed_inserts_core_graph_rows() -> std::result::Result<(), Box<dyn Error>> {
+async fn demo_seed_inserts_core_graph_rows() -> Result<(), Box<dyn Error>> {
     let store = migrated_store().await?;
 
     store.demo_seed("file:///demo").await?;
@@ -255,7 +255,7 @@ async fn demo_seed_inserts_core_graph_rows() -> std::result::Result<(), Box<dyn 
 }
 
 #[tokio::test]
-async fn upserts_do_not_duplicate_canonical_rows() -> std::result::Result<(), Box<dyn Error>> {
+async fn upserts_do_not_duplicate_canonical_rows() -> Result<(), Box<dyn Error>> {
     let store = migrated_store().await?;
 
     let first = store.demo_seed("file:///demo").await?;
@@ -283,7 +283,7 @@ async fn upserts_do_not_duplicate_canonical_rows() -> std::result::Result<(), Bo
 }
 
 #[tokio::test]
-async fn foreign_keys_reject_invalid_edge_references() -> std::result::Result<(), Box<dyn Error>> {
+async fn foreign_keys_reject_invalid_edge_references() -> Result<(), Box<dyn Error>> {
     let store = migrated_store().await?;
     let workspace_id = store.create_workspace("file:///demo", "rust").await?;
 
@@ -308,7 +308,7 @@ async fn foreign_keys_reject_invalid_edge_references() -> std::result::Result<()
 }
 
 #[tokio::test]
-async fn route_status_tracks_start_complete_and_fail() -> std::result::Result<(), Box<dyn Error>> {
+async fn route_status_tracks_start_complete_and_fail() -> Result<(), Box<dyn Error>> {
     let (store, path) = migrated_store_with_path().await?;
     let workspace_id = store.create_workspace("file:///demo", "rust").await?;
     let first_run_id = store
@@ -401,8 +401,7 @@ async fn route_status_tracks_start_complete_and_fail() -> std::result::Result<()
 }
 
 #[tokio::test]
-async fn route_observations_are_unique_per_route_run_and_entity()
--> std::result::Result<(), Box<dyn Error>> {
+async fn route_observations_are_unique_per_route_run_and_entity() -> Result<(), Box<dyn Error>> {
     let (store, path) = migrated_store_with_path().await?;
     let workspace_id = store.create_workspace("file:///demo", "rust").await?;
     let run_id = store.start_run(workspace_id, PROVIDER, None, None).await?;
@@ -435,7 +434,7 @@ async fn route_observations_are_unique_per_route_run_and_entity()
 }
 
 #[tokio::test]
-async fn document_symbol_route_closes_stale_nodes() -> std::result::Result<(), Box<dyn Error>> {
+async fn document_symbol_route_closes_stale_nodes() -> Result<(), Box<dyn Error>> {
     let (store, path) = migrated_store_with_path().await?;
     let workspace_id = store.create_workspace("file:///demo", "rust").await?;
     let first_run_id = store.start_run(workspace_id, PROVIDER, None, None).await?;
@@ -501,8 +500,7 @@ async fn document_symbol_route_closes_stale_nodes() -> std::result::Result<(), B
 }
 
 #[tokio::test]
-async fn document_symbol_route_closes_stale_contains_edges()
--> std::result::Result<(), Box<dyn Error>> {
+async fn document_symbol_route_closes_stale_contains_edges() -> Result<(), Box<dyn Error>> {
     let (store, path) = migrated_store_with_path().await?;
     let workspace_id = store.create_workspace("file:///demo", "rust").await?;
     let first_run_id = store.start_run(workspace_id, PROVIDER, None, None).await?;
@@ -596,7 +594,7 @@ async fn document_symbol_route_closes_stale_contains_edges()
 }
 
 #[tokio::test]
-async fn reference_route_closes_stale_edges() -> std::result::Result<(), Box<dyn Error>> {
+async fn reference_route_closes_stale_edges() -> Result<(), Box<dyn Error>> {
     let (store, path) = migrated_store_with_path().await?;
     let workspace_id = store.create_workspace("file:///demo", "rust").await?;
     let first_run_id = store.start_run(workspace_id, PROVIDER, None, None).await?;
@@ -696,7 +694,7 @@ async fn reference_route_closes_stale_edges() -> std::result::Result<(), Box<dyn
 }
 
 #[tokio::test]
-async fn failed_route_does_not_close_stale_edges() -> std::result::Result<(), Box<dyn Error>> {
+async fn failed_route_does_not_close_stale_edges() -> Result<(), Box<dyn Error>> {
     let (store, path) = migrated_store_with_path().await?;
     let workspace_id = store.create_workspace("file:///demo", "rust").await?;
     let first_run_id = store.start_run(workspace_id, PROVIDER, None, None).await?;
@@ -771,7 +769,7 @@ async fn failed_route_does_not_close_stale_edges() -> std::result::Result<(), Bo
 }
 
 #[tokio::test]
-async fn call_route_closes_stale_edges() -> std::result::Result<(), Box<dyn Error>> {
+async fn call_route_closes_stale_edges() -> Result<(), Box<dyn Error>> {
     let (store, path) = migrated_store_with_path().await?;
     let workspace_id = store.create_workspace("file:///demo", "rust").await?;
     let first_run_id = store.start_run(workspace_id, PROVIDER, None, None).await?;
@@ -871,7 +869,7 @@ async fn call_route_closes_stale_edges() -> std::result::Result<(), Box<dyn Erro
 }
 
 #[tokio::test]
-async fn upsert_reopens_reobserved_stale_node() -> std::result::Result<(), Box<dyn Error>> {
+async fn upsert_reopens_reobserved_stale_node() -> Result<(), Box<dyn Error>> {
     let (store, path) = migrated_store_with_path().await?;
     let workspace_id = store.create_workspace("file:///demo", "rust").await?;
     let first_run_id = store.start_run(workspace_id, PROVIDER, None, None).await?;
@@ -924,7 +922,7 @@ async fn upsert_reopens_reobserved_stale_node() -> std::result::Result<(), Box<d
 }
 
 #[tokio::test]
-async fn upsert_reopens_reobserved_stale_call_edge() -> std::result::Result<(), Box<dyn Error>> {
+async fn upsert_reopens_reobserved_stale_call_edge() -> Result<(), Box<dyn Error>> {
     let (store, path) = migrated_store_with_path().await?;
     let workspace_id = store.create_workspace("file:///demo", "rust").await?;
     let first_run_id = store.start_run(workspace_id, PROVIDER, None, None).await?;
@@ -995,7 +993,7 @@ async fn upsert_reopens_reobserved_stale_call_edge() -> std::result::Result<(), 
 }
 
 #[tokio::test]
-async fn upsert_edge_updates_call_weight() -> std::result::Result<(), Box<dyn Error>> {
+async fn upsert_edge_updates_call_weight() -> Result<(), Box<dyn Error>> {
     let (store, path) = migrated_store_with_path().await?;
     let workspace_id = store.create_workspace("file:///demo", "rust").await?;
     let first_run_id = store.start_run(workspace_id, PROVIDER, None, None).await?;
@@ -1039,7 +1037,7 @@ async fn upsert_edge_updates_call_weight() -> std::result::Result<(), Box<dyn Er
     Ok(())
 }
 
-async fn sqlite_pool(path: &Path) -> std::result::Result<SqlitePool, Box<dyn Error>> {
+async fn sqlite_pool(path: &Path) -> Result<SqlitePool, Box<dyn Error>> {
     Ok(SqlitePool::connect(&format!("sqlite://{}", path.display())).await?)
 }
 
@@ -1048,7 +1046,7 @@ async fn insert_file(
     workspace_id: i64,
     run_id: i64,
     path: &str,
-) -> std::result::Result<i64, Box<dyn Error>> {
+) -> Result<i64, Box<dyn Error>> {
     let uri = format!("file:///demo/{path}");
     Ok(store
         .upsert_file(FileInput {
@@ -1069,7 +1067,7 @@ async fn insert_node(
     run_id: i64,
     file_id: i64,
     name: &str,
-) -> std::result::Result<String, Box<dyn Error>> {
+) -> Result<String, Box<dyn Error>> {
     let symbol_key = format!("file:///demo/src/lib.rs#function:{name}");
     Ok(store
         .upsert_node(NodeInput {
@@ -1097,7 +1095,7 @@ async fn insert_edge(
     src_node_id: &str,
     dst_node_id: &str,
     relation: &str,
-) -> std::result::Result<String, Box<dyn Error>> {
+) -> Result<String, Box<dyn Error>> {
     Ok(store
         .upsert_edge(EdgeInput {
             workspace_id,
@@ -1120,7 +1118,7 @@ async fn complete_file_route(
     run_id: i64,
     file_id: i64,
     scope_key: &str,
-) -> std::result::Result<(), Box<dyn Error>> {
+) -> Result<(), Box<dyn Error>> {
     store
         .start_route_status(RouteStatusStartInput {
             workspace_id,
@@ -1156,7 +1154,7 @@ async fn complete_workspace_route(
     workspace_id: i64,
     run_id: i64,
     scope_key: &str,
-) -> std::result::Result<(), Box<dyn Error>> {
+) -> Result<(), Box<dyn Error>> {
     store
         .start_route_status(RouteStatusStartInput {
             workspace_id,
@@ -1192,7 +1190,7 @@ async fn complete_call_route(
     workspace_id: i64,
     run_id: i64,
     scope_key: &str,
-) -> std::result::Result<(), Box<dyn Error>> {
+) -> Result<(), Box<dyn Error>> {
     store
         .start_route_status(RouteStatusStartInput {
             workspace_id,
@@ -1230,7 +1228,7 @@ async fn record_node_observation(
     scope_key: &str,
     file_id: i64,
     node_id: &str,
-) -> std::result::Result<(), Box<dyn Error>> {
+) -> Result<(), Box<dyn Error>> {
     store
         .record_route_observation(RouteObservationInput {
             workspace_id,
@@ -1255,7 +1253,7 @@ async fn record_edge_observation(
     scope_key: &str,
     file_id: i64,
     edge_id: &str,
-) -> std::result::Result<(), Box<dyn Error>> {
+) -> Result<(), Box<dyn Error>> {
     store
         .record_route_observation(RouteObservationInput {
             workspace_id,
@@ -1280,7 +1278,7 @@ async fn record_reference_observation(
     scope_key: &str,
     file_id: i64,
     edge_id: &str,
-) -> std::result::Result<(), Box<dyn Error>> {
+) -> Result<(), Box<dyn Error>> {
     store
         .record_route_observation(RouteObservationInput {
             workspace_id,
@@ -1305,7 +1303,7 @@ async fn record_call_observation(
     scope_key: &str,
     file_id: i64,
     edge_id: &str,
-) -> std::result::Result<(), Box<dyn Error>> {
+) -> Result<(), Box<dyn Error>> {
     store
         .record_route_observation(RouteObservationInput {
             workspace_id,
@@ -1323,10 +1321,7 @@ async fn record_call_observation(
     Ok(())
 }
 
-async fn node_valid_to(
-    pool: &SqlitePool,
-    node_id: &str,
-) -> std::result::Result<Option<i64>, Box<dyn Error>> {
+async fn node_valid_to(pool: &SqlitePool, node_id: &str) -> Result<Option<i64>, Box<dyn Error>> {
     Ok(
         sqlx::query_scalar("SELECT valid_to_run_id FROM nodes WHERE id = ?")
             .bind(node_id)
@@ -1335,10 +1330,7 @@ async fn node_valid_to(
     )
 }
 
-async fn edge_valid_to(
-    pool: &SqlitePool,
-    edge_id: &str,
-) -> std::result::Result<Option<i64>, Box<dyn Error>> {
+async fn edge_valid_to(pool: &SqlitePool, edge_id: &str) -> Result<Option<i64>, Box<dyn Error>> {
     Ok(
         sqlx::query_scalar("SELECT valid_to_run_id FROM edges WHERE id = ?")
             .bind(edge_id)
@@ -1347,7 +1339,7 @@ async fn edge_valid_to(
     )
 }
 
-async fn edge_weight(pool: &SqlitePool, edge_id: &str) -> std::result::Result<f64, Box<dyn Error>> {
+async fn edge_weight(pool: &SqlitePool, edge_id: &str) -> Result<f64, Box<dyn Error>> {
     Ok(sqlx::query_scalar("SELECT weight FROM edges WHERE id = ?")
         .bind(edge_id)
         .fetch_one(pool)

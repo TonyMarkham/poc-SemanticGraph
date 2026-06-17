@@ -6,7 +6,7 @@ use serde_json::Value;
 use tokio::io::{AsyncWriteExt, BufReader, duplex};
 
 #[tokio::test]
-async fn framing_parser_reads_one_valid_response() -> std::result::Result<(), Box<dyn Error>> {
+async fn framing_parser_reads_one_valid_response() -> Result<(), Box<dyn Error>> {
     let value =
         read_one(b"Content-Length: 38\r\n\r\n{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":null}")
             .await?;
@@ -17,8 +17,7 @@ async fn framing_parser_reads_one_valid_response() -> std::result::Result<(), Bo
 }
 
 #[tokio::test]
-async fn framing_parser_allows_notification_before_response()
--> std::result::Result<(), Box<dyn Error>> {
+async fn framing_parser_allows_notification_before_response() -> Result<(), Box<dyn Error>> {
     let input = concat!(
         "Content-Length: 46\r\n\r\n",
         "{\"jsonrpc\":\"2.0\",\"method\":\"window/logMessage\"}",
@@ -39,7 +38,7 @@ async fn framing_parser_allows_notification_before_response()
 }
 
 #[tokio::test]
-async fn framing_parser_rejects_malformed_headers() -> std::result::Result<(), Box<dyn Error>> {
+async fn framing_parser_rejects_malformed_headers() -> Result<(), Box<dyn Error>> {
     let result = read_one(b"Content-Length nope\r\n\r\n{}").await;
 
     assert!(matches!(result, Err(ExtractError::JsonRpcProtocol { .. })));
@@ -47,7 +46,7 @@ async fn framing_parser_rejects_malformed_headers() -> std::result::Result<(), B
 }
 
 #[tokio::test]
-async fn framing_parser_rejects_malformed_json() -> std::result::Result<(), Box<dyn Error>> {
+async fn framing_parser_rejects_malformed_json() -> Result<(), Box<dyn Error>> {
     let result = read_one(b"Content-Length: 1\r\n\r\n{").await;
 
     assert!(matches!(result, Err(ExtractError::Json { .. })));

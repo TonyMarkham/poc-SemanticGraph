@@ -20,8 +20,7 @@ use tokio::runtime::Builder;
 static RUST_ANALYZER_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
-fn threaded_workspace_extraction_streams_relation_writes() -> std::result::Result<(), Box<dyn Error>>
-{
+fn threaded_workspace_extraction_streams_relation_writes() -> Result<(), Box<dyn Error>> {
     run_with_rust_analyzer(async {
         let repo_root = repo_root()?;
         let provider = RustAnalyzerProvider::new();
@@ -81,7 +80,7 @@ fn threaded_workspace_extraction_streams_relation_writes() -> std::result::Resul
 fn workspace_extraction_request(
     provider: &RustAnalyzerProvider,
     repo_root: &Path,
-) -> std::result::Result<DocumentSymbolBatchRequest, Box<dyn Error>> {
+) -> Result<DocumentSymbolBatchRequest, Box<dyn Error>> {
     let package_path = repo_root.join("crates/wip");
     let file_paths = provider.discover_rust_source_files(repo_root, &package_path)?;
     Ok(DocumentSymbolBatchRequest {
@@ -91,7 +90,7 @@ fn workspace_extraction_request(
     })
 }
 
-fn repo_root() -> std::result::Result<PathBuf, Box<dyn Error>> {
+fn repo_root() -> Result<PathBuf, Box<dyn Error>> {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let crates_dir = manifest_dir
         .parent()
@@ -103,7 +102,7 @@ fn repo_root() -> std::result::Result<PathBuf, Box<dyn Error>> {
     Ok(repo_root.to_path_buf())
 }
 
-fn temp_db_path() -> std::result::Result<PathBuf, Box<dyn Error>> {
+fn temp_db_path() -> Result<PathBuf, Box<dyn Error>> {
     let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
     Ok(env::temp_dir().join(format!(
         "poc-semanticgraph-threaded-workspace-extraction-{}-{stamp}.db",
@@ -111,21 +110,20 @@ fn temp_db_path() -> std::result::Result<PathBuf, Box<dyn Error>> {
     )))
 }
 
-async fn sqlite_pool(path: &Path) -> std::result::Result<SqlitePool, Box<dyn Error>> {
+async fn sqlite_pool(path: &Path) -> Result<SqlitePool, Box<dyn Error>> {
     Ok(SqlitePool::connect(&format!("sqlite://{}", path.display())).await?)
 }
 
-fn run_with_rust_analyzer<F>(future: F) -> std::result::Result<(), Box<dyn Error>>
+fn run_with_rust_analyzer<F>(future: F) -> Result<(), Box<dyn Error>>
 where
-    F: Future<Output = std::result::Result<(), Box<dyn Error>>>,
+    F: Future<Output = Result<(), Box<dyn Error>>>,
 {
     let _guard = rust_analyzer_guard()?;
     let runtime = Builder::new_current_thread().enable_all().build()?;
     runtime.block_on(future)
 }
 
-fn rust_analyzer_guard() -> std::result::Result<std::sync::MutexGuard<'static, ()>, Box<dyn Error>>
-{
+fn rust_analyzer_guard() -> Result<std::sync::MutexGuard<'static, ()>, Box<dyn Error>> {
     RUST_ANALYZER_LOCK
         .lock()
         .map_err(|_| io::Error::other("rust-analyzer test mutex was poisoned").into())

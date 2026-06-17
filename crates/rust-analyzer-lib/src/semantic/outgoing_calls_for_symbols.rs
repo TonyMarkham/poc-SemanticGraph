@@ -1,7 +1,9 @@
 use crate::{
     RustAnalyzerLibError, RustAnalyzerLibResult,
     model::{ResolvedCallTarget, ResolvedOutgoingCall, ResolvedOutgoingCallSet},
-    semantic::{loaded_analysis::LoadedAnalysis, lsp_range::range},
+    semantic::{
+        analysis_context::AnalysisContext, loaded_analysis::LoadedAnalysis, lsp_range::range,
+    },
 };
 
 use ide::{CallHierarchyConfig, FilePosition, RaFixtureConfig};
@@ -25,12 +27,12 @@ pub fn outgoing_calls_for_symbols(
 }
 
 pub(super) fn outgoing_calls_for_target(
-    loaded: &LoadedAnalysis,
+    context: &impl AnalysisContext,
     caller: &ResolvedCallTarget,
 ) -> RustAnalyzerLibResult<ResolvedOutgoingCallSet> {
-    let caller_file_id = loaded.file_id_for_path(&caller.file_path)?;
-    let caller_line_index = loaded
-        .analysis
+    let caller_file_id = context.file_id_for_path(&caller.file_path)?;
+    let caller_line_index = context
+        .analysis()
         .file_line_index(caller_file_id)
         .map_err(|source| RustAnalyzerLibError::analysis("load caller file line index", source))?;
     let seed_position = FilePosition {
@@ -41,8 +43,8 @@ pub(super) fn outgoing_calls_for_target(
         exclude_tests: false,
         ra_fixture: RaFixtureConfig::default(),
     };
-    let prepared_items = loaded
-        .analysis
+    let prepared_items = context
+        .analysis()
         .call_hierarchy(seed_position, &config)
         .map_err(|source| RustAnalyzerLibError::analysis("prepare call hierarchy", source))?
         .map(|range_info| range_info.info)
@@ -63,8 +65,8 @@ pub(super) fn outgoing_calls_for_target(
             file_id: item.file_id,
             offset: item.focus_or_full_range().start(),
         };
-        let Some(call_items) = loaded
-            .analysis
+        let Some(call_items) = context
+            .analysis()
             .outgoing_calls(&config, item_position)
             .map_err(|source| RustAnalyzerLibError::analysis("extract outgoing calls", source))?
         else {
@@ -72,11 +74,11 @@ pub(super) fn outgoing_calls_for_target(
         };
 
         for call_item in call_items {
-            let Some(target_file_path) = loaded.file_path_for_id(call_item.target.file_id) else {
+            let Some(target_file_path) = context.file_path_for_id(call_item.target.file_id) else {
                 continue;
             };
-            let target_line_index = loaded
-                .analysis
+            let target_line_index = context
+                .analysis()
                 .file_line_index(call_item.target.file_id)
                 .map_err(|source| {
                     RustAnalyzerLibError::analysis("load call target file line index", source)

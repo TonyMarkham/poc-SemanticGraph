@@ -21,8 +21,8 @@ Create VS-1500.md as the implementation plan for Phase 5 from the VS-100.md bein
 
 - Include a `Measurement Of Done` section with `- [ ]` style checkboxes as a final evaluation checklist.
 
-## Measure Of Done Section Addendum
-- Rust Code: Zero usage of `std::result::Result` for any return value. Custom {custom}Result<T> is acceptable in error modules.
+## Definition Of Done Section Addendum
+- Rust Code: Zero usage of `std::result::Result` for any return value. Custom {custom}Result<T> is acceptable in error modules. ALso acceptable in tests.
 - Rust Code: MUST only contain 1 type per file.
 - `cargo fmt` has been run
 - `cargo check` is clean: no errors or warnings

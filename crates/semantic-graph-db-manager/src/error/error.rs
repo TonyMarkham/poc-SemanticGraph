@@ -39,6 +39,12 @@ pub enum DbManagerError {
         location: ErrorLocation,
     },
 
+    #[error("invalid input during {context} at {location}")]
+    InvalidInput {
+        context: String,
+        location: ErrorLocation,
+    },
+
     #[error("db write manager closed during {context} at {location}")]
     Closed {
         context: String,
@@ -89,6 +95,14 @@ impl DbManagerError {
     }
 
     #[track_caller]
+    pub fn invalid_input(context: impl Into<String>) -> Self {
+        Self::InvalidInput {
+            context: context.into(),
+            location: ErrorLocation::from(Location::caller()),
+        }
+    }
+
+    #[track_caller]
     pub fn closed(context: impl Into<String>) -> Self {
         Self::Closed {
             context: context.into(),
@@ -110,6 +124,7 @@ impl DbManagerError {
             Self::Migration { .. } => "migration error",
             Self::Io { .. } => "io error",
             Self::Config { .. } => "configuration error",
+            Self::InvalidInput { .. } => "invalid input",
             Self::Closed { .. } => "db write manager closed",
             Self::WorkerTask { .. } => "db write manager task failed",
         }
@@ -121,6 +136,7 @@ impl DbManagerError {
             | Self::Migration { location, .. }
             | Self::Io { location, .. }
             | Self::Config { location, .. }
+            | Self::InvalidInput { location, .. }
             | Self::Closed { location, .. }
             | Self::WorkerTask { location, .. } => *location,
         }

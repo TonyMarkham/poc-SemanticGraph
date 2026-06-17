@@ -20,8 +20,8 @@ use semantic_graph_extract::{
     providers::csharp_ls::CSharpLsProvider,
     providers::rust_analyzer::RustAnalyzerProvider,
     workspace_extraction::{
-        ThreadedWorkspaceExtractionConfig, ThreadedWorkspaceExtractionRunner,
-        WorkspaceExtractionRoutes, WorkspaceExtractionSummary,
+        SharedWorkspaceExtractionRunner, ThreadedWorkspaceExtractionConfig,
+        ThreadedWorkspaceExtractionRunner, WorkspaceExtractionRoutes, WorkspaceExtractionSummary,
     },
 };
 
@@ -173,7 +173,7 @@ async fn run() -> ExtractResult<()> {
                     workspace_root,
                     file_paths,
                 })?;
-            let summary = run_threaded_rust_route_batch(
+            let summary = run_shared_rust_route_batch(
                 &config,
                 db,
                 &provider,
@@ -1085,6 +1085,82 @@ async fn run_threaded_rust_route_batch(
     )
     .await;
     benchmark.insert_duration_ms("threaded_runner", threaded_timer.elapsed());
+
+    let writer_shutdown_timer = Stopwatch::start_new();
+    shutdown_writer(&store).await?;
+    benchmark.insert_duration_ms("writer_shutdown", writer_shutdown_timer.elapsed());
+    let mut summary = summary?;
+    benchmark.extend_from(&summary.benchmark);
+    benchmark.insert_duration_ms("total", total_timer.elapsed());
+    summary.benchmark = benchmark;
+
+    Ok(summary)
+}
+
+async fn run_shared_rust_route_batch(
+    config: &Option<PathBuf>,
+    db: Option<PathBuf>,
+    provider: &RustAnalyzerProvider,
+    document_request: DocumentSymbolBatchRequest,
+    routes: WorkspaceExtractionRoutes,
+    analysis_workers: Option<usize>,
+    discovery_metric: Option<(&str, std::time::Duration)>,
+) -> ExtractResult<WorkspaceExtractionSummary> {
+    let total_timer = Stopwatch::start_new();
+    let mut benchmark = BenchmarkSummary::new();
+
+    if let Some((name, elapsed)) = discovery_metric {
+        benchmark.insert_duration_ms(name, elapsed);
+    }
+    benchmark.insert_label("execution_mode", "shared_analysis_snapshot");
+    benchmark.insert_label("mode", "shared-workspace");
+    benchmark.insert_label("routes", routes.label());
+    benchmark.insert_count("files_discovered", document_request.file_paths.len());
+
+    let writer_ready_timer = Stopwatch::start_new();
+    let db = resolve_cli_database_path(db, config, &document_request.workspace_root)?;
+    let close_stale_document_symbols = db.exists();
+    let store = start_writer(db, config, &document_request.workspace_root).await?;
+    benchmark.insert_duration_ms("writer_ready", writer_ready_timer.elapsed());
+
+    let extractor_plan_timer = Stopwatch::start_new();
+    let analysis_worker_count = resolve_threaded_route_analysis_workers(
+        config,
+        &document_request.workspace_root,
+        analysis_workers,
+    )?;
+    let reference_jobs = if routes.includes_references() {
+        analysis_worker_count
+    } else {
+        0
+    };
+    let call_jobs = if routes.includes_calls() {
+        analysis_worker_count
+    } else {
+        0
+    };
+    benchmark.insert_duration_ms("extractor_plan", extractor_plan_timer.elapsed());
+    benchmark.insert_count("analysis_workers", analysis_worker_count);
+    benchmark.insert_count("reference_jobs", reference_jobs);
+    benchmark.insert_count("call_jobs", call_jobs);
+
+    let shared_runner_timer = Stopwatch::start_new();
+    let summary = SharedWorkspaceExtractionRunner::run(
+        &store,
+        provider,
+        document_request,
+        ThreadedWorkspaceExtractionConfig::with_routes(
+            reference_jobs,
+            call_jobs,
+            analysis_worker_count,
+            0,
+            0,
+            routes,
+        ),
+        close_stale_document_symbols,
+    )
+    .await;
+    benchmark.insert_duration_ms("shared_workspace_runner", shared_runner_timer.elapsed());
 
     let writer_shutdown_timer = Stopwatch::start_new();
     shutdown_writer(&store).await?;
