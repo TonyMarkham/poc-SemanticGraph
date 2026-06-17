@@ -1,3 +1,5 @@
+mod csharp_route_batch_context;
+mod csharp_route_batch_scope;
 mod file_relation_context;
 mod file_relation_route_start;
 mod file_relation_worker_summary;
@@ -13,6 +15,8 @@ pub(crate) use file_relation_context::FileRelationContext;
 pub(crate) use file_relation_route_start::FileRelationRouteStart;
 pub(crate) use file_relation_worker_summary::FileRelationWorkerSummary;
 
+pub use csharp_route_batch_context::CSharpRouteBatchContext;
+pub use csharp_route_batch_scope::CSharpRouteBatchScope;
 pub use shared_workspace_extraction_runner::SharedWorkspaceExtractionRunner;
 pub use threaded_workspace_extraction_config::ThreadedWorkspaceExtractionConfig;
 pub use threaded_workspace_extraction_runner::ThreadedWorkspaceExtractionRunner;
