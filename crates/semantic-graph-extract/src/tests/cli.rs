@@ -18,6 +18,58 @@ use std::{
 };
 
 #[test]
+fn fts_defaults_to_all_text_files() -> Result<(), Box<dyn Error>> {
+    let cli = Cli::try_parse_from(["semantic-graph-extract", "fts"])?;
+
+    match cli.command {
+        Command::Fts {
+            db,
+            no_rust,
+            no_csharp,
+            no_submodules,
+        } => {
+            assert_eq!(db, None);
+            assert!(!no_rust);
+            assert!(!no_csharp);
+            assert!(!no_submodules);
+        }
+        _ => return Err("expected fts command".into()),
+    }
+
+    Ok(())
+}
+
+#[test]
+fn fts_accepts_exclusion_flags_and_db() -> Result<(), Box<dyn Error>> {
+    let cli = Cli::try_parse_from([
+        "semantic-graph-extract",
+        "fts",
+        "--db",
+        "scratch.db",
+        "--no-rust",
+        "--no-csharp",
+        "--no-submodules",
+    ])?;
+
+    match cli.command {
+        Command::Fts {
+            db,
+            no_rust,
+            no_csharp,
+            no_submodules,
+        } => {
+            assert_eq!(db, Some(PathBuf::from("scratch.db")));
+            assert!(no_rust);
+            assert!(no_csharp);
+            assert!(no_submodules);
+        }
+        _ => return Err("expected fts command".into()),
+    }
+
+    Ok(())
+}
+
+#[test]
 fn rust_file_requires_only_file_and_defaults_workspace_root() -> Result<(), Box<dyn Error>> {
     let cli = Cli::try_parse_from([
         "semantic-graph-extract",

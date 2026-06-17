@@ -22,9 +22,9 @@ pub use demo_seed_summary::DemoSeedSummary;
 pub use error::{DbManagerError, DbManagerResult};
 pub use ids::{edge_id, node_id};
 pub use input::{
-    CloseStaleFileInput, CloseStaleRouteInput, EdgeEvidenceInput, EdgeInput, FileInput, NodeInput,
-    OccurrenceInput, RouteObservationInput, RouteStatusCompleteInput, RouteStatusFailInput,
-    RouteStatusStartInput, TextRange,
+    CloseStaleFileInput, CloseStaleFtsDocumentsInput, CloseStaleRouteInput, EdgeEvidenceInput,
+    EdgeInput, FileInput, FtsDocumentInput, NodeInput, OccurrenceInput, RouteObservationInput,
+    RouteStatusCompleteInput, RouteStatusFailInput, RouteStatusStartInput, TextRange,
 };
 pub use stale_file_summary::StaleFileSummary;
 pub use write_handle::WriteHandle;

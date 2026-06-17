@@ -161,13 +161,15 @@ async fn migration_creates_empty_core_schema() -> std::result::Result<(), Box<dy
             'idx_edge_evidence_edge',
             'idx_extraction_route_status_workspace_route',
             'idx_route_observations_route_run',
-            'idx_route_observations_entity'
+            'idx_route_observations_entity',
+            'idx_fts_documents_workspace_active',
+            'idx_fts_documents_file'
           )
         "#,
     )
     .fetch_one(&pool)
     .await?;
-    assert_eq!(index_count, 12);
+    assert_eq!(index_count, 14);
 
     let route_table_count: i64 = sqlx::query_scalar(
         r#"
@@ -192,6 +194,29 @@ async fn migration_creates_empty_core_schema() -> std::result::Result<(), Box<dy
     .fetch_one(&pool)
     .await?;
     assert_eq!(node_search_count, 1);
+
+    let fts_table_count: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM sqlite_master
+        WHERE type = 'table'
+          AND name IN ('fts_documents', 'fts_document_trigram_ci')
+        "#,
+    )
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(fts_table_count, 2);
+    let trigram_sql: String = sqlx::query_scalar(
+        r#"
+        SELECT sql
+        FROM sqlite_master
+        WHERE type = 'table'
+          AND name = 'fts_document_trigram_ci'
+        "#,
+    )
+    .fetch_one(&pool)
+    .await?;
+    assert!(trigram_sql.contains("trigram case_sensitive 0"));
 
     Ok(())
 }

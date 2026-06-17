@@ -1,6 +1,6 @@
 use crate::{
-    CSharpConfig, Config, ConfigError, ConfigResult, DatabaseConfig, ExtractorConfig,
-    QueryServiceConfig, RawCSharpConfig, RawDatabaseConfig, RawExtractorConfig,
+    CSharpConfig, Config, ConfigError, ConfigResult, DatabaseConfig, ExtractorConfig, FtsConfig,
+    QueryServiceConfig, RawCSharpConfig, RawDatabaseConfig, RawExtractorConfig, RawFtsConfig,
     RawQueryServiceConfig, RawWriterConfig, WriterConfig,
 };
 
@@ -15,6 +15,7 @@ struct RawConfig {
     #[serde(rename = "query-service")]
     query_service: Option<RawQueryServiceConfig>,
     csharp: Option<RawCSharpConfig>,
+    fts: Option<RawFtsConfig>,
 }
 
 pub fn load_config(path: impl AsRef<Path>) -> ConfigResult<Config> {
@@ -37,6 +38,7 @@ pub fn load_config(path: impl AsRef<Path>) -> ConfigResult<Config> {
     let writer = WriterConfig::from_raw(raw.writer)?;
     let query_service = QueryServiceConfig::from_raw(raw.query_service)?;
     let csharp = CSharpConfig::from_raw(raw.csharp)?;
+    let fts = FtsConfig::from_raw(raw.fts)?;
 
     Ok(Config::new(
         DatabaseConfig::new(database_path),
@@ -44,5 +46,6 @@ pub fn load_config(path: impl AsRef<Path>) -> ConfigResult<Config> {
         writer,
         query_service,
         csharp,
+        fts,
     ))
 }

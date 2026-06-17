@@ -1,8 +1,9 @@
 use crate::{
-    CloseStaleFileInput, CloseStaleRouteInput, DbManagerError, DbManagerResult, DemoSeedSummary,
-    EdgeEvidenceInput, EdgeInput, FileInput, NodeInput, OccurrenceInput, RouteObservationInput,
-    RouteStatusCompleteInput, RouteStatusFailInput, RouteStatusStartInput, StaleFileSummary,
-    WriteProgress, WriteSummary, commands::Commands,
+    CloseStaleFileInput, CloseStaleFtsDocumentsInput, CloseStaleRouteInput, DbManagerError,
+    DbManagerResult, DemoSeedSummary, EdgeEvidenceInput, EdgeInput, FileInput, FtsDocumentInput,
+    NodeInput, OccurrenceInput, RouteObservationInput, RouteStatusCompleteInput,
+    RouteStatusFailInput, RouteStatusStartInput, StaleFileSummary, WriteProgress, WriteSummary,
+    commands::Commands,
 };
 
 use std::sync::Arc;
@@ -123,6 +124,17 @@ impl WriteHandle {
         let (response, receiver) = oneshot::channel();
         self.sender
             .send(Commands::UpsertFile {
+                input: input.into(),
+                response,
+            })
+            .await?;
+        receiver.await?
+    }
+
+    pub async fn upsert_fts_document(&self, input: FtsDocumentInput<'_>) -> DbManagerResult<i64> {
+        let (response, receiver) = oneshot::channel();
+        self.sender
+            .send(Commands::UpsertFtsDocument {
                 input: input.into(),
                 response,
             })
@@ -262,6 +274,20 @@ impl WriteHandle {
         let (response, receiver) = oneshot::channel();
         self.sender
             .send(Commands::CloseStaleFile {
+                input: input.into(),
+                response,
+            })
+            .await?;
+        receiver.await?
+    }
+
+    pub async fn close_stale_fts_documents_for_workspace(
+        &self,
+        input: CloseStaleFtsDocumentsInput<'_>,
+    ) -> DbManagerResult<u64> {
+        let (response, receiver) = oneshot::channel();
+        self.sender
+            .send(Commands::CloseStaleFtsDocumentsForWorkspace {
                 input: input.into(),
                 response,
             })

@@ -21,6 +21,14 @@ max_route_status_limit = 200
 max_shortest_path_depth = 12
 max_shortest_path_visited = 5000
 
+[fts]
+ignore-directories = [
+    "target",
+    "apps/SemanticGraph.Visualizer/src/SemanticGraph.Visualizer.Client/bin",
+    "apps/SemanticGraph.Visualizer/src/SemanticGraph.Visualizer.Client/obj",
+]
+ignore-files = []
+
 [csharp]
 binary = "csharp-ls"
 solution = "SemanticGraph.Visualizer.slnx"

@@ -54,6 +54,13 @@ pub enum ConfigError {
         message: String,
         location: ErrorLocation,
     },
+
+    #[error("invalid fts setting setting={setting} at {location}: {message}")]
+    InvalidFtsSetting {
+        setting: String,
+        message: String,
+        location: ErrorLocation,
+    },
 }
 
 impl ConfigError {
@@ -126,6 +133,15 @@ impl ConfigError {
         }
     }
 
+    #[track_caller]
+    pub fn invalid_fts_setting(setting: impl Into<String>, message: impl Into<String>) -> Self {
+        Self::InvalidFtsSetting {
+            setting: setting.into(),
+            message: message.into(),
+            location: ErrorLocation::from(Location::caller()),
+        }
+    }
+
     pub fn message(&self) -> &'static str {
         match self {
             Self::Io { .. } => "io error",
@@ -135,6 +151,7 @@ impl ConfigError {
             Self::InvalidExtractorSetting { .. } => "invalid extractor setting",
             Self::InvalidCSharpSetting { .. } => "invalid csharp setting",
             Self::InvalidQueryServiceSetting { .. } => "invalid query service setting",
+            Self::InvalidFtsSetting { .. } => "invalid fts setting",
         }
     }
 
@@ -146,7 +163,8 @@ impl ConfigError {
             | Self::InvalidWriterSetting { location, .. }
             | Self::InvalidExtractorSetting { location, .. }
             | Self::InvalidCSharpSetting { location, .. }
-            | Self::InvalidQueryServiceSetting { location, .. } => *location,
+            | Self::InvalidQueryServiceSetting { location, .. }
+            | Self::InvalidFtsSetting { location, .. } => *location,
         }
     }
 }

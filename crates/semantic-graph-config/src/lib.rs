@@ -4,6 +4,7 @@ mod database_config;
 mod error;
 mod extractor_config;
 mod extractor_mode;
+mod fts_config;
 mod load_options;
 mod query_service_config;
 mod query_service_config_values;
@@ -11,6 +12,7 @@ mod raw_config;
 mod raw_csharp_config;
 mod raw_database_config;
 mod raw_extractor_config;
+mod raw_fts_config;
 mod raw_query_service_config;
 mod raw_writer_config;
 mod resolved_database_path;
@@ -24,6 +26,7 @@ mod writer_config;
 pub(crate) use raw_csharp_config::RawCSharpConfig;
 pub(crate) use raw_database_config::RawDatabaseConfig;
 pub(crate) use raw_extractor_config::RawExtractorConfig;
+pub(crate) use raw_fts_config::RawFtsConfig;
 pub(crate) use raw_query_service_config::RawQueryServiceConfig;
 pub(crate) use raw_writer_config::RawWriterConfig;
 
@@ -33,6 +36,7 @@ pub use database_config::DatabaseConfig;
 pub use error::{ConfigError, ConfigResult};
 pub use extractor_config::ExtractorConfig;
 pub use extractor_mode::ExtractorMode;
+pub use fts_config::FtsConfig;
 pub use load_options::LoadOptions;
 pub use query_service_config::QueryServiceConfig;
 pub use query_service_config_values::QueryServiceConfigValues;
@@ -68,6 +72,10 @@ max_route_status_limit = 200
 max_shortest_path_depth = 12
 max_shortest_path_visited = 5000
 
+[fts]
+ignore-directories = []
+ignore-files = []
+
 [csharp]
 binary = "csharp-ls"
 solution = "SemanticGraph.Visualizer.slnx"
@@ -77,6 +85,11 @@ analysis_workers = 1
 startup_timeout_ms = 120000
 request_timeout_ms = 30000
 "#;
+const FTS_TABLE_HEADER: &str = "[fts]";
+const FTS_DEFAULT_LINES: [(&str, &str); 2] = [
+    ("ignore-directories", "ignore-directories = []"),
+    ("ignore-files", "ignore-files = []"),
+];
 const CSHARP_TABLE_HEADER: &str = "[csharp]";
 const CSHARP_DEFAULT_LINES: [(&str, &str); 7] = [
     ("binary", "binary = \"csharp-ls\""),
@@ -130,39 +143,21 @@ pub fn ensure_config_with_csharp_defaults(config_path: impl AsRef<Path>) -> Conf
             source,
         )
     })?;
-    let parsed = toml::from_str::<toml::Value>(&contents)
-        .map_err(|source| ConfigError::toml(config_path, source))?;
-    let root = parsed.as_table().ok_or_else(|| {
-        ConfigError::invalid_csharp_setting("csharp", "config root must be a table")
-    })?;
-    let missing_lines = match root.get("csharp") {
-        Some(value) => {
-            let table = value.as_table().ok_or_else(|| {
-                ConfigError::invalid_csharp_setting("csharp", "must be a TOML table")
-            })?;
-            CSHARP_DEFAULT_LINES
-                .iter()
-                .filter_map(|(key, line)| (!table.contains_key(*key)).then_some(*line))
-                .collect::<Vec<_>>()
-        }
-        None => CSHARP_DEFAULT_LINES
-            .iter()
-            .map(|(_key, line)| *line)
-            .collect::<Vec<_>>(),
-    };
+    let updated =
+        ensure_default_table_lines(&contents, config_path, FTS_TABLE_HEADER, &FTS_DEFAULT_LINES)?;
+    let updated = ensure_default_table_lines(
+        &updated,
+        config_path,
+        CSHARP_TABLE_HEADER,
+        &CSHARP_DEFAULT_LINES,
+    )?;
 
-    if missing_lines.is_empty() {
+    if updated == contents {
         return Ok(());
     }
-
-    let updated = if root.contains_key("csharp") {
-        insert_missing_csharp_lines(&contents, &missing_lines)
-    } else {
-        append_csharp_table(&contents)
-    };
     fs::write(config_path, updated).map_err(|source| {
         ConfigError::io(
-            "update refactor radar config with csharp defaults",
+            "update refactor radar config defaults",
             Some(config_path.to_path_buf()),
             source,
         )
@@ -179,7 +174,58 @@ fn absolute_start_dir(start_dir: &Path) -> ConfigResult<PathBuf> {
     Ok(current_dir.join(start_dir))
 }
 
-fn append_csharp_table(contents: &str) -> String {
+fn ensure_default_table_lines(
+    contents: &str,
+    config_path: &Path,
+    table_header: &str,
+    default_lines: &[(&str, &str)],
+) -> ConfigResult<String> {
+    let table_name = table_header.trim_matches(['[', ']']);
+    let parsed = toml::from_str::<toml::Value>(contents)
+        .map_err(|source| ConfigError::toml(config_path, source))?;
+    let root = parsed
+        .as_table()
+        .ok_or_else(|| invalid_default_table_setting(table_name, "config root must be a table"))?;
+    let missing_lines = match root.get(table_name) {
+        Some(value) => {
+            let table = value
+                .as_table()
+                .ok_or_else(|| invalid_default_table_setting(table_name, "must be a TOML table"))?;
+            default_lines
+                .iter()
+                .filter_map(|(key, line)| (!table.contains_key(*key)).then_some(*line))
+                .collect::<Vec<_>>()
+        }
+        None => default_lines
+            .iter()
+            .map(|(_key, line)| *line)
+            .collect::<Vec<_>>(),
+    };
+
+    if missing_lines.is_empty() {
+        return Ok(contents.to_string());
+    }
+
+    if root.contains_key(table_name) {
+        Ok(insert_missing_table_lines(
+            contents,
+            table_header,
+            &missing_lines,
+        ))
+    } else {
+        Ok(append_table(contents, table_header, default_lines))
+    }
+}
+
+fn invalid_default_table_setting(table_name: &str, message: &str) -> ConfigError {
+    match table_name {
+        "fts" => ConfigError::invalid_fts_setting(table_name, message),
+        "csharp" => ConfigError::invalid_csharp_setting(table_name, message),
+        _ => ConfigError::invalid_csharp_setting(table_name, message),
+    }
+}
+
+fn append_table(contents: &str, table_header: &str, default_lines: &[(&str, &str)]) -> String {
     let mut updated = contents.to_string();
     if !updated.ends_with('\n') {
         updated.push('\n');
@@ -187,22 +233,23 @@ fn append_csharp_table(contents: &str) -> String {
     if !updated.ends_with("\n\n") {
         updated.push('\n');
     }
-    updated.push_str(CSHARP_TABLE_HEADER);
+    updated.push_str(table_header);
     updated.push('\n');
-    for (_key, line) in CSHARP_DEFAULT_LINES {
+    for (_key, line) in default_lines {
         updated.push_str(line);
         updated.push('\n');
     }
     updated
 }
 
-fn insert_missing_csharp_lines(contents: &str, missing_lines: &[&str]) -> String {
+fn insert_missing_table_lines(
+    contents: &str,
+    table_header: &str,
+    missing_lines: &[&str],
+) -> String {
     let lines = contents.lines().collect::<Vec<_>>();
-    let Some(section_start) = lines
-        .iter()
-        .position(|line| line.trim() == CSHARP_TABLE_HEADER)
-    else {
-        return append_csharp_table(contents);
+    let Some(section_start) = lines.iter().position(|line| line.trim() == table_header) else {
+        return append_lines_table(contents, table_header, missing_lines);
     };
     let section_end = lines
         .iter()
@@ -225,6 +272,23 @@ fn insert_missing_csharp_lines(contents: &str, missing_lines: &[&str]) -> String
         updated.push('\n');
     }
 
+    updated
+}
+
+fn append_lines_table(contents: &str, table_header: &str, missing_lines: &[&str]) -> String {
+    let mut updated = contents.to_string();
+    if !updated.ends_with('\n') {
+        updated.push('\n');
+    }
+    if !updated.ends_with("\n\n") {
+        updated.push('\n');
+    }
+    updated.push_str(table_header);
+    updated.push('\n');
+    for line in missing_lines {
+        updated.push_str(line);
+        updated.push('\n');
+    }
     updated
 }
 

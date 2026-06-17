@@ -3,6 +3,18 @@ use std::path::PathBuf;
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    #[command(name = "fts")]
+    Fts {
+        #[arg(long)]
+        db: Option<PathBuf>,
+        #[arg(long)]
+        no_rust: bool,
+        #[arg(long)]
+        no_csharp: bool,
+        #[arg(long)]
+        no_submodules: bool,
+    },
+
     #[command(name = "rust-file")]
     RustFile {
         #[arg(long)]

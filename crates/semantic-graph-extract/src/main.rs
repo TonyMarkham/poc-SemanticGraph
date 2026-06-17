@@ -11,6 +11,7 @@ use semantic_graph_extract::{
         validate_deleted_rust_file_request,
     },
     document_symbols::paths::{file_uri, validate_document_symbol_batch_request},
+    fts::{FtsExtractionOptions, FtsExtractionRunner, FtsExtractionSummary},
     model::{
         CallBatchExtraction, CallRouteSummary, DocumentSymbolBatchExtraction,
         DocumentSymbolBatchRequest, GraphLanguage, ProviderId, ReferenceRouteSummary,
@@ -44,6 +45,28 @@ async fn run() -> ExtractResult<()> {
     let config = cli.config;
 
     match cli.command {
+        Command::Fts {
+            db,
+            no_rust,
+            no_csharp,
+            no_submodules,
+        } => {
+            let workspace_root = std::env::current_dir()
+                .map_err(|source| ExtractError::io("read current directory", None, source))?;
+            let fts_config = resolve_cli_fts_config(&config, &workspace_root)?;
+            let db = resolve_cli_database_path(db, &config, &workspace_root)?;
+            let store = start_writer(db, &config, &workspace_root).await?;
+            let summary = FtsExtractionRunner::run(
+                &store,
+                &workspace_root,
+                &fts_config,
+                FtsExtractionOptions::new(no_rust, no_csharp, no_submodules),
+            )
+            .await;
+            shutdown_writer(&store).await?;
+
+            print_fts_summary(&summary?);
+        }
         Command::RustFile {
             db,
             workspace_root,
@@ -951,6 +974,24 @@ fn print_csharp_file_deleted_summary(relative_path: &str, summary: &PersistenceS
     );
 }
 
+fn print_fts_summary(summary: &FtsExtractionSummary) {
+    println!(
+        "mode=fts workspace={} run={} scanned_files={} indexed_files={} skipped_files={} skipped_directories={} skipped_by_config={} skipped_by_no_rust={} skipped_by_no_csharp={} skipped_by_no_submodules={} skipped_binary_or_unreadable={} stale_fts_documents_closed={}",
+        summary.workspace_id,
+        summary.run_id,
+        summary.scanned_files,
+        summary.indexed_files,
+        summary.skipped_files,
+        summary.skipped_directories,
+        summary.skipped_by_config,
+        summary.skipped_by_no_rust,
+        summary.skipped_by_no_csharp,
+        summary.skipped_by_no_submodules,
+        summary.skipped_binary_or_unreadable,
+        summary.stale_fts_documents_closed
+    );
+}
+
 fn print_csharp_route_batch_summary(
     scope: &str,
     routes: WorkspaceExtractionRoutes,
@@ -1465,6 +1506,23 @@ fn resolve_cli_extractor_config(
 
     let config = load_config(config_path).map_err(ExtractError::config)?;
     Ok(config.extractor().clone())
+}
+
+fn resolve_cli_fts_config(
+    config: &Option<PathBuf>,
+    workspace_root: &Path,
+) -> ExtractResult<semantic_graph_config::FtsConfig> {
+    let config_path = match config {
+        Some(path) => Some(path.clone()),
+        None => discover_config(workspace_root).map_err(ExtractError::config)?,
+    };
+
+    let Some(config_path) = config_path else {
+        return Ok(semantic_graph_config::FtsConfig::default());
+    };
+
+    let config = load_config(config_path).map_err(ExtractError::config)?;
+    Ok(config.fts().clone())
 }
 
 fn validate_single_route_jobs(name: &str, value: usize) -> ExtractResult<()> {

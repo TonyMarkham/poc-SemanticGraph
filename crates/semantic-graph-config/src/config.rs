@@ -1,4 +1,6 @@
-use crate::{CSharpConfig, DatabaseConfig, ExtractorConfig, QueryServiceConfig, WriterConfig};
+use crate::{
+    CSharpConfig, DatabaseConfig, ExtractorConfig, FtsConfig, QueryServiceConfig, WriterConfig,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
@@ -7,6 +9,7 @@ pub struct Config {
     writer: WriterConfig,
     query_service: QueryServiceConfig,
     csharp: CSharpConfig,
+    fts: FtsConfig,
 }
 
 impl Config {
@@ -16,6 +19,7 @@ impl Config {
         writer: WriterConfig,
         query_service: QueryServiceConfig,
         csharp: CSharpConfig,
+        fts: FtsConfig,
     ) -> Self {
         Self {
             database,
@@ -23,6 +27,7 @@ impl Config {
             writer,
             query_service,
             csharp,
+            fts,
         }
     }
 
@@ -44,5 +49,9 @@ impl Config {
 
     pub fn csharp(&self) -> &CSharpConfig {
         &self.csharp
+    }
+
+    pub fn fts(&self) -> &FtsConfig {
+        &self.fts
     }
 }

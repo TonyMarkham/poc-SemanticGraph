@@ -44,6 +44,8 @@ fn parses_valid_config() -> Result<(), Box<dyn Error>> {
     assert_eq!(config.csharp().analysis_workers(), 1);
     assert_eq!(config.csharp().startup_timeout_ms(), 120000);
     assert_eq!(config.csharp().request_timeout_ms(), 30000);
+    assert_eq!(config.fts().ignore_directories(), &[] as &[String]);
+    assert_eq!(config.fts().ignore_files(), &[] as &[String]);
     Ok(())
 }
 
@@ -339,6 +341,62 @@ analysis_workers = 7
 }
 
 #[test]
+fn parses_fts_config() -> Result<(), Box<dyn Error>> {
+    let root = temp_dir("parses-fts-config")?;
+    let config_dir = root.join(".refactor-radar");
+    fs::create_dir_all(&config_dir)?;
+    let config_path = config_dir.join("config.toml");
+    fs::write(
+        &config_path,
+        r#"
+[database]
+path = ".local/test.db"
+
+[fts]
+ignore-directories = ["target", "submodules\\graphify", "target"]
+ignore-files = ["README.md", "docs\\plan.md"]
+"#,
+    )?;
+
+    let config = load_config(&config_path)?;
+
+    assert_eq!(
+        config.fts().ignore_directories(),
+        &["submodules/graphify".to_string(), "target".to_string()]
+    );
+    assert_eq!(
+        config.fts().ignore_files(),
+        &["README.md".to_string(), "docs/plan.md".to_string()]
+    );
+    Ok(())
+}
+
+#[test]
+fn rejects_invalid_fts_paths() -> Result<(), Box<dyn Error>> {
+    let root = temp_dir("rejects-invalid-fts-paths")?;
+    let config_dir = root.join(".refactor-radar");
+    fs::create_dir_all(&config_dir)?;
+    let config_path = config_dir.join("config.toml");
+    fs::write(
+        &config_path,
+        r#"
+[database]
+path = ".local/test.db"
+
+[fts]
+ignore-directories = ["../outside"]
+"#,
+    )?;
+
+    let error = load_config(&config_path)
+        .err()
+        .ok_or("expected config error")?;
+
+    assert!(matches!(error, ConfigError::InvalidFtsSetting { .. }));
+    Ok(())
+}
+
+#[test]
 fn rejects_invalid_writer_config() -> Result<(), Box<dyn Error>> {
     let root = temp_dir("rejects-invalid-writer-config")?;
     let config_dir = root.join(".refactor-radar");
@@ -492,7 +550,10 @@ fn creates_default_config_template_when_missing() -> Result<(), Box<dyn Error>> 
     assert!(contents.contains("[database]"));
     assert!(contents.contains("[writer]"));
     assert!(contents.contains("[query-service]"));
+    assert!(contents.contains("[fts]"));
     assert!(contents.contains("[csharp]"));
+    assert!(contents.contains("ignore-directories = []"));
+    assert!(contents.contains("ignore-files = []"));
     assert!(contents.contains("max_shortest_path_visited = 5000"));
     assert!(contents.contains("solution = \"SemanticGraph.Visualizer.slnx\""));
 
@@ -513,6 +574,8 @@ fn adds_missing_csharp_table_without_changing_existing_values() -> Result<(), Bo
 
     let contents = fs::read_to_string(&config_path)?;
     assert!(contents.contains("path = \".local/custom.db\""));
+    assert!(contents.contains("[fts]"));
+    assert!(contents.contains("ignore-directories = []"));
     assert!(contents.contains("[csharp]"));
     assert!(contents.contains("binary = \"csharp-ls\""));
     assert!(contents.contains("request_timeout_ms = 30000"));

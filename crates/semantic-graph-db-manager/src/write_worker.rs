@@ -5,10 +5,10 @@ use crate::{
     commands::Commands,
     edge_id,
     models::{
-        OwnedCloseStaleFileInput, OwnedCloseStaleRouteInput, OwnedEdgeEvidenceInput,
-        OwnedEdgeInput, OwnedFileInput, OwnedNodeInput, OwnedOccurrenceInput,
-        OwnedRouteObservationInput, OwnedRouteStatusCompleteInput, OwnedRouteStatusFailInput,
-        OwnedRouteStatusStartInput,
+        OwnedCloseStaleFileInput, OwnedCloseStaleFtsDocumentsInput, OwnedCloseStaleRouteInput,
+        OwnedEdgeEvidenceInput, OwnedEdgeInput, OwnedFileInput, OwnedFtsDocumentInput,
+        OwnedNodeInput, OwnedOccurrenceInput, OwnedRouteObservationInput,
+        OwnedRouteStatusCompleteInput, OwnedRouteStatusFailInput, OwnedRouteStatusStartInput,
     },
     node_id,
 };
@@ -142,6 +142,10 @@ impl WriteWorker {
                 let result = run_write_command!(self, self.upsert_file(input));
                 self.send_write_response(response, result).await;
             }
+            Commands::UpsertFtsDocument { input, response } => {
+                let result = run_write_command!(self, self.upsert_fts_document(input));
+                self.send_write_response(response, result).await;
+            }
             Commands::UpsertNode { input, response } => {
                 let result = run_write_command!(self, self.upsert_node(input));
                 self.send_write_response(response, result).await;
@@ -180,6 +184,11 @@ impl WriteWorker {
             }
             Commands::CloseStaleFile { input, response } => {
                 let result = run_write_command!(self, self.close_stale_file(input));
+                self.send_write_response(response, result).await;
+            }
+            Commands::CloseStaleFtsDocumentsForWorkspace { input, response } => {
+                let result =
+                    run_write_command!(self, self.close_stale_fts_documents_for_workspace(input));
                 self.send_write_response(response, result).await;
             }
             Commands::CloseStaleEdgesForRoute { input, response } => {
@@ -388,6 +397,83 @@ impl WriteWorker {
             .map_err(DbManagerError::database)?;
 
         Ok(id)
+    }
+
+    async fn upsert_fts_document(&self, input: OwnedFtsDocumentInput) -> DbManagerResult<i64> {
+        let properties_json = input.properties_json.to_string();
+
+        sqlx::query(
+            r#"
+            INSERT INTO fts_documents (
+              workspace_id,
+              file_id,
+              language,
+              content_hash,
+              byte_len,
+              first_seen_run_id,
+              last_seen_run_id,
+              valid_to_run_id,
+              properties_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)
+            ON CONFLICT(workspace_id, file_id) DO UPDATE SET
+              language = excluded.language,
+              content_hash = excluded.content_hash,
+              byte_len = excluded.byte_len,
+              indexed_at = CURRENT_TIMESTAMP,
+              last_seen_run_id = excluded.last_seen_run_id,
+              valid_to_run_id = NULL,
+              properties_json = excluded.properties_json
+            "#,
+        )
+        .bind(input.workspace_id)
+        .bind(input.file_id)
+        .bind(&input.language)
+        .bind(&input.content_hash)
+        .bind(input.byte_len)
+        .bind(input.run_id)
+        .bind(input.run_id)
+        .bind(properties_json)
+        .execute(&self.pool)
+        .await
+        .map_err(DbManagerError::database)?;
+
+        let document_id: i64 = sqlx::query_scalar(
+            "SELECT id FROM fts_documents WHERE workspace_id = ? AND file_id = ?",
+        )
+        .bind(input.workspace_id)
+        .bind(input.file_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(DbManagerError::database)?;
+
+        sqlx::query("DELETE FROM fts_document_trigram_ci WHERE document_id = ?")
+            .bind(document_id)
+            .execute(&self.pool)
+            .await
+            .map_err(DbManagerError::database)?;
+        sqlx::query(
+            r#"
+            INSERT INTO fts_document_trigram_ci (
+              document_id,
+              file_id,
+              path,
+              language,
+              content
+            )
+            VALUES (?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(document_id)
+        .bind(input.file_id)
+        .bind(&input.path)
+        .bind(&input.language)
+        .bind(&input.content)
+        .execute(&self.pool)
+        .await
+        .map_err(DbManagerError::database)?;
+
+        Ok(document_id)
     }
 
     async fn upsert_node(&self, input: OwnedNodeInput) -> DbManagerResult<String> {
@@ -926,6 +1012,60 @@ impl WriteWorker {
         })
     }
 
+    async fn close_stale_fts_documents_for_workspace(
+        &self,
+        input: OwnedCloseStaleFtsDocumentsInput,
+    ) -> DbManagerResult<u64> {
+        if !self.fts_route_completed_for_run(&input).await? {
+            return Ok(0);
+        }
+
+        let stale_document_ids = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT id
+            FROM fts_documents
+            WHERE workspace_id = ?
+              AND valid_to_run_id IS NULL
+              AND (last_seen_run_id IS NULL OR last_seen_run_id < ?)
+            "#,
+        )
+        .bind(input.workspace_id)
+        .bind(input.run_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(DbManagerError::database)?;
+
+        if stale_document_ids.is_empty() {
+            return Ok(0);
+        }
+
+        sqlx::query(
+            r#"
+            UPDATE fts_documents
+            SET valid_to_run_id = ?
+            WHERE workspace_id = ?
+              AND valid_to_run_id IS NULL
+              AND (last_seen_run_id IS NULL OR last_seen_run_id < ?)
+            "#,
+        )
+        .bind(input.run_id)
+        .bind(input.workspace_id)
+        .bind(input.run_id)
+        .execute(&self.pool)
+        .await
+        .map_err(DbManagerError::database)?;
+
+        for document_id in &stale_document_ids {
+            sqlx::query("DELETE FROM fts_document_trigram_ci WHERE document_id = ?")
+                .bind(document_id)
+                .execute(&self.pool)
+                .await
+                .map_err(DbManagerError::database)?;
+        }
+
+        Ok(stale_document_ids.len() as u64)
+    }
+
     async fn close_stale_edges_for_route(
         &self,
         input: OwnedCloseStaleRouteInput,
@@ -1294,6 +1434,36 @@ impl WriteWorker {
     async fn route_completed_for_run(
         &self,
         input: &OwnedCloseStaleRouteInput,
+    ) -> DbManagerResult<bool> {
+        let count: i64 = sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*)
+            FROM extraction_route_status
+            WHERE workspace_id = ?
+              AND route = ?
+              AND scope = ?
+              AND scope_key = ?
+              AND provider = ?
+              AND last_complete_run_id = ?
+              AND last_status = 'complete'
+            "#,
+        )
+        .bind(input.workspace_id)
+        .bind(&input.route)
+        .bind(&input.scope)
+        .bind(&input.scope_key)
+        .bind(&input.provider)
+        .bind(input.run_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(DbManagerError::database)?;
+
+        Ok(count > 0)
+    }
+
+    async fn fts_route_completed_for_run(
+        &self,
+        input: &OwnedCloseStaleFtsDocumentsInput,
     ) -> DbManagerResult<bool> {
         let count: i64 = sqlx::query_scalar(
             r#"

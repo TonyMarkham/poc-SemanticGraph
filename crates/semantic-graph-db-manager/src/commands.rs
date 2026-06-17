@@ -1,10 +1,10 @@
 use crate::{
     DbManagerResult, DemoSeedSummary, StaleFileSummary, WriteSummary,
     models::{
-        OwnedCloseStaleFileInput, OwnedCloseStaleRouteInput, OwnedEdgeEvidenceInput,
-        OwnedEdgeInput, OwnedFileInput, OwnedNodeInput, OwnedOccurrenceInput,
-        OwnedRouteObservationInput, OwnedRouteStatusCompleteInput, OwnedRouteStatusFailInput,
-        OwnedRouteStatusStartInput,
+        OwnedCloseStaleFileInput, OwnedCloseStaleFtsDocumentsInput, OwnedCloseStaleRouteInput,
+        OwnedEdgeEvidenceInput, OwnedEdgeInput, OwnedFileInput, OwnedFtsDocumentInput,
+        OwnedNodeInput, OwnedOccurrenceInput, OwnedRouteObservationInput,
+        OwnedRouteStatusCompleteInput, OwnedRouteStatusFailInput, OwnedRouteStatusStartInput,
     },
 };
 
@@ -48,6 +48,10 @@ pub(crate) enum Commands {
         input: OwnedFileInput,
         response: oneshot::Sender<DbManagerResult<i64>>,
     },
+    UpsertFtsDocument {
+        input: OwnedFtsDocumentInput,
+        response: oneshot::Sender<DbManagerResult<i64>>,
+    },
     UpsertNode {
         input: OwnedNodeInput,
         response: oneshot::Sender<DbManagerResult<String>>,
@@ -88,6 +92,10 @@ pub(crate) enum Commands {
         input: OwnedCloseStaleFileInput,
         response: oneshot::Sender<DbManagerResult<StaleFileSummary>>,
     },
+    CloseStaleFtsDocumentsForWorkspace {
+        input: OwnedCloseStaleFtsDocumentsInput,
+        response: oneshot::Sender<DbManagerResult<u64>>,
+    },
     CloseStaleEdgesForRoute {
         input: OwnedCloseStaleRouteInput,
         response: oneshot::Sender<DbManagerResult<u64>>,
@@ -112,6 +120,7 @@ impl Commands {
             Self::StartRun { .. } => "start_run",
             Self::FinishRun { .. } => "finish_run",
             Self::UpsertFile { .. } => "upsert_file",
+            Self::UpsertFtsDocument { .. } => "upsert_fts_document",
             Self::UpsertNode { .. } => "upsert_node",
             Self::UpsertEdge { .. } => "upsert_edge",
             Self::InsertOccurrence { .. } => "insert_occurrence",
@@ -122,6 +131,9 @@ impl Commands {
             Self::RecordRouteObservation { .. } => "record_route_observation",
             Self::CloseStaleNodesForRoute { .. } => "close_stale_nodes_for_route",
             Self::CloseStaleFile { .. } => "close_stale_file",
+            Self::CloseStaleFtsDocumentsForWorkspace { .. } => {
+                "close_stale_fts_documents_for_workspace"
+            }
             Self::CloseStaleEdgesForRoute { .. } => "close_stale_edges_for_route",
             Self::DemoSeed { .. } => "demo_seed",
             Self::Shutdown { .. } => "shutdown",

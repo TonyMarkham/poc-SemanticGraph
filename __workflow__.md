@@ -35,7 +35,7 @@ Create VS-1500.md as the implementation plan for Phase 5 from the VS-100.md bein
 ---
 
 ```text
-/goal VS-1500.md
+/goal implement VS-2000.md
 ```
 
 ---
