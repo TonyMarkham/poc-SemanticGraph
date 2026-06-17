@@ -1,3 +1,5 @@
+mod active_file_symbol;
+mod active_file_symbols;
 mod commands;
 mod config;
 mod demo_seed_summary;
@@ -17,6 +19,8 @@ mod write_worker;
 
 // ---------------------------------------------------------------------------------------------- //
 
+pub use active_file_symbol::ActiveFileSymbol;
+pub use active_file_symbols::ActiveFileSymbols;
 pub use config::Config;
 pub use demo_seed_summary::DemoSeedSummary;
 pub use error::{DbManagerError, DbManagerResult};

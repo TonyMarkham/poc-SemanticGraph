@@ -3,9 +3,9 @@ use crate::{
     cli::symbol_key_belongs_to_file,
     document_symbols::paths::basename_from_relative_path,
     model::{
-        CallBatchExtraction, DocumentSymbolBatchExtraction, DocumentSymbolExtraction,
-        ExtractedCall, ExtractedReference, GraphLanguage, ProviderId, ReferenceBatchExtraction,
-        RouteName, RouteScope,
+        CallBatchExtraction, CallRouteSummary, DocumentSymbolBatchExtraction,
+        DocumentSymbolExtraction, ExtractedCall, ExtractedReference, GraphLanguage, ProviderId,
+        ReferenceBatchExtraction, ReferenceRouteSummary, RouteName, RouteScope,
     },
     persist::{PersistenceRun, PersistenceSummary, ScopedRoute},
 };
@@ -24,7 +24,7 @@ use semantic_graph_db_manager::{
 };
 
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub struct ExtractionPersister;
 
@@ -584,6 +584,65 @@ impl ExtractionPersister {
         }
     }
 
+    pub async fn persist_reference_origin_file_batches_with_route_write_batch(
+        &self,
+        store: &WriteHandle,
+        workspace_root_uri: &str,
+        extraction: &ReferenceBatchExtraction,
+        origin_file_uris: &[String],
+    ) -> ExtractResult<PersistenceSummary> {
+        let language = document_symbol_batch_language(
+            extraction.provider.as_str(),
+            "textDocument/references",
+            &extraction.document_symbols,
+        )?;
+        let workspace_id = self
+            .existing_workspace_id(
+                store,
+                workspace_root_uri,
+                language,
+                extraction.provider.as_str(),
+                "textDocument/references",
+            )
+            .await?;
+        let run_id = store
+            .start_run(
+                workspace_id,
+                extraction.provider.as_str(),
+                extraction.provider_version.as_deref(),
+                None,
+            )
+            .await
+            .map_err(ExtractError::storage)?;
+
+        let result = self
+            .persist_reference_origin_file_batches_with_route_write_batch_after_run_started(
+                store,
+                workspace_id,
+                run_id,
+                extraction,
+                origin_file_uris,
+            )
+            .await;
+
+        match result {
+            Ok(summary) => {
+                store
+                    .finish_run(run_id, "complete")
+                    .await
+                    .map_err(ExtractError::storage)?;
+                Ok(summary)
+            }
+            Err(error) => {
+                let finish_result = store.finish_run(run_id, "failed").await;
+                if let Err(finish_error) = finish_result {
+                    return Err(ExtractError::storage(finish_error));
+                }
+                Err(error)
+            }
+        }
+    }
+
     async fn persist_reference_batch_route_only_after_run_started(
         &self,
         store: &WriteHandle,
@@ -819,6 +878,151 @@ impl ExtractionPersister {
                 Err(error)
             }
         }
+    }
+
+    async fn persist_reference_origin_file_batches_with_route_write_batch_after_run_started(
+        &self,
+        store: &WriteHandle,
+        workspace_id: i64,
+        run_id: i64,
+        extraction: &ReferenceBatchExtraction,
+        origin_file_uris: &[String],
+    ) -> ExtractResult<PersistenceSummary> {
+        let language = document_symbol_batch_language(
+            extraction.provider.as_str(),
+            "textDocument/references",
+            &extraction.document_symbols,
+        )?;
+        let route_name = RouteName::references_for_language(language);
+        let file_ids = self
+            .existing_document_symbol_file_ids(
+                store,
+                workspace_id,
+                language,
+                extraction.provider.as_str(),
+                "textDocument/references",
+                &extraction.document_symbols,
+            )
+            .await?;
+        self.validate_reference_nodes(store, workspace_id, language, extraction)
+            .await?;
+
+        let mut summary = empty_summary(workspace_id, run_id);
+        for origin_file_uri in origin_file_uris {
+            let origin_file_id = self
+                .existing_file_id_for_uri(
+                    store,
+                    workspace_id,
+                    language,
+                    extraction.provider.as_str(),
+                    "textDocument/references",
+                    origin_file_uri,
+                )
+                .await?;
+            let file_content_hash = file_content_hash_for_scope_key(
+                extraction.provider.as_str(),
+                "textDocument/references",
+                &extraction.document_symbols,
+                origin_file_uri,
+            )?;
+            let filtered_extraction =
+                reference_extraction_for_origin_file(extraction, origin_file_uri);
+
+            store
+                .start_route_status(RouteStatusStartInput {
+                    workspace_id,
+                    route: route_name.as_str(),
+                    scope: RouteScope::FILE.as_str(),
+                    scope_key: origin_file_uri,
+                    file_id: Some(origin_file_id),
+                    provider: extraction.provider.as_str(),
+                    provider_version: extraction.provider_version.as_deref(),
+                    content_hash: file_content_hash.as_deref(),
+                    run_id,
+                    diagnostics_json: json!({
+                        "write_mode": "route_write_batch",
+                        "incremental_scope": "origin_file",
+                    }),
+                })
+                .await
+                .map_err(ExtractError::storage)?;
+
+            let result = self
+                .persist_references_with_route_write_batch_after_scoped_route_started(
+                    store,
+                    PersistenceRun {
+                        workspace_id,
+                        run_id,
+                    },
+                    ScopedRoute::file(origin_file_uri),
+                    &filtered_extraction,
+                    &file_ids,
+                    language,
+                )
+                .await;
+
+            match result {
+                Ok(file_summary) => {
+                    store
+                        .complete_route_status(RouteStatusCompleteInput {
+                            workspace_id,
+                            route: route_name.as_str(),
+                            scope: RouteScope::FILE.as_str(),
+                            scope_key: origin_file_uri,
+                            provider: extraction.provider.as_str(),
+                            provider_version: extraction.provider_version.as_deref(),
+                            content_hash: file_content_hash.as_deref(),
+                            run_id,
+                            diagnostics_json: json!({
+                                "write_mode": "route_write_batch",
+                                "incremental_scope": "origin_file",
+                                "targets_queried": filtered_extraction.summary.targets_queried,
+                                "reference_edges": file_summary.reference_edges,
+                                "reference_occurrences": file_summary.reference_occurrences,
+                                "file_fallbacks": filtered_extraction.summary.file_fallbacks,
+                                "skipped_external": filtered_extraction.summary.skipped_external,
+                            }),
+                        })
+                        .await
+                        .map_err(ExtractError::storage)?;
+                    let stale_edges_closed = store
+                        .close_stale_edges_for_route_source_file(CloseStaleRouteInput {
+                            workspace_id,
+                            run_id,
+                            route: route_name.as_str(),
+                            scope: RouteScope::FILE.as_str(),
+                            scope_key: origin_file_uri,
+                            provider: extraction.provider.as_str(),
+                        })
+                        .await
+                        .map_err(ExtractError::storage)?;
+
+                    merge_summary(&mut summary, &file_summary);
+                    summary.routes_complete += 1;
+                    summary.stale_edges_closed += stale_edges_closed as usize;
+                }
+                Err(error) => {
+                    store
+                        .fail_route_status(RouteStatusFailInput {
+                            workspace_id,
+                            route: route_name.as_str(),
+                            scope: RouteScope::FILE.as_str(),
+                            scope_key: origin_file_uri,
+                            provider: extraction.provider.as_str(),
+                            run_id,
+                            diagnostics_json: json!({
+                                "kind": error.message(),
+                                "error": error.to_string(),
+                            }),
+                        })
+                        .await
+                        .map_err(ExtractError::storage)?;
+                    return Err(error);
+                }
+            }
+        }
+
+        Ok(summary)
     }
 
     async fn persist_reference_batch_with_document_symbols_after_run_started(
@@ -1663,6 +1867,65 @@ impl ExtractionPersister {
         }
     }
 
+    pub async fn persist_call_origin_file_batches_with_route_write_batch(
+        &self,
+        store: &WriteHandle,
+        workspace_root_uri: &str,
+        extraction: &CallBatchExtraction,
+        origin_file_uris: &[String],
+    ) -> ExtractResult<PersistenceSummary> {
+        let language = document_symbol_batch_language(
+            extraction.provider.as_str(),
+            "callHierarchy/outgoingCalls",
+            &extraction.document_symbols,
+        )?;
+        let workspace_id = self
+            .existing_workspace_id(
+                store,
+                workspace_root_uri,
+                language,
+                extraction.provider.as_str(),
+                "callHierarchy/outgoingCalls",
+            )
+            .await?;
+        let run_id = store
+            .start_run(
+                workspace_id,
+                extraction.provider.as_str(),
+                extraction.provider_version.as_deref(),
+                None,
+            )
+            .await
+            .map_err(ExtractError::storage)?;
+
+        let result = self
+            .persist_call_origin_file_batches_with_route_write_batch_after_run_started(
+                store,
+                workspace_id,
+                run_id,
+                extraction,
+                origin_file_uris,
+            )
+            .await;
+
+        match result {
+            Ok(summary) => {
+                store
+                    .finish_run(run_id, "complete")
+                    .await
+                    .map_err(ExtractError::storage)?;
+                Ok(summary)
+            }
+            Err(error) => {
+                let finish_result = store.finish_run(run_id, "failed").await;
+                if let Err(finish_error) = finish_result {
+                    return Err(ExtractError::storage(finish_error));
+                }
+                Err(error)
+            }
+        }
+    }
+
     async fn persist_call_batch_route_only_after_run_started(
         &self,
         store: &WriteHandle,
@@ -1900,6 +2163,151 @@ impl ExtractionPersister {
                 Err(error)
             }
         }
+    }
+
+    async fn persist_call_origin_file_batches_with_route_write_batch_after_run_started(
+        &self,
+        store: &WriteHandle,
+        workspace_id: i64,
+        run_id: i64,
+        extraction: &CallBatchExtraction,
+        origin_file_uris: &[String],
+    ) -> ExtractResult<PersistenceSummary> {
+        let language = document_symbol_batch_language(
+            extraction.provider.as_str(),
+            "callHierarchy/outgoingCalls",
+            &extraction.document_symbols,
+        )?;
+        let route_name = RouteName::calls_for_language(language);
+        let file_ids = self
+            .existing_document_symbol_file_ids(
+                store,
+                workspace_id,
+                language,
+                extraction.provider.as_str(),
+                "callHierarchy/outgoingCalls",
+                &extraction.document_symbols,
+            )
+            .await?;
+        self.validate_call_nodes(store, workspace_id, language, extraction)
+            .await?;
+
+        let mut summary = empty_summary(workspace_id, run_id);
+        for origin_file_uri in origin_file_uris {
+            let origin_file_id = self
+                .existing_file_id_for_uri(
+                    store,
+                    workspace_id,
+                    language,
+                    extraction.provider.as_str(),
+                    "callHierarchy/outgoingCalls",
+                    origin_file_uri,
+                )
+                .await?;
+            let file_content_hash = file_content_hash_for_scope_key(
+                extraction.provider.as_str(),
+                "callHierarchy/outgoingCalls",
+                &extraction.document_symbols,
+                origin_file_uri,
+            )?;
+            let filtered_extraction = call_extraction_for_origin_file(extraction, origin_file_uri);
+
+            store
+                .start_route_status(RouteStatusStartInput {
+                    workspace_id,
+                    route: route_name.as_str(),
+                    scope: RouteScope::FILE.as_str(),
+                    scope_key: origin_file_uri,
+                    file_id: Some(origin_file_id),
+                    provider: extraction.provider.as_str(),
+                    provider_version: extraction.provider_version.as_deref(),
+                    content_hash: file_content_hash.as_deref(),
+                    run_id,
+                    diagnostics_json: json!({
+                        "write_mode": "route_write_batch",
+                        "incremental_scope": "origin_file",
+                    }),
+                })
+                .await
+                .map_err(ExtractError::storage)?;
+
+            let result = self
+                .persist_calls_with_route_write_batch_after_scoped_route_started(
+                    store,
+                    PersistenceRun {
+                        workspace_id,
+                        run_id,
+                    },
+                    ScopedRoute::file(origin_file_uri),
+                    &filtered_extraction,
+                    &file_ids,
+                    language,
+                )
+                .await;
+
+            match result {
+                Ok(file_summary) => {
+                    store
+                        .complete_route_status(RouteStatusCompleteInput {
+                            workspace_id,
+                            route: route_name.as_str(),
+                            scope: RouteScope::FILE.as_str(),
+                            scope_key: origin_file_uri,
+                            provider: extraction.provider.as_str(),
+                            provider_version: extraction.provider_version.as_deref(),
+                            content_hash: file_content_hash.as_deref(),
+                            run_id,
+                            diagnostics_json: json!({
+                                "write_mode": "route_write_batch",
+                                "incremental_scope": "origin_file",
+                                "callable_nodes": filtered_extraction.summary.callable_nodes,
+                                "call_edges": file_summary.call_edges,
+                                "call_occurrences": file_summary.call_occurrences,
+                                "skipped_external_targets": filtered_extraction.summary.skipped_external_targets,
+                                "skipped_unresolved_targets": filtered_extraction.summary.skipped_unresolved_targets,
+                                "skipped_non_callable_prepare_items": filtered_extraction.summary.skipped_non_callable_prepare_items,
+                            }),
+                        })
+                        .await
+                        .map_err(ExtractError::storage)?;
+                    let stale_edges_closed = store
+                        .close_stale_edges_for_route_source_file(CloseStaleRouteInput {
+                            workspace_id,
+                            run_id,
+                            route: route_name.as_str(),
+                            scope: RouteScope::FILE.as_str(),
+                            scope_key: origin_file_uri,
+                            provider: extraction.provider.as_str(),
+                        })
+                        .await
+                        .map_err(ExtractError::storage)?;
+
+                    merge_summary(&mut summary, &file_summary);
+                    summary.routes_complete += 1;
+                    summary.stale_edges_closed += stale_edges_closed as usize;
+                }
+                Err(error) => {
+                    store
+                        .fail_route_status(RouteStatusFailInput {
+                            workspace_id,
+                            route: route_name.as_str(),
+                            scope: RouteScope::FILE.as_str(),
+                            scope_key: origin_file_uri,
+                            provider: extraction.provider.as_str(),
+                            run_id,
+                            diagnostics_json: json!({
+                                "kind": error.message(),
+                                "error": error.to_string(),
+                            }),
+                        })
+                        .await
+                        .map_err(ExtractError::storage)?;
+                    return Err(error);
+                }
+            }
+        }
+
+        Ok(summary)
     }
 
     async fn persist_call_batch_with_document_symbols_after_run_started(
@@ -3793,6 +4201,101 @@ fn symbol_prerequisite_commands(language: GraphLanguage) -> &'static str {
         GraphLanguage::CSharp => {
             "csharp-solution --symbols, csharp-project --symbols, or csharp-file --symbols"
         }
+    }
+}
+
+fn reference_extraction_for_origin_file(
+    extraction: &ReferenceBatchExtraction,
+    origin_file_uri: &str,
+) -> ReferenceBatchExtraction {
+    let references = extraction
+        .references
+        .iter()
+        .filter_map(|reference| {
+            let mut reference = reference.clone();
+            reference.occurrences = reference
+                .occurrences
+                .into_iter()
+                .filter(|occurrence| occurrence.file_uri == origin_file_uri)
+                .collect::<Vec<_>>();
+            if reference.occurrences.is_empty() {
+                None
+            } else {
+                Some(reference)
+            }
+        })
+        .collect::<Vec<_>>();
+    let reference_occurrences = references
+        .iter()
+        .map(|reference| reference.occurrences.len())
+        .sum();
+    let reference_edges = references.len();
+    let file_fallbacks = references
+        .iter()
+        .filter(|reference| reference.source_resolution == "file_fallback")
+        .count();
+
+    ReferenceBatchExtraction {
+        provider: extraction.provider,
+        provider_version: extraction.provider_version.clone(),
+        workspace_fingerprint: extraction.workspace_fingerprint.clone(),
+        document_symbols: extraction.document_symbols.clone(),
+        references,
+        summary: ReferenceRouteSummary {
+            targets_queried: extraction.summary.targets_queried,
+            reference_edges,
+            reference_occurrences,
+            file_fallbacks,
+            skipped_external: 0,
+        },
+        raw_metadata: extraction.raw_metadata.clone(),
+    }
+}
+
+fn call_extraction_for_origin_file(
+    extraction: &CallBatchExtraction,
+    origin_file_uri: &str,
+) -> CallBatchExtraction {
+    let calls = extraction
+        .calls
+        .iter()
+        .filter_map(|call| {
+            let mut call = call.clone();
+            call.occurrences = call
+                .occurrences
+                .into_iter()
+                .filter(|occurrence| occurrence.file_uri == origin_file_uri)
+                .collect::<Vec<_>>();
+            if call.occurrences.is_empty() {
+                None
+            } else {
+                Some(call)
+            }
+        })
+        .collect::<Vec<_>>();
+    let call_occurrences = calls.iter().map(|call| call.occurrences.len()).sum();
+    let callable_nodes = calls
+        .iter()
+        .map(|call| call.caller_symbol_key.clone())
+        .collect::<HashSet<_>>()
+        .len();
+    let call_edges = calls.len();
+
+    CallBatchExtraction {
+        provider: extraction.provider,
+        provider_version: extraction.provider_version.clone(),
+        workspace_fingerprint: extraction.workspace_fingerprint.clone(),
+        document_symbols: extraction.document_symbols.clone(),
+        calls,
+        summary: CallRouteSummary {
+            callable_nodes,
+            call_edges,
+            call_occurrences,
+            skipped_external_targets: 0,
+            skipped_unresolved_targets: 0,
+            skipped_non_callable_prepare_items: 0,
+        },
+        raw_metadata: extraction.raw_metadata.clone(),
     }
 }
 

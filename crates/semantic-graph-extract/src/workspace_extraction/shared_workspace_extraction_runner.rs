@@ -8,28 +8,24 @@ use crate::{
     },
     persist::{ExtractionPersister, PersistenceSummary},
     providers::rust_analyzer::RustAnalyzerProvider,
-    workspace_extraction::{ThreadedWorkspaceExtractionConfig, WorkspaceExtractionSummary},
+    workspace_extraction::{
+        FileRelationWorkerJoinHandle, FileRelationWorkerMetric, ThreadedWorkspaceExtractionConfig,
+        WorkspaceExtractionSummary, call_route_summary_for_origin_files, combined_document_symbols,
+        fresh_unchanged_file_uris, load_unchanged_document_symbol_extractions,
+        reference_route_summary_for_origin_files, workspace_file_hashes,
+    },
 };
 
 use semantic_graph_db_manager::WriteHandle;
 
 use std::{
-    collections::VecDeque,
+    collections::{HashSet, VecDeque},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    time::Duration,
 };
 use tokio::{sync::Mutex, task::JoinError};
-
-type FileRelationWorkerMetric = (usize, usize, usize, usize, Duration);
-type FileRelationWorkerResult = (
-    Vec<rust_analyzer_lib::FileSemanticResult>,
-    FileRelationWorkerMetric,
-);
-type FileRelationWorkerJoinHandle =
-    tokio::task::JoinHandle<ExtractResult<FileRelationWorkerResult>>;
 
 pub struct SharedWorkspaceExtractionRunner;
 
@@ -76,44 +72,139 @@ impl SharedWorkspaceExtractionRunner {
             workspace_root_uri_timer.elapsed(),
         );
 
+        let file_hash_timer = Stopwatch::start_new();
+        let file_hashes = workspace_file_hashes(&document_request)?;
+        benchmark.insert_duration_ms("shared_workspace.file_hashes", file_hash_timer.elapsed());
+        benchmark.insert_count("shared_workspace.files_hashed", file_hashes.len());
+
+        let workspace_id_timer = Stopwatch::start_new();
+        let existing_workspace_id_value = store
+            .workspace_id(&workspace_root_uri)
+            .await
+            .map_err(ExtractError::storage)?;
+        benchmark.insert_duration_ms(
+            "shared_workspace.existing_workspace_id",
+            workspace_id_timer.elapsed(),
+        );
+
+        let unchanged_file_uri_timer = Stopwatch::start_new();
+        let fresh_unchanged_file_uris = if let Some(workspace_id) = existing_workspace_id_value {
+            fresh_unchanged_file_uris(store, workspace_id, provider, &file_hashes).await?
+        } else {
+            HashSet::new()
+        };
+        benchmark.insert_duration_ms(
+            "shared_workspace.unchanged_file_hash_lookup",
+            unchanged_file_uri_timer.elapsed(),
+        );
+
+        let loaded_symbols_timer = Stopwatch::start_new();
+        let loaded_document_symbol_extractions =
+            if let Some(workspace_id) = existing_workspace_id_value {
+                load_unchanged_document_symbol_extractions(
+                    store,
+                    workspace_id,
+                    provider,
+                    &fresh_unchanged_file_uris,
+                )
+                .await?
+            } else {
+                Vec::new()
+            };
+        let loaded_file_uris = loaded_document_symbol_extractions
+            .iter()
+            .map(|extraction| extraction.source_file.uri.clone())
+            .collect::<HashSet<_>>();
+        benchmark.insert_duration_ms(
+            "shared_workspace.unchanged_symbols_load",
+            loaded_symbols_timer.elapsed(),
+        );
+
+        let changed_file_hashes = file_hashes
+            .iter()
+            .filter(|file_hash| !loaded_file_uris.contains(&file_hash.uri))
+            .cloned()
+            .collect::<Vec<_>>();
+        let changed_file_paths = changed_file_hashes
+            .iter()
+            .map(|file_hash| file_hash.file_path.clone())
+            .collect::<Vec<_>>();
+        let changed_file_uris = changed_file_hashes
+            .iter()
+            .map(|file_hash| file_hash.uri.clone())
+            .collect::<Vec<_>>();
+        benchmark.insert_count(
+            "shared_workspace.files_hash_unchanged",
+            loaded_file_uris.len(),
+        );
+        benchmark.insert_count("shared_workspace.files_changed", changed_file_hashes.len());
+
         let analysis_pool_timer = Stopwatch::start_new();
-        let analysis_pool = rust_analyzer_lib::SharedAnalysisWorkerPool::start(
-            &document_request.workspace_root,
-            analysis_worker_count,
-        )
-        .map_err(|source| {
-            ExtractError::rust_analyzer_lib("start shared analysis snapshot pool", source)
-        })?;
+        let analysis_pool = if changed_file_paths.is_empty() {
+            None
+        } else {
+            Some(
+                rust_analyzer_lib::SharedAnalysisWorkerPool::start(
+                    &document_request.workspace_root,
+                    analysis_worker_count,
+                )
+                .map_err(|source| {
+                    ExtractError::rust_analyzer_lib("start shared analysis snapshot pool", source)
+                })?,
+            )
+        };
         benchmark.insert_duration_ms(
             "shared_workspace.analysis_pool_start",
             analysis_pool_timer.elapsed(),
         );
         benchmark.insert_count(
             "shared_workspace.analysis_pool_workers",
-            analysis_pool.worker_count(),
+            analysis_pool
+                .as_ref()
+                .map(rust_analyzer_lib::SharedAnalysisWorkerPool::worker_count)
+                .unwrap_or(0),
         );
 
+        let mut changed_document_request = document_request.clone();
+        changed_document_request.file_paths = changed_file_paths.clone();
         let document_symbols_query_timer = Stopwatch::start_new();
-        let document_symbol_items = analysis_pool
-            .document_symbols_for_files(document_request.file_paths.clone())
-            .await
-            .map_err(|source| {
-                ExtractError::rust_analyzer_lib(
-                    "rust-analyzer-lib shared document_symbols_for_files",
-                    source,
-                )
-            })?;
+        let document_symbol_items = if let Some(analysis_pool) = &analysis_pool {
+            analysis_pool
+                .document_symbols_for_files(changed_file_paths.clone())
+                .await
+                .map_err(|source| {
+                    ExtractError::rust_analyzer_lib(
+                        "rust-analyzer-lib shared document_symbols_for_files",
+                        source,
+                    )
+                })?
+        } else {
+            Vec::new()
+        };
         benchmark.insert_duration_ms(
             "shared_workspace.document_symbols_query",
             document_symbols_query_timer.elapsed(),
         );
 
         let document_symbols_map_timer = Stopwatch::start_new();
-        let document_symbols =
-            provider.map_document_symbol_items(document_request.clone(), document_symbol_items)?;
+        let changed_document_symbols =
+            provider.map_document_symbol_items(changed_document_request, document_symbol_items)?;
+        let document_symbols = combined_document_symbols(
+            provider,
+            changed_document_symbols.clone(),
+            loaded_document_symbol_extractions,
+        );
         benchmark.insert_count(
             "shared_workspace.document_files",
             document_symbols.extractions.len(),
+        );
+        benchmark.insert_count(
+            "shared_workspace.document_files_extracted",
+            changed_document_symbols.extractions.len(),
+        );
+        benchmark.insert_count(
+            "shared_workspace.document_files_loaded",
+            document_symbols.extractions.len() - changed_document_symbols.extractions.len(),
         );
         benchmark.insert_count(
             "shared_workspace.document_symbols",
@@ -126,14 +217,25 @@ impl SharedWorkspaceExtractionRunner {
 
         let document_symbols_persist_timer = Stopwatch::start_new();
         let document_summary = if routes.includes_symbols() {
-            ExtractionPersister
-                .persist_document_symbol_batch_with_write_batch(
-                    store,
-                    &workspace_root_uri,
-                    &document_symbols,
-                    close_stale_document_symbols,
-                )
-                .await?
+            if changed_document_symbols.extractions.is_empty() {
+                let workspace_id = existing_workspace_id_value.ok_or_else(|| {
+                    ExtractError::response_shape(
+                        provider.provider_id().as_str(),
+                        "rust-workspace --symbols",
+                        format!("workspace {workspace_root_uri} is missing"),
+                    )
+                })?;
+                empty_summary(workspace_id, 0)
+            } else {
+                ExtractionPersister
+                    .persist_document_symbol_batch_with_write_batch(
+                        store,
+                        &workspace_root_uri,
+                        &changed_document_symbols,
+                        close_stale_document_symbols,
+                    )
+                    .await?
+            }
         } else {
             let workspace_id = existing_workspace_id(
                 store,
@@ -156,13 +258,22 @@ impl SharedWorkspaceExtractionRunner {
         }
 
         let targets_timer = Stopwatch::start_new();
-        let reference_targets = if routes.includes_references() {
+        let changed_file_path_set = changed_file_hashes
+            .iter()
+            .map(|file_hash| file_hash.file_path.clone())
+            .collect::<HashSet<_>>();
+        let changed_file_uri_set = changed_file_uris.iter().cloned().collect::<HashSet<_>>();
+        let reference_targets = if routes.includes_references() && !changed_file_uris.is_empty() {
             provider.reference_targets_for_document_symbols(&document_request, &document_symbols)?
         } else {
             Vec::new()
         };
-        let call_targets = if routes.includes_calls() {
-            provider.call_targets_for_document_symbols(&document_request, &document_symbols)?
+        let call_targets = if routes.includes_calls() && !changed_file_uris.is_empty() {
+            provider
+                .call_targets_for_document_symbols(&document_request, &document_symbols)?
+                .into_iter()
+                .filter(|target| changed_file_path_set.contains(&target.file_path))
+                .collect::<Vec<_>>()
         } else {
             Vec::new()
         };
@@ -185,10 +296,20 @@ impl SharedWorkspaceExtractionRunner {
         let mut reference_route_summary = empty_reference_route_summary();
         let mut call_route_summary = empty_call_route_summary();
 
-        if routes.includes_relations() {
+        if routes.includes_relations() && !changed_file_uris.is_empty() {
             let relations_timer = Stopwatch::start_new();
-            let (file_results, worker_metrics) =
-                run_file_relation_workers(file_work_items, analysis_pool.worker_handles()).await?;
+            let (file_results, worker_metrics) = if file_work_items.is_empty() {
+                (Vec::new(), Vec::new())
+            } else {
+                let analysis_pool = analysis_pool.as_ref().ok_or_else(|| {
+                    ExtractError::response_shape(
+                        provider.provider_id().as_str(),
+                        "rust-workspace",
+                        "relation work was scheduled without an analysis pool",
+                    )
+                })?;
+                run_file_relation_workers(file_work_items, analysis_pool.worker_handles()).await?
+            };
             benchmark
                 .insert_duration_ms("shared_workspace.file_relations", relations_timer.elapsed());
             insert_file_relation_worker_metrics(&mut benchmark, &worker_metrics);
@@ -205,7 +326,10 @@ impl SharedWorkspaceExtractionRunner {
                     reference_sets,
                     reference_target_count,
                 )?;
-                reference_route_summary = reference_extraction.summary.clone();
+                reference_route_summary = reference_route_summary_for_origin_files(
+                    &reference_extraction,
+                    &changed_file_uri_set,
+                );
                 benchmark.insert_duration_ms(
                     "shared_workspace.references_map",
                     reference_map_timer.elapsed(),
@@ -213,15 +337,16 @@ impl SharedWorkspaceExtractionRunner {
 
                 let reference_persist_timer = Stopwatch::start_new();
                 reference_summary = ExtractionPersister
-                    .persist_reference_batch_with_route_write_batch(
+                    .persist_reference_origin_file_batches_with_route_write_batch(
                         store,
                         &workspace_root_uri,
                         &reference_extraction,
+                        &changed_file_uris,
                     )
                     .await?;
                 benchmark.insert_label(
                     "shared_workspace.references_write_mode",
-                    "route_write_batch",
+                    "route_write_batch_origin_file",
                 );
                 benchmark.insert_duration_ms(
                     "shared_workspace.references_persist",
@@ -241,19 +366,24 @@ impl SharedWorkspaceExtractionRunner {
                     call_sets,
                     call_target_count,
                 )?;
-                call_route_summary = call_extraction.summary.clone();
+                call_route_summary =
+                    call_route_summary_for_origin_files(&call_extraction, &changed_file_uri_set);
                 benchmark
                     .insert_duration_ms("shared_workspace.calls_map", call_map_timer.elapsed());
 
                 let call_persist_timer = Stopwatch::start_new();
                 call_summary = ExtractionPersister
-                    .persist_call_batch_with_route_write_batch(
+                    .persist_call_origin_file_batches_with_route_write_batch(
                         store,
                         &workspace_root_uri,
                         &call_extraction,
+                        &changed_file_uris,
                     )
                     .await?;
-                benchmark.insert_label("shared_workspace.calls_write_mode", "route_write_batch");
+                benchmark.insert_label(
+                    "shared_workspace.calls_write_mode",
+                    "route_write_batch_origin_file",
+                );
                 benchmark.insert_duration_ms(
                     "shared_workspace.calls_persist",
                     call_persist_timer.elapsed(),
@@ -267,9 +397,11 @@ impl SharedWorkspaceExtractionRunner {
         }
 
         let analysis_pool_shutdown_timer = Stopwatch::start_new();
-        analysis_pool.shutdown().await.map_err(|source| {
-            ExtractError::rust_analyzer_lib("shutdown shared analysis snapshot pool", source)
-        })?;
+        if let Some(analysis_pool) = analysis_pool {
+            analysis_pool.shutdown().await.map_err(|source| {
+                ExtractError::rust_analyzer_lib("shutdown shared analysis snapshot pool", source)
+            })?;
+        }
         benchmark.insert_duration_ms(
             "shared_workspace.analysis_pool_shutdown",
             analysis_pool_shutdown_timer.elapsed(),

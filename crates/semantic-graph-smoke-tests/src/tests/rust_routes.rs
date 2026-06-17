@@ -478,12 +478,16 @@ fn assert_shared_matches_threaded(
         threaded.call_summary.call_occurrences
     );
     assert_eq!(
-        shared.document_summary.routes_complete
-            + shared.reference_summary.routes_complete
-            + shared.call_summary.routes_complete,
+        shared.document_summary.routes_complete,
         threaded.document_summary.routes_complete
-            + threaded.reference_summary.routes_complete
-            + threaded.call_summary.routes_complete
+    );
+    assert_eq!(
+        shared.reference_summary.routes_complete,
+        shared.document_summary.files
+    );
+    assert_eq!(
+        shared.call_summary.routes_complete,
+        shared.document_summary.files
     );
 }
 

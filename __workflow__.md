@@ -9,9 +9,10 @@ I want you to Audit the graphify repo in this repo's submodules with the followi
 - It is my intention to use `csharp-language-server` (source in this repo's submodules) as an LSP for building the semantic model for C# solutions
 ```
 
-```text
-Check out the `semantic-graph-extract` CLI
-Is `--workspace-root <WORKSPACE_ROOT>  [default: .]` actually necessary
+```tex
+When running `semantic-graph-extract rust-workspace --symbols` can we calculate a file hash per file and save it to the db
+
+Then, when we do subsequent passes, we can test the current file hash against the db hash. If same, exclude that file from any further extraction work
 ```
 
 ---

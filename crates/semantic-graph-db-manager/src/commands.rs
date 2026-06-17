@@ -1,5 +1,5 @@
 use crate::{
-    DbManagerResult, DemoSeedSummary, DocumentSymbolWriteBatchInput,
+    ActiveFileSymbols, DbManagerResult, DemoSeedSummary, DocumentSymbolWriteBatchInput,
     DocumentSymbolWriteBatchSummary, RouteWriteBatchInput, StaleFileSummary, WriteSummary,
     models::{
         OwnedCloseStaleFileInput, OwnedCloseStaleFtsDocumentsInput, OwnedCloseStaleRouteInput,
@@ -9,6 +9,7 @@ use crate::{
     },
 };
 
+use std::collections::HashMap;
 use tokio::sync::oneshot;
 
 pub(crate) enum Commands {
@@ -28,6 +29,17 @@ pub(crate) enum Commands {
         workspace_id: i64,
         uri: String,
         response: oneshot::Sender<DbManagerResult<Option<i64>>>,
+    },
+    FileRouteContentHashes {
+        workspace_id: i64,
+        route: String,
+        provider: String,
+        response: oneshot::Sender<DbManagerResult<HashMap<String, Option<String>>>>,
+    },
+    ActiveFileSymbols {
+        workspace_id: i64,
+        file_uris: Vec<String>,
+        response: oneshot::Sender<DbManagerResult<Vec<ActiveFileSymbols>>>,
     },
     NodeExists {
         node_id: String,
@@ -109,6 +121,10 @@ pub(crate) enum Commands {
         input: OwnedCloseStaleRouteInput,
         response: oneshot::Sender<DbManagerResult<u64>>,
     },
+    CloseStaleEdgesForRouteSourceFile {
+        input: OwnedCloseStaleRouteInput,
+        response: oneshot::Sender<DbManagerResult<u64>>,
+    },
     DemoSeed {
         root_uri: String,
         response: oneshot::Sender<DbManagerResult<DemoSeedSummary>>,
@@ -125,6 +141,8 @@ impl Commands {
             Self::CreateWorkspace { .. } => "create_workspace",
             Self::WorkspaceId { .. } => "workspace_id",
             Self::FileId { .. } => "file_id",
+            Self::FileRouteContentHashes { .. } => "file_route_content_hashes",
+            Self::ActiveFileSymbols { .. } => "active_file_symbols",
             Self::NodeExists { .. } => "node_exists",
             Self::StartRun { .. } => "start_run",
             Self::FinishRun { .. } => "finish_run",
@@ -146,6 +164,9 @@ impl Commands {
                 "close_stale_fts_documents_for_workspace"
             }
             Self::CloseStaleEdgesForRoute { .. } => "close_stale_edges_for_route",
+            Self::CloseStaleEdgesForRouteSourceFile { .. } => {
+                "close_stale_edges_for_route_source_file"
+            }
             Self::DemoSeed { .. } => "demo_seed",
             Self::Shutdown { .. } => "shutdown",
         }
@@ -156,6 +177,8 @@ impl Commands {
             self,
             Self::WorkspaceId { .. }
                 | Self::FileId { .. }
+                | Self::FileRouteContentHashes { .. }
+                | Self::ActiveFileSymbols { .. }
                 | Self::NodeExists { .. }
                 | Self::Shutdown { .. }
         )

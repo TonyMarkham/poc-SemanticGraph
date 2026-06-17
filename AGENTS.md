@@ -59,10 +59,15 @@ Language intelligence:
   paths. With no mode flag, they extract symbols, references, and calls.
   `rust-crate` uses the threaded in-process `rust-analyzer-lib` worker-pool
   path. `rust-workspace` uses the shared rust-analyzer analysis snapshot path,
-  persists document symbols in a DB-manager batch before relation extraction,
-  and persists reference/call route rows in DB-manager batches after relation
-  extraction. Fresh workspace DB files skip document-symbol stale closing;
-  existing workspace DB files keep stale closing enabled. `--symbols`,
+  hashes discovered files before semantic extraction, loads active symbols for
+  unchanged files from SQLite when their completed document-symbol route hash
+  matches, and skips rust-analyzer extraction for those files. Changed document
+  symbols are persisted in a DB-manager batch before relation extraction.
+  Reference/call extraction runs only for changed origin files while resolving
+  against the full active symbol graph, including unchanged files loaded from
+  SQLite, and persists file-scoped route rows in DB-manager batches after
+  relation extraction. Fresh workspace DB files skip document-symbol stale
+  closing; existing workspace DB files keep stale closing enabled. `--symbols`,
   `--references`, and `--calls` are combinable route selectors; relation-only
   runs require the selected files' symbol graph to already exist in the
   database.

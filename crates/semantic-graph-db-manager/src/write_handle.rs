@@ -1,12 +1,13 @@
 use crate::{
-    CloseStaleFileInput, CloseStaleFtsDocumentsInput, CloseStaleRouteInput, DbManagerError,
-    DbManagerResult, DemoSeedSummary, DocumentSymbolWriteBatchInput,
+    ActiveFileSymbols, CloseStaleFileInput, CloseStaleFtsDocumentsInput, CloseStaleRouteInput,
+    DbManagerError, DbManagerResult, DemoSeedSummary, DocumentSymbolWriteBatchInput,
     DocumentSymbolWriteBatchSummary, EdgeEvidenceInput, EdgeInput, FileInput, FtsDocumentInput,
     NodeInput, OccurrenceInput, RouteObservationInput, RouteStatusCompleteInput,
     RouteStatusFailInput, RouteStatusStartInput, RouteWriteBatchInput, StaleFileSummary,
     WriteProgress, WriteSummary, commands::Commands,
 };
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::{
     sync::{Mutex, broadcast, mpsc, oneshot},
@@ -72,6 +73,40 @@ impl WriteHandle {
             .send(Commands::FileId {
                 workspace_id,
                 uri: uri.to_string(),
+                response,
+            })
+            .await?;
+        receiver.await?
+    }
+
+    pub async fn file_route_content_hashes(
+        &self,
+        workspace_id: i64,
+        route: &str,
+        provider: &str,
+    ) -> DbManagerResult<HashMap<String, Option<String>>> {
+        let (response, receiver) = oneshot::channel();
+        self.sender
+            .send(Commands::FileRouteContentHashes {
+                workspace_id,
+                route: route.to_string(),
+                provider: provider.to_string(),
+                response,
+            })
+            .await?;
+        receiver.await?
+    }
+
+    pub async fn active_file_symbols(
+        &self,
+        workspace_id: i64,
+        file_uris: &[String],
+    ) -> DbManagerResult<Vec<ActiveFileSymbols>> {
+        let (response, receiver) = oneshot::channel();
+        self.sender
+            .send(Commands::ActiveFileSymbols {
+                workspace_id,
+                file_uris: file_uris.to_vec(),
                 response,
             })
             .await?;
@@ -280,6 +315,20 @@ impl WriteHandle {
         let (response, receiver) = oneshot::channel();
         self.sender
             .send(Commands::CloseStaleEdgesForRoute {
+                input: input.into(),
+                response,
+            })
+            .await?;
+        receiver.await?
+    }
+
+    pub async fn close_stale_edges_for_route_source_file(
+        &self,
+        input: CloseStaleRouteInput<'_>,
+    ) -> DbManagerResult<u64> {
+        let (response, receiver) = oneshot::channel();
+        self.sender
+            .send(Commands::CloseStaleEdgesForRouteSourceFile {
                 input: input.into(),
                 response,
             })

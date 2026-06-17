@@ -985,6 +985,339 @@ async fn file_route_stale_pass_closes_workspace_source_file_observations()
     Ok(())
 }
 
+#[tokio::test]
+async fn file_route_hashes_and_active_symbols_can_be_read() -> Result<(), Box<dyn Error>> {
+    let path = temp_db_path()?;
+    let writer = WriteManager::start(&path).await?;
+    writer.migrate().await?;
+
+    let workspace_uri = "file:///tmp/db-manager-active-symbols";
+    let workspace_id = writer.create_workspace(workspace_uri, "rust").await?;
+    let run_id = writer
+        .start_run(workspace_id, "rust-analyzer", Some("test"), None)
+        .await?;
+    let file_uri = "file:///tmp/db-manager-active-symbols/src/lib.rs";
+    let file_id = writer
+        .upsert_file(FileInput {
+            workspace_id,
+            uri: file_uri,
+            path: "src/lib.rs",
+            language: "rust",
+            content_hash: Some("hash-a"),
+            last_seen_run_id: Some(run_id),
+            properties_json: json!({
+                "raw_metadata": {
+                    "lsp_method": "textDocument/documentSymbol"
+                }
+            }),
+        })
+        .await?;
+    let symbol_key = format!("{file_uri}#kind=function;selection=1:0-1:4;name=demo;parent=");
+    writer
+        .upsert_node(NodeInput {
+            workspace_id,
+            language: "rust",
+            kind: "function",
+            name: "demo",
+            qualified_name: Some("demo"),
+            display_name: Some("demo"),
+            symbol_key: &symbol_key,
+            file_id: Some(file_id),
+            range: Some(TextRange {
+                start_line: 1,
+                start_col: 0,
+                end_line: 3,
+                end_col: 1,
+            }),
+            selection_range: Some(TextRange {
+                start_line: 1,
+                start_col: 0,
+                end_line: 1,
+                end_col: 4,
+            }),
+            container_node_id: None,
+            properties_json: json!({
+                "detail": "fn()",
+                "raw": {
+                    "document_symbol": {
+                        "selectionRange": {
+                            "start": { "line": 1, "character": 0 },
+                            "end": { "line": 1, "character": 4 }
+                        }
+                    }
+                }
+            }),
+            run_id: Some(run_id),
+        })
+        .await?;
+    writer
+        .start_route_status(RouteStatusStartInput {
+            workspace_id,
+            route: "rust.document_symbols",
+            scope: "file",
+            scope_key: file_uri,
+            file_id: Some(file_id),
+            provider: "rust-analyzer",
+            provider_version: Some("test"),
+            content_hash: Some("hash-a"),
+            run_id,
+            diagnostics_json: json!({}),
+        })
+        .await?;
+    writer
+        .complete_route_status(RouteStatusCompleteInput {
+            workspace_id,
+            route: "rust.document_symbols",
+            scope: "file",
+            scope_key: file_uri,
+            provider: "rust-analyzer",
+            provider_version: Some("test"),
+            content_hash: Some("hash-a"),
+            run_id,
+            diagnostics_json: json!({}),
+        })
+        .await?;
+
+    let hashes = writer
+        .file_route_content_hashes(workspace_id, "rust.document_symbols", "rust-analyzer")
+        .await?;
+    let active_files = writer
+        .active_file_symbols(workspace_id, &[file_uri.to_string()])
+        .await?;
+    writer.finish_run(run_id, "complete").await?;
+    writer.shutdown().await?;
+
+    assert_eq!(hashes.get(file_uri), Some(&Some("hash-a".to_string())));
+    assert_eq!(active_files.len(), 1);
+    assert_eq!(active_files[0].uri, file_uri);
+    assert_eq!(active_files[0].symbols.len(), 1);
+    assert_eq!(active_files[0].symbols[0].symbol_key, symbol_key);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn source_file_stale_close_does_not_close_inbound_edges() -> Result<(), Box<dyn Error>> {
+    let path = temp_db_path()?;
+    let writer = WriteManager::start(&path).await?;
+    writer.migrate().await?;
+
+    let workspace_uri = "file:///tmp/db-manager-source-file-close";
+    let workspace_id = writer.create_workspace(workspace_uri, "rust").await?;
+    let previous_run_id = writer
+        .start_run(workspace_id, "rust-analyzer", Some("test"), None)
+        .await?;
+    let current_run_id = writer
+        .start_run(workspace_id, "rust-analyzer", Some("test"), None)
+        .await?;
+    let file_a_uri = "file:///tmp/db-manager-source-file-close/src/a.rs";
+    let file_b_uri = "file:///tmp/db-manager-source-file-close/src/b.rs";
+    let file_c_uri = "file:///tmp/db-manager-source-file-close/src/c.rs";
+    let file_a_id = writer
+        .upsert_file(FileInput {
+            workspace_id,
+            uri: file_a_uri,
+            path: "src/a.rs",
+            language: "rust",
+            content_hash: Some("hash-a"),
+            last_seen_run_id: Some(previous_run_id),
+            properties_json: json!({}),
+        })
+        .await?;
+    let file_b_id = writer
+        .upsert_file(FileInput {
+            workspace_id,
+            uri: file_b_uri,
+            path: "src/b.rs",
+            language: "rust",
+            content_hash: Some("hash-b"),
+            last_seen_run_id: Some(previous_run_id),
+            properties_json: json!({}),
+        })
+        .await?;
+    let file_c_id = writer
+        .upsert_file(FileInput {
+            workspace_id,
+            uri: file_c_uri,
+            path: "src/c.rs",
+            language: "rust",
+            content_hash: Some("hash-c"),
+            last_seen_run_id: Some(previous_run_id),
+            properties_json: json!({}),
+        })
+        .await?;
+    let a_symbol_key = format!("{file_a_uri}#function:a");
+    let b_symbol_key = format!("{file_b_uri}#function:b");
+    let c_symbol_key = format!("{file_c_uri}#function:c");
+    let a_node_id = writer
+        .upsert_node(NodeInput {
+            workspace_id,
+            language: "rust",
+            kind: "function",
+            name: "a",
+            qualified_name: Some("a"),
+            display_name: Some("a"),
+            symbol_key: &a_symbol_key,
+            file_id: Some(file_a_id),
+            range: None,
+            selection_range: None,
+            container_node_id: None,
+            properties_json: json!({}),
+            run_id: Some(previous_run_id),
+        })
+        .await?;
+    let b_node_id = writer
+        .upsert_node(NodeInput {
+            workspace_id,
+            language: "rust",
+            kind: "function",
+            name: "b",
+            qualified_name: Some("b"),
+            display_name: Some("b"),
+            symbol_key: &b_symbol_key,
+            file_id: Some(file_b_id),
+            range: None,
+            selection_range: None,
+            container_node_id: None,
+            properties_json: json!({}),
+            run_id: Some(previous_run_id),
+        })
+        .await?;
+    let c_node_id = writer
+        .upsert_node(NodeInput {
+            workspace_id,
+            language: "rust",
+            kind: "function",
+            name: "c",
+            qualified_name: Some("c"),
+            display_name: Some("c"),
+            symbol_key: &c_symbol_key,
+            file_id: Some(file_c_id),
+            range: None,
+            selection_range: None,
+            container_node_id: None,
+            properties_json: json!({}),
+            run_id: Some(previous_run_id),
+        })
+        .await?;
+    let stale_origin_edge_id = writer
+        .upsert_edge(EdgeInput {
+            workspace_id,
+            src_node_id: &a_node_id,
+            dst_node_id: &b_node_id,
+            relation: "calls",
+            context: Some("direct"),
+            confidence: "EXTRACTED",
+            confidence_score: 1.0,
+            weight: 1.0,
+            properties_json: json!({}),
+            run_id: Some(previous_run_id),
+        })
+        .await?;
+    let inbound_edge_id = writer
+        .upsert_edge(EdgeInput {
+            workspace_id,
+            src_node_id: &c_node_id,
+            dst_node_id: &a_node_id,
+            relation: "calls",
+            context: Some("direct"),
+            confidence: "EXTRACTED",
+            confidence_score: 1.0,
+            weight: 1.0,
+            properties_json: json!({}),
+            run_id: Some(previous_run_id),
+        })
+        .await?;
+    writer
+        .record_route_observation(RouteObservationInput {
+            workspace_id,
+            run_id: previous_run_id,
+            route: "rust.calls",
+            scope: "workspace",
+            scope_key: workspace_uri,
+            provider: "rust-analyzer",
+            entity_kind: "edge",
+            entity_id: &stale_origin_edge_id,
+            source_file_id: Some(file_a_id),
+            properties_json: json!({}),
+        })
+        .await?;
+    writer
+        .record_route_observation(RouteObservationInput {
+            workspace_id,
+            run_id: previous_run_id,
+            route: "rust.calls",
+            scope: "workspace",
+            scope_key: workspace_uri,
+            provider: "rust-analyzer",
+            entity_kind: "edge",
+            entity_id: &inbound_edge_id,
+            source_file_id: Some(file_c_id),
+            properties_json: json!({}),
+        })
+        .await?;
+    writer
+        .start_route_status(RouteStatusStartInput {
+            workspace_id,
+            route: "rust.calls",
+            scope: "file",
+            scope_key: file_a_uri,
+            file_id: Some(file_a_id),
+            provider: "rust-analyzer",
+            provider_version: Some("test"),
+            content_hash: Some("hash-a"),
+            run_id: current_run_id,
+            diagnostics_json: json!({}),
+        })
+        .await?;
+    writer
+        .complete_route_status(RouteStatusCompleteInput {
+            workspace_id,
+            route: "rust.calls",
+            scope: "file",
+            scope_key: file_a_uri,
+            provider: "rust-analyzer",
+            provider_version: Some("test"),
+            content_hash: Some("hash-a"),
+            run_id: current_run_id,
+            diagnostics_json: json!({}),
+        })
+        .await?;
+
+    let stale_edges_closed = writer
+        .close_stale_edges_for_route_source_file(CloseStaleRouteInput {
+            workspace_id,
+            run_id: current_run_id,
+            route: "rust.calls",
+            scope: "file",
+            scope_key: file_a_uri,
+            provider: "rust-analyzer",
+        })
+        .await?;
+    writer.finish_run(previous_run_id, "complete").await?;
+    writer.finish_run(current_run_id, "complete").await?;
+    writer.shutdown().await?;
+
+    assert_eq!(stale_edges_closed, 1);
+
+    let pool = sqlite_pool(&path).await?;
+    let stale_origin_valid_to: Option<i64> =
+        sqlx::query_scalar("SELECT valid_to_run_id FROM edges WHERE id = ?")
+            .bind(&stale_origin_edge_id)
+            .fetch_one(&pool)
+            .await?;
+    let inbound_valid_to: Option<i64> =
+        sqlx::query_scalar("SELECT valid_to_run_id FROM edges WHERE id = ?")
+            .bind(&inbound_edge_id)
+            .fetch_one(&pool)
+            .await?;
+
+    assert_eq!(stale_origin_valid_to, Some(current_run_id));
+    assert_eq!(inbound_valid_to, None);
+
+    Ok(())
+}
+
 async fn sqlite_pool(path: &Path) -> Result<SqlitePool, Box<dyn Error>> {
     Ok(SqlitePool::connect(&format!("sqlite://{}", path.display())).await?)
 }

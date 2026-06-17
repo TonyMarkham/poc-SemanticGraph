@@ -250,16 +250,25 @@ combinable:
 ```
 
 `--symbols` refreshes document symbols for the selected crate or workspace.
-`--references` and `--calls` refresh only those workspace-scoped relation routes
-and require the symbol graph for the selected files to already exist in the
-target database unless `--symbols` is selected in the same invocation.
+`--references` and `--calls` refresh only relation routes and require the
+symbol graph for the selected files to already exist in the target database
+unless `--symbols` is selected in the same invocation.
 
-`rust-workspace` loads the rust-analyzer workspace once, creates per-worker
-`ide::Analysis` snapshots, persists document symbols in one DB-manager batch,
-then extracts references and outgoing calls before persisting each relation route
-in one batch. Fresh database files skip document-symbol stale closing because
-there is no prior graph state; existing database files keep stale closing
-enabled.
+`rust-workspace` hashes each discovered file before semantic extraction. When a
+file's current hash matches a completed document-symbol route hash in the
+database, the shared workspace runner loads that file's active symbols from
+SQLite and skips further extraction work for that file. Default full runs and
+`--symbols` both use this reuse path.
+
+When changed files remain, `rust-workspace` loads the rust-analyzer workspace
+once, creates per-worker `ide::Analysis` snapshots, persists changed document
+symbols in one DB-manager batch, then extracts references and outgoing calls for
+the changed origin files. Relation extraction still resolves against the active
+symbol graph, including unchanged files loaded from SQLite, and relation routes
+are persisted per processed origin file with origin-file stale closing. Fresh
+database files skip document-symbol stale closing because there is no prior
+graph state; existing database files keep stale closing enabled. If every file
+is unchanged, the command skips starting the shared rust-analyzer analysis pool.
 
 The command prints the normal workspace summary with `scope=workspace` and
 benchmark lines labeled `shared_analysis_snapshot` and `shared_workspace.*`.
@@ -588,6 +597,8 @@ workspace.shared_vs_threaded.threaded.reference_edges=<references_edges>
 workspace.shared_vs_threaded.shared.reference_edges=<references_edges>
 workspace.shared_vs_threaded.threaded.call_edges=<calls_edges>
 workspace.shared_vs_threaded.shared.call_edges=<calls_edges>
+workspace.shared_vs_threaded.threaded.routes_complete=<threaded_route_completions>
+workspace.shared_vs_threaded.shared.routes_complete=<shared_file_scoped_route_completions>
 csharp.solution.discovery.count=1
 csharp.solution.discovery.file=Project/Worker.cs
 csharp.solution.symbols.files=1

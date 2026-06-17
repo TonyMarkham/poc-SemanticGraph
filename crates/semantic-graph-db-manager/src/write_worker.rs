@@ -1,9 +1,10 @@
 use crate::{
-    DbManagerError, DbManagerResult, DbWriteProgressKind, DemoSeedSummary,
-    DocumentSymbolWriteBatchCloseStaleRouteInput, DocumentSymbolWriteBatchEdgeEvidenceInput,
-    DocumentSymbolWriteBatchFileInput, DocumentSymbolWriteBatchInput,
-    DocumentSymbolWriteBatchNodeInput, DocumentSymbolWriteBatchObservationInput,
-    DocumentSymbolWriteBatchOccurrenceInput, DocumentSymbolWriteBatchRouteStatusCompleteInput,
+    ActiveFileSymbol, ActiveFileSymbols, DbManagerError, DbManagerResult, DbWriteProgressKind,
+    DemoSeedSummary, DocumentSymbolWriteBatchCloseStaleRouteInput,
+    DocumentSymbolWriteBatchEdgeEvidenceInput, DocumentSymbolWriteBatchFileInput,
+    DocumentSymbolWriteBatchInput, DocumentSymbolWriteBatchNodeInput,
+    DocumentSymbolWriteBatchObservationInput, DocumentSymbolWriteBatchOccurrenceInput,
+    DocumentSymbolWriteBatchRouteStatusCompleteInput,
     DocumentSymbolWriteBatchRouteStatusStartInput, DocumentSymbolWriteBatchSummary,
     EdgeEvidenceInput, EdgeInput, FileInput, NodeInput, OccurrenceInput,
     RouteWriteBatchEdgeEvidenceInput, RouteWriteBatchEdgeInput, RouteWriteBatchInput,
@@ -21,7 +22,7 @@ use crate::{
 };
 
 use serde_json::json;
-use sqlx::{Executor, SqlitePool};
+use sqlx::{Executor, Row, SqlitePool};
 use std::collections::HashMap;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
@@ -44,6 +45,20 @@ pub(crate) struct WriteWorker {
     receiver: mpsc::Receiver<Commands>,
     progress: broadcast::Sender<WriteProgress>,
     summary: WriteSummary,
+}
+
+fn text_range_from_row(row: &sqlx::sqlite::SqliteRow) -> Option<TextRange> {
+    let start_line: Option<i64> = row.get("start_line");
+    let start_col: Option<i64> = row.get("start_col");
+    let end_line: Option<i64> = row.get("end_line");
+    let end_col: Option<i64> = row.get("end_col");
+
+    Some(TextRange {
+        start_line: start_line?,
+        start_col: start_col?,
+        end_line: end_line?,
+        end_col: end_col?,
+    })
 }
 
 impl WriteWorker {
@@ -114,6 +129,25 @@ impl WriteWorker {
                 response,
             } => {
                 let result = self.file_id(workspace_id, &uri).await;
+                let _send_result = response.send(result);
+            }
+            Commands::FileRouteContentHashes {
+                workspace_id,
+                route,
+                provider,
+                response,
+            } => {
+                let result = self
+                    .file_route_content_hashes(workspace_id, &route, &provider)
+                    .await;
+                let _send_result = response.send(result);
+            }
+            Commands::ActiveFileSymbols {
+                workspace_id,
+                file_uris,
+                response,
+            } => {
+                let result = self.active_file_symbols(workspace_id, &file_uris).await;
                 let _send_result = response.send(result);
             }
             Commands::NodeExists { node_id, response } => {
@@ -209,6 +243,11 @@ impl WriteWorker {
             }
             Commands::CloseStaleEdgesForRoute { input, response } => {
                 let result = run_write_command!(self, self.close_stale_edges_for_route(input));
+                self.send_write_response(response, result).await;
+            }
+            Commands::CloseStaleEdgesForRouteSourceFile { input, response } => {
+                let result =
+                    run_write_command!(self, self.close_stale_edges_for_route_source_file(input));
                 self.send_write_response(response, result).await;
             }
             Commands::DemoSeed { root_uri, response } => {
@@ -312,6 +351,128 @@ impl WriteWorker {
             .fetch_optional(&self.pool)
             .await
             .map_err(DbManagerError::database)
+    }
+
+    async fn file_route_content_hashes(
+        &self,
+        workspace_id: i64,
+        route: &str,
+        provider: &str,
+    ) -> DbManagerResult<HashMap<String, Option<String>>> {
+        let rows = sqlx::query(
+            r#"
+            SELECT scope_key, content_hash
+            FROM extraction_route_status
+            WHERE workspace_id = ?
+              AND route = ?
+              AND scope = ?
+              AND provider = ?
+              AND last_status = 'complete'
+              AND last_complete_run_id IS NOT NULL
+            "#,
+        )
+        .bind(workspace_id)
+        .bind(route)
+        .bind(FILE_ROUTE_SCOPE)
+        .bind(provider)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(DbManagerError::database)?;
+
+        let mut hashes = HashMap::with_capacity(rows.len());
+        for row in rows {
+            hashes.insert(row.get("scope_key"), row.get("content_hash"));
+        }
+
+        Ok(hashes)
+    }
+
+    async fn active_file_symbols(
+        &self,
+        workspace_id: i64,
+        file_uris: &[String],
+    ) -> DbManagerResult<Vec<ActiveFileSymbols>> {
+        let mut files = Vec::with_capacity(file_uris.len());
+        for file_uri in file_uris {
+            let Some(file_row) = sqlx::query(
+                r#"
+                SELECT id, uri, path, language, content_hash, properties_json
+                FROM files
+                WHERE workspace_id = ?
+                  AND uri = ?
+                "#,
+            )
+            .bind(workspace_id)
+            .bind(file_uri)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(DbManagerError::database)?
+            else {
+                continue;
+            };
+
+            let file_id: i64 = file_row.get("id");
+            let symbol_rows = sqlx::query(
+                r#"
+                SELECT
+                  id,
+                  symbol_key,
+                  kind,
+                  name,
+                  qualified_name,
+                  start_line,
+                  start_col,
+                  end_line,
+                  end_col,
+                  selection_start_line,
+                  selection_start_col,
+                  container_node_id,
+                  properties_json
+                FROM nodes
+                WHERE workspace_id = ?
+                  AND file_id = ?
+                  AND valid_to_run_id IS NULL
+                  AND kind <> 'file'
+                ORDER BY
+                  COALESCE(start_line, 0),
+                  COALESCE(start_col, 0),
+                  COALESCE(selection_start_line, 0),
+                  COALESCE(selection_start_col, 0),
+                  name
+                "#,
+            )
+            .bind(workspace_id)
+            .bind(file_id)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(DbManagerError::database)?;
+
+            let mut symbols = Vec::with_capacity(symbol_rows.len());
+            for row in symbol_rows {
+                symbols.push(ActiveFileSymbol {
+                    node_id: row.get("id"),
+                    symbol_key: row.get("symbol_key"),
+                    kind: row.get("kind"),
+                    name: row.get("name"),
+                    qualified_name: row.get("qualified_name"),
+                    range: text_range_from_row(&row),
+                    selection_range: None,
+                    container_node_id: row.get("container_node_id"),
+                    properties_json: row.get("properties_json"),
+                });
+            }
+
+            files.push(ActiveFileSymbols {
+                uri: file_row.get("uri"),
+                relative_path: file_row.get("path"),
+                language: file_row.get("language"),
+                content_hash: file_row.get("content_hash"),
+                properties_json: file_row.get("properties_json"),
+                symbols,
+            });
+        }
+
+        Ok(files)
     }
 
     async fn node_exists(&self, node_id: &str) -> DbManagerResult<bool> {
@@ -1659,6 +1820,65 @@ impl WriteWorker {
             .await?;
 
         Ok(result.rows_affected() + source_file_rows)
+    }
+
+    async fn close_stale_edges_for_route_source_file(
+        &self,
+        input: OwnedCloseStaleRouteInput,
+    ) -> DbManagerResult<u64> {
+        if input.scope != FILE_ROUTE_SCOPE || !self.route_completed_for_run(&input).await? {
+            return Ok(0);
+        }
+
+        let Some(file_id) = self.file_id(input.workspace_id, &input.scope_key).await? else {
+            return Ok(0);
+        };
+
+        let result = sqlx::query(
+            r#"
+            UPDATE edges
+            SET valid_to_run_id = ?
+            WHERE workspace_id = ?
+              AND valid_to_run_id IS NULL
+              AND id IN (
+                SELECT DISTINCT previous.entity_id
+                FROM route_observations previous
+                WHERE previous.workspace_id = ?
+                  AND previous.route = ?
+                  AND previous.provider = ?
+                  AND previous.entity_kind = 'edge'
+                  AND previous.source_file_id = ?
+                  AND previous.run_id <> ?
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM route_observations current
+                    WHERE current.workspace_id = previous.workspace_id
+                      AND current.route = previous.route
+                      AND current.scope = ?
+                      AND current.scope_key = ?
+                      AND current.provider = previous.provider
+                      AND current.entity_kind = previous.entity_kind
+                      AND current.entity_id = previous.entity_id
+                      AND current.run_id = ?
+                  )
+              )
+            "#,
+        )
+        .bind(input.run_id)
+        .bind(input.workspace_id)
+        .bind(input.workspace_id)
+        .bind(&input.route)
+        .bind(&input.provider)
+        .bind(file_id)
+        .bind(input.run_id)
+        .bind(&input.scope)
+        .bind(&input.scope_key)
+        .bind(input.run_id)
+        .execute(&self.pool)
+        .await
+        .map_err(DbManagerError::database)?;
+
+        Ok(result.rows_affected())
     }
 
     async fn close_stale_source_file_nodes_for_route(
