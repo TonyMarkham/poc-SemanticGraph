@@ -22,18 +22,27 @@ max_shortest_path_depth = 12
 max_shortest_path_visited = 5000
 
 [fts]
+db_path = ".refactor-radar/fts.db"
+analysis_workers = 8
+max_indexed_file_bytes = 209715200
 ignore-directories = [
     "target",
     "apps/SemanticGraph.Visualizer/src/SemanticGraph.Visualizer.Client/bin",
     "apps/SemanticGraph.Visualizer/src/SemanticGraph.Visualizer.Client/obj",
+    ".refactor-radar/fts.tantivy",
 ]
-ignore-files = []
+ignore-files = [
+    ".refactor-radar/content.db",
+    ".refactor-radar/content.db-shm",
+    ".refactor-radar/content.db-wal",
+    ".refactor-radar/fts.db",
+]
 
 [csharp]
 binary = "csharp-ls"
 solution = "SemanticGraph.Visualizer.slnx"
 log_level = "warning"
 features = []
-analysis_workers = 1
+analysis_workers = 8
 startup_timeout_ms = 120000
 request_timeout_ms = 30000

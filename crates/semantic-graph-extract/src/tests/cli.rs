@@ -1,6 +1,7 @@
 use crate::{
     cli::{
         CSharpFileMode, Cli, Command, RustFileMode, resolve_cli_database_path,
+        resolve_cli_fts_analysis_workers, resolve_cli_fts_database_path,
         resolve_csharp_extractor_plan, resolve_csharp_file_mode, resolve_csharp_workspace_routes,
         resolve_rust_file_mode, resolve_rust_workspace_routes, resolve_solution_from,
         validate_deleted_rust_file_request,
@@ -9,7 +10,7 @@ use crate::{
 };
 
 use clap::Parser;
-use semantic_graph_config::ensure_config_with_csharp_defaults;
+use semantic_graph_config::{FtsConfig, ensure_config_with_csharp_defaults, load_config};
 use std::{
     error::Error,
     fs,
@@ -76,41 +77,65 @@ fn fts_accepts_exclusion_flags_and_db() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
-fn fts_tantivy_requires_db() {
-    let result = Cli::try_parse_from(["semantic-graph-extract", "fts-tantivy"]);
-    assert!(result.is_err());
-}
+fn fts_resolvers_prefer_fts_config_before_global_defaults() -> Result<(), Box<dyn Error>> {
+    let root = temp_dir("fts-resolvers-prefer-fts-config")?;
+    let config_dir = root.join(".refactor-radar");
+    fs::create_dir_all(&config_dir)?;
+    let config_path = config_dir.join("config.toml");
+    fs::write(
+        &config_path,
+        r#"
+[database]
+path = ".local/graph.db"
 
-#[test]
-fn fts_tantivy_accepts_required_db_and_options() -> Result<(), Box<dyn Error>> {
-    let cli = Cli::try_parse_from([
-        "semantic-graph-extract",
-        "fts-tantivy",
-        "--db",
-        "scratch-tantivy.db",
-        "--analysis-workers",
-        "4",
-        "--no-rust",
-        "--no-csharp",
-        "--no-submodules",
-    ])?;
+[extractor]
+analysis_workers = 2
 
-    match cli.command {
-        Command::FtsTantivy {
-            db,
-            analysis_workers,
-            no_rust,
-            no_csharp,
-            no_submodules,
-        } => {
-            assert_eq!(db, PathBuf::from("scratch-tantivy.db"));
-            assert_eq!(analysis_workers, Some(4));
-            assert!(no_rust);
-            assert!(no_csharp);
-            assert!(no_submodules);
-        }
-        _ => return Err("expected fts-tantivy command".into()),
-    }
+[fts]
+db_path = ".refactor-radar/fts.db"
+analysis_workers = 7
+ignore-directories = []
+ignore-files = []
+"#,
+    )?;
+    let fts_config = load_config(&config_path)?.fts().clone();
+
+    let resolved_db =
+        resolve_cli_fts_database_path(None, &Some(config_path.clone()), &root, &fts_config)?;
+    assert_eq!(resolved_db, root.join(".refactor-radar/fts.db"));
+
+    let cli_db = root.join("cli.db");
+    let resolved_cli_db = resolve_cli_fts_database_path(
+        Some(cli_db.clone()),
+        &Some(config_path.clone()),
+        &root,
+        &fts_config,
+    )?;
+    assert_eq!(resolved_cli_db, cli_db);
+
+    assert_eq!(
+        resolve_cli_fts_analysis_workers(&None, &root, None, &fts_config)?,
+        7
+    );
+    assert_eq!(
+        resolve_cli_fts_analysis_workers(&None, &root, Some(9), &fts_config)?,
+        9
+    );
+
+    let fallback_config = FtsConfig::default();
+    assert_eq!(
+        resolve_cli_fts_analysis_workers(
+            &Some(config_path.clone()),
+            &root,
+            None,
+            &fallback_config
+        )?,
+        2
+    );
+    assert_eq!(
+        resolve_cli_fts_database_path(None, &Some(config_path), &root, &fallback_config)?,
+        config_dir.join(".local/graph.db")
+    );
 
     Ok(())
 }

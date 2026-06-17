@@ -6,14 +6,13 @@ use semantic_graph_extract::{
     cli::{
         CSharpFileExtractions, CSharpFileMode, Cli, Command, ResolvedCSharpExtractorPlan,
         RustFileExtractions, RustFileMode, normalize_lexical_path, resolve_cli_database_path,
+        resolve_cli_fts_analysis_workers, resolve_cli_fts_database_path,
         resolve_csharp_extractor_plan, resolve_csharp_file_mode, resolve_csharp_workspace_routes,
         resolve_rust_file_mode, resolve_rust_workspace_routes, symbol_key_belongs_to_file,
         validate_deleted_rust_file_request,
     },
     document_symbols::paths::{file_uri, validate_document_symbol_batch_request},
-    fts::{
-        FtsExtractionOptions, FtsExtractionRunner, FtsExtractionSummary, FtsTantivyExtractionRunner,
-    },
+    fts::{FtsExtractionOptions, FtsExtractionRunner, FtsExtractionSummary},
     model::{
         CallBatchExtraction, CallRouteSummary, DocumentSymbolBatchExtraction,
         DocumentSymbolBatchRequest, GraphLanguage, ProviderId, ReferenceRouteSummary, RouteName,
@@ -61,28 +60,33 @@ async fn run() -> ExtractResult<()> {
         } => {
             let total_timer = Stopwatch::start_new();
             let mut benchmark = BenchmarkSummary::new();
-            benchmark.insert_label("execution_mode", "fts_file_content_index");
+            benchmark.insert_label("execution_mode", "fts_file_content_tantivy_index");
             benchmark.insert_label("mode", "fts");
 
             let workspace_root = std::env::current_dir()
                 .map_err(|source| ExtractError::io("read current directory", None, source))?;
             let fts_config = resolve_cli_fts_config(&config, &workspace_root)?;
-            let analysis_worker_count = resolve_threaded_route_analysis_workers(
+            let analysis_worker_count = resolve_cli_fts_analysis_workers(
                 &config,
                 &workspace_root,
                 analysis_workers,
+                &fts_config,
             )?;
+            validate_single_route_jobs("--analysis-workers", analysis_worker_count)?;
             benchmark.insert_count("analysis_workers", analysis_worker_count);
 
             let writer_ready_timer = Stopwatch::start_new();
-            let db = resolve_cli_database_path(db, &config, &workspace_root)?;
-            let store = start_writer(db, &config, &workspace_root).await?;
+            let db = resolve_cli_fts_database_path(db, &config, &workspace_root, &fts_config)?;
+            let index_path = fts_index_path_for_db(&db);
+            let store = start_writer(db.clone(), &config, &workspace_root).await?;
             benchmark.insert_duration_ms("writer_ready", writer_ready_timer.elapsed());
 
             let fts_runner_timer = Stopwatch::start_new();
             let summary = FtsExtractionRunner::run(
                 &store,
                 &workspace_root,
+                &db,
+                &index_path,
                 &fts_config,
                 FtsExtractionOptions::new(no_rust, no_csharp, no_submodules),
                 analysis_worker_count,
@@ -100,59 +104,6 @@ async fn run() -> ExtractResult<()> {
             summary.benchmark = benchmark;
 
             print_fts_summary(&summary);
-            print_benchmark_summary(&summary.benchmark);
-        }
-        Command::FtsTantivy {
-            db,
-            analysis_workers,
-            no_rust,
-            no_csharp,
-            no_submodules,
-        } => {
-            let total_timer = Stopwatch::start_new();
-            let mut benchmark = BenchmarkSummary::new();
-            benchmark.insert_label("execution_mode", "fts_tantivy_file_content_index");
-            benchmark.insert_label("mode", "fts-tantivy");
-
-            let workspace_root = std::env::current_dir()
-                .map_err(|source| ExtractError::io("read current directory", None, source))?;
-            let fts_config = resolve_cli_fts_config(&config, &workspace_root)?;
-            let analysis_worker_count = resolve_threaded_route_analysis_workers(
-                &config,
-                &workspace_root,
-                analysis_workers,
-            )?;
-            benchmark.insert_count("analysis_workers", analysis_worker_count);
-
-            let writer_ready_timer = Stopwatch::start_new();
-            let db = resolve_cli_database_path(Some(db), &config, &workspace_root)?;
-            let index_path = fts_tantivy_index_path_for_db(&db);
-            let store = start_writer(db.clone(), &config, &workspace_root).await?;
-            benchmark.insert_duration_ms("writer_ready", writer_ready_timer.elapsed());
-
-            let fts_runner_timer = Stopwatch::start_new();
-            let summary = FtsTantivyExtractionRunner::run(
-                &store,
-                &workspace_root,
-                &db,
-                &index_path,
-                &fts_config,
-                FtsExtractionOptions::new(no_rust, no_csharp, no_submodules),
-                analysis_worker_count,
-            )
-            .await;
-            benchmark.insert_duration_ms("fts_tantivy_runner", fts_runner_timer.elapsed());
-
-            let writer_shutdown_timer = Stopwatch::start_new();
-            shutdown_writer(&store).await?;
-            benchmark.insert_duration_ms("writer_shutdown", writer_shutdown_timer.elapsed());
-
-            let mut summary = summary?;
-            benchmark.extend_from(&summary.benchmark);
-            benchmark.insert_duration_ms("total", total_timer.elapsed());
-            summary.benchmark = benchmark;
-
-            print_fts_tantivy_summary(&summary);
             print_benchmark_summary(&summary.benchmark);
         }
         Command::RustFile {
@@ -1088,10 +1039,6 @@ fn print_csharp_file_deleted_summary(relative_path: &str, summary: &PersistenceS
 
 fn print_fts_summary(summary: &FtsExtractionSummary) {
     print_fts_summary_with_mode("fts", summary);
-}
-
-fn print_fts_tantivy_summary(summary: &FtsExtractionSummary) {
-    print_fts_summary_with_mode("fts-tantivy", summary);
 }
 
 fn print_fts_summary_with_mode(mode: &str, summary: &FtsExtractionSummary) {
@@ -2135,7 +2082,7 @@ fn resolve_cli_fts_config(
     Ok(config.fts().clone())
 }
 
-fn fts_tantivy_index_path_for_db(db: &Path) -> PathBuf {
+fn fts_index_path_for_db(db: &Path) -> PathBuf {
     db.with_extension("tantivy")
 }
 

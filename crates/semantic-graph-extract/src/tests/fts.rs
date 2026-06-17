@@ -2,7 +2,7 @@ use crate::{
     benchmark::BenchmarkSummary,
     fts::{
         FtsExclusionSet, FtsExtractionOptions, FtsExtractionRunner, FtsFileDiscovery,
-        FtsFileLanguage, FtsTantivyExtractionRunner,
+        FtsFileLanguage,
     },
 };
 
@@ -92,8 +92,8 @@ fn fts_language_classification_covers_required_languages() {
 }
 
 #[tokio::test]
-async fn fts_runner_persists_trigram_content_and_closes_stale_documents()
--> Result<(), Box<dyn Error>> {
+async fn fts_runner_persists_content_without_fts5_and_updates_sidecar() -> Result<(), Box<dyn Error>>
+{
     let temp = temp_dir("fts-runner")?;
     let root = temp.join("workspace");
     fs::create_dir_all(&root)?;
@@ -106,12 +106,15 @@ async fn fts_runner_persists_trigram_content_and_closes_stale_documents()
     write_file(&root.join("notes.txt"), "plain text\n")?;
     write_bytes(&root.join("binary.bin"), &[0, 159, 146, 150])?;
 
-    let db_path = temp.join("fts.db");
+    let db_path = root.join(".refactor-radar/fts.db");
+    let index_path = root.join(".refactor-radar/fts.tantivy");
     let writer = WriteManager::start(&db_path).await?;
     writer.migrate().await?;
     let summary = FtsExtractionRunner::run(
         &writer,
         &root,
+        &db_path,
+        &index_path,
         &FtsConfig::default(),
         FtsExtractionOptions::default(),
         2,
@@ -130,17 +133,22 @@ async fn fts_runner_persists_trigram_content_and_closes_stale_documents()
     assert_benchmark_line(&summary.benchmark, "bench.fts.files_changed=4");
     assert_benchmark_line(&summary.benchmark, "bench.fts.files_hash_unchanged=0");
     assert_benchmark_line(&summary.benchmark, "bench.fts.indexed_files=4");
-    assert_benchmark_line(&summary.benchmark, "bench.fts.skipped_files=1");
+    assert_benchmark_line(&summary.benchmark, "bench.fts.indexed_documents=4");
+    assert_benchmark_line(&summary.benchmark, "bench.fts.skipped_files=4");
     assert_benchmark_line(
         &summary.benchmark,
         "bench.fts.skipped_binary_or_unreadable=1",
     );
+    assert_benchmark_line(&summary.benchmark, "bench.fts.write_mode=fts_write_batch");
     assert_benchmark_prefix(&summary.benchmark, "bench.fts.indexed_bytes=");
+    assert_benchmark_prefix(&summary.benchmark, "bench.fts.index_update_ms=");
     assert_benchmark_prefix(&summary.benchmark, "bench.fts.total_ms=");
 
     let second_summary = FtsExtractionRunner::run(
         &writer,
         &root,
+        &db_path,
+        &index_path,
         &FtsConfig::default(),
         FtsExtractionOptions::default(),
         2,
@@ -151,122 +159,10 @@ async fn fts_runner_persists_trigram_content_and_closes_stale_documents()
     assert_eq!(second_summary.files_hash_unchanged, 4);
     assert_eq!(second_summary.files_changed, 0);
     assert_eq!(second_summary.stale_fts_documents_closed, 0);
+    assert_benchmark_line(&second_summary.benchmark, "bench.fts.index_committed=false");
 
     fs::remove_file(root.join("notes.txt"))?;
     let third_summary = FtsExtractionRunner::run(
-        &writer,
-        &root,
-        &FtsConfig::default(),
-        FtsExtractionOptions::default(),
-        2,
-    )
-    .await?;
-    assert_eq!(third_summary.indexed_files, 0);
-    assert_eq!(third_summary.files_hashed, 3);
-    assert_eq!(third_summary.files_hash_unchanged, 3);
-    assert_eq!(third_summary.files_changed, 0);
-    assert_eq!(third_summary.stale_fts_documents_closed, 1);
-    writer.shutdown().await?;
-
-    let pool = sqlite_pool(&db_path).await?;
-    let file_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM files")
-        .fetch_one(&pool)
-        .await?;
-    let active_document_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM fts_documents WHERE valid_to_run_id IS NULL")
-            .fetch_one(&pool)
-            .await?;
-    let stale_document_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM fts_documents WHERE valid_to_run_id IS NOT NULL")
-            .fetch_one(&pool)
-            .await?;
-    let trigram_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM fts_document_trigram_ci")
-        .fetch_one(&pool)
-        .await?;
-    assert_eq!(file_count, 4);
-    assert_eq!(active_document_count, 3);
-    assert_eq!(stale_document_count, 1);
-    assert_eq!(trigram_count, 3);
-
-    let stored_content: String =
-        sqlx::query_scalar("SELECT content FROM fts_document_trigram_ci WHERE path = 'README.md'")
-            .fetch_one(&pool)
-            .await?;
-    assert!(stored_content.contains("ExactCaseToken"));
-
-    assert_candidate(&pool, "%foo::bar%").await?;
-    assert_candidate(&pool, "%get_user(%").await?;
-    assert_candidate(&pool, "%path/to/file%").await?;
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn fts_tantivy_runner_persists_content_without_fts5_and_updates_sidecar()
--> Result<(), Box<dyn Error>> {
-    let temp = temp_dir("fts-tantivy-runner")?;
-    let root = temp.join("workspace");
-    fs::create_dir_all(&root)?;
-    write_file(
-        &root.join("src/lib.rs"),
-        "fn get_user() { let path = \"path/to/file\"; foo::bar(); }\n",
-    )?;
-    write_file(&root.join("Project/Program.cs"), "class Program {}\n")?;
-    write_file(&root.join("README.md"), "ExactCaseToken\n")?;
-    write_file(&root.join("notes.txt"), "plain text\n")?;
-    write_bytes(&root.join("binary.bin"), &[0, 159, 146, 150])?;
-
-    let db_path = root.join(".refactor-radar/fts-tantivy.db");
-    let index_path = root.join(".refactor-radar/fts-tantivy.tantivy");
-    let writer = WriteManager::start(&db_path).await?;
-    writer.migrate().await?;
-    let summary = FtsTantivyExtractionRunner::run(
-        &writer,
-        &root,
-        &db_path,
-        &index_path,
-        &FtsConfig::default(),
-        FtsExtractionOptions::default(),
-        2,
-    )
-    .await?;
-
-    assert_eq!(summary.indexed_files, 4);
-    assert_eq!(summary.files_hashed, 4);
-    assert_eq!(summary.files_hash_unchanged, 0);
-    assert_eq!(summary.files_changed, 4);
-    assert_eq!(summary.skipped_binary_or_unreadable, 1);
-    assert_eq!(summary.stale_fts_documents_closed, 0);
-    assert_benchmark_line(&summary.benchmark, "bench.fts_tantivy.analysis_workers=2");
-    assert_benchmark_line(&summary.benchmark, "bench.fts_tantivy.indexed_documents=4");
-    assert_benchmark_line(
-        &summary.benchmark,
-        "bench.fts_tantivy.write_mode=fts_content_write_batch",
-    );
-    assert_benchmark_prefix(&summary.benchmark, "bench.fts_tantivy.index_update_ms=");
-
-    let second_summary = FtsTantivyExtractionRunner::run(
-        &writer,
-        &root,
-        &db_path,
-        &index_path,
-        &FtsConfig::default(),
-        FtsExtractionOptions::default(),
-        2,
-    )
-    .await?;
-    assert_eq!(second_summary.indexed_files, 0);
-    assert_eq!(second_summary.files_hashed, 4);
-    assert_eq!(second_summary.files_hash_unchanged, 4);
-    assert_eq!(second_summary.files_changed, 0);
-    assert_eq!(second_summary.stale_fts_documents_closed, 0);
-    assert_benchmark_line(
-        &second_summary.benchmark,
-        "bench.fts_tantivy.index_committed=false",
-    );
-
-    fs::remove_file(root.join("notes.txt"))?;
-    let third_summary = FtsTantivyExtractionRunner::run(
         &writer,
         &root,
         &db_path,
@@ -291,12 +187,8 @@ async fn fts_tantivy_runner_persists_content_without_fts5_and_updates_sidecar()
     let content_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM fts_document_contents")
         .fetch_one(&pool)
         .await?;
-    let trigram_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM fts_document_trigram_ci")
-        .fetch_one(&pool)
-        .await?;
     assert_eq!(active_document_count, 3);
     assert_eq!(content_count, 3);
-    assert_eq!(trigram_count, 0);
 
     let stored_content: String =
         sqlx::query_scalar("SELECT content FROM fts_document_contents WHERE path = 'README.md'")
@@ -308,7 +200,7 @@ async fn fts_tantivy_runner_persists_content_without_fts5_and_updates_sidecar()
     )
     .fetch_one(&pool)
     .await?;
-    assert!(route_tag.contains("fts.tantivy.full_text"));
+    assert!(route_tag.contains("fts.full_text"));
     let artifact_document_count: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM files WHERE path LIKE '.refactor-radar/%'")
             .fetch_one(&pool)
@@ -324,30 +216,19 @@ async fn fts_tantivy_runner_persists_content_without_fts5_and_updates_sidecar()
     Ok(())
 }
 
-async fn assert_candidate(pool: &SqlitePool, pattern: &str) -> Result<(), Box<dyn Error>> {
-    let count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM fts_document_trigram_ci WHERE content LIKE ?")
-            .bind(pattern)
-            .fetch_one(pool)
-            .await?;
-    assert_eq!(count, 1);
-    Ok(())
-}
-
 fn assert_benchmark_line(summary: &BenchmarkSummary, expected: &str) {
+    let lines = summary.lines();
     assert!(
-        summary.lines().iter().any(|line| line == expected),
-        "missing benchmark line {expected}"
+        lines.iter().any(|line| line == expected),
+        "missing benchmark line {expected}; actual lines: {lines:?}"
     );
 }
 
 fn assert_benchmark_prefix(summary: &BenchmarkSummary, expected_prefix: &str) {
+    let lines = summary.lines();
     assert!(
-        summary
-            .lines()
-            .iter()
-            .any(|line| line.starts_with(expected_prefix)),
-        "missing benchmark line with prefix {expected_prefix}"
+        lines.iter().any(|line| line.starts_with(expected_prefix)),
+        "missing benchmark line with prefix {expected_prefix}; actual lines: {lines:?}"
     );
 }
 

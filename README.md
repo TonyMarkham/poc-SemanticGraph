@@ -398,46 +398,51 @@ routes with zero observations and soft-closes active graph facts for that file.
 
 ## Index File Text
 
-Use `fts` to index workspace file contents into the same SQLite database
-without adding semantic nodes or edges:
+Use `fts` to index workspace file contents without adding semantic nodes or
+edges. SQLite stores file identity, document metadata, content hashes, and the
+original UTF-8 text; Tantivy stores the derived search index in a sidecar
+directory next to the database:
 
 ```sh
 ./target/release/semantic-graph-extract fts \
-  --db .local/fts-content.db
-```
-
-The command scans from the current directory, honors `[fts].ignore-directories`
-and `[fts].ignore-files` in `.refactor-radar/config.toml`, stores original
-UTF-8 text in `fts_document_trigram_ci`, and closes stale FTS documents after a
-successful run. Repeated runs hash each discovered file, skip rewriting
-unchanged FTS documents, mark unchanged documents seen in a single write batch,
-and close removed documents at the end of the run. File reads and hashes run
-through a worker pool; pass `--analysis-workers N` to override
-`[extractor].analysis_workers`. Add `--no-rust`, `--no-csharp`, or
-`--no-submodules` to exclude those file sets for the run. The trigram index is
-a candidate source for substrings with at least one three-character sequence;
-one-character and two-character literal searches need a later read-path
-fallback. Text query, MCP, and visualizer integration are separate later work.
-
-Use `fts-tantivy` for the isolated Tantivy POC route. This command requires an
-explicit `--db` so it does not reuse an existing SQLite FTS5 database, stores
-file/document metadata and original UTF-8 text in ordinary SQLite tables, and
-writes the derived search index to a sidecar directory next to the database:
-
-```sh
-./target/release/semantic-graph-extract fts-tantivy \
-  --db .local/fts-tantivy-poc.db \
+  --db .local/fts-content.db \
   --analysis-workers 8
 ```
 
-For `.local/fts-tantivy-poc.db`, the Tantivy index directory is
-`.local/fts-tantivy-poc.tantivy`. The POC route uses the same discovery,
-hashing, unchanged-file skip, stale-document closing, and worker-pool file
-processing as `fts`, but it does not write to SQLite's FTS5 virtual table.
-When those POC artifacts are inside the scanned workspace, the route excludes
-its own SQLite DB sidecars and Tantivy index directory from discovery. Tantivy
-remains a rebuildable sidecar artifact; SQLite remains the source of truth for
-file identity and stored content.
+The equivalent persistent settings live under `[fts]`:
+
+```toml
+[fts]
+db_path = ".refactor-radar/fts.db"
+analysis_workers = 8
+max_indexed_file_bytes = 209715200
+ignore-directories = [
+    "target",
+    "apps/SemanticGraph.Visualizer/src/SemanticGraph.Visualizer.Client/bin",
+    "apps/SemanticGraph.Visualizer/src/SemanticGraph.Visualizer.Client/obj",
+]
+ignore-files = []
+```
+
+For `.local/fts-content.db`, the Tantivy index directory is
+`.local/fts-content.tantivy`.
+
+The command scans from the current directory, honors `[fts].ignore-directories`
+and `[fts].ignore-files` in `.refactor-radar/config.toml`, hashes each
+discovered file, skips rewriting unchanged documents, marks unchanged documents
+seen in a single write batch, and closes removed documents at the end of a
+successful run. File reads and hashes run through a worker pool; pass
+`--analysis-workers N` to override `[fts].analysis_workers`, which falls back
+to `[extractor].analysis_workers` when unset. Pass `--db` to override
+`[fts].db_path`, which is resolved relative to the scanned workspace root and
+falls back to `[database].path` when unset. Add `--no-rust`, `--no-csharp`, or
+`--no-submodules` to exclude those file sets for the run.
+`max_indexed_file_bytes` bounds the largest file read into the FTS index. When
+the SQLite DB or Tantivy sidecar are inside the scanned
+workspace, the route excludes its own artifacts from discovery. Tantivy remains
+a rebuildable sidecar artifact; SQLite remains the source of truth for file
+identity and stored content. Text query, MCP, and visualizer integration are
+separate later work.
 
 ## Visualize A Rust Workspace
 

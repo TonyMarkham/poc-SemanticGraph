@@ -3,33 +3,24 @@ use crate::{
     benchmark::{BenchmarkSummary, Stopwatch},
     document_symbols::paths::file_uri,
     fts::{
-        FTS_PROVIDER, FTS_ROUTE, FTS_SCOPE, FtsDiscoveredFile, FtsExclusionSet,
-        FtsExtractionOptions, FtsExtractionSummary, FtsFileDiscovery, FtsFileWorkResult,
-        FtsFileWorkerJoinHandle, FtsFileWorkerMetric, FtsSkipReason, FtsStartedRun,
+        FTS_PROVIDER, FTS_ROUTE, FTS_SCOPE, FtsExclusionSet, FtsExtractionOptions,
+        FtsExtractionSummary, FtsFileDiscovery, FtsStartedRun,
+        insert_fts_file_worker_metrics_with_prefix, route_content_hash, run_fts_file_workers,
     },
 };
 
 use semantic_graph_config::FtsConfig;
 use semantic_graph_db_manager::{
-    CloseStaleFtsDocumentsInput, FtsWriteBatchDocumentInput, FtsWriteBatchInput,
-    FtsWriteBatchSeenDocumentInput, RouteStatusCompleteInput, RouteStatusFailInput,
-    RouteStatusStartInput, WriteHandle,
+    CloseStaleFtsDocumentsInput, FtsWriteBatchInput, RouteStatusCompleteInput,
+    RouteStatusFailInput, RouteStatusStartInput, WriteHandle,
 };
+use semantic_graph_search_tantivy::{TantivyFtsDocument, TantivyFtsIndex, TantivyFtsIndexUpdate};
 use serde_json::json;
-use sha2::Digest;
 use std::{
-    collections::{HashMap, VecDeque},
-    fs,
-    path::Path,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
+    collections::{HashMap, HashSet},
+    path::{Component, Path},
     time::Duration,
 };
-use tokio::task::JoinError;
-
-const MAX_INDEXED_FILE_BYTES: u64 = 10 * 1024 * 1024;
 
 pub struct FtsExtractionRunner;
 
@@ -37,13 +28,15 @@ impl FtsExtractionRunner {
     pub async fn run(
         store: &WriteHandle,
         workspace_root: &Path,
+        db_path: &Path,
+        index_path: &Path,
         config: &FtsConfig,
         options: FtsExtractionOptions,
         analysis_workers: usize,
     ) -> ExtractResult<FtsExtractionSummary> {
         let total_timer = Stopwatch::start_new();
         let mut benchmark = BenchmarkSummary::new();
-        benchmark.insert_label("fts.execution_mode", "file_content_index");
+        benchmark.insert_label("fts.execution_mode", "file_content_tantivy_index");
         benchmark.insert_label("fts.route", FTS_ROUTE);
         benchmark.insert_label("fts.scope", FTS_SCOPE);
 
@@ -77,6 +70,8 @@ impl FtsExtractionRunner {
         let result = Self::run_started(
             store,
             &workspace_root,
+            db_path,
+            index_path,
             FtsStartedRun {
                 workspace_root_uri: workspace_root_uri.clone(),
                 workspace_id,
@@ -114,12 +109,22 @@ impl FtsExtractionRunner {
     async fn run_started(
         store: &WriteHandle,
         workspace_root: &Path,
+        db_path: &Path,
+        index_path: &Path,
         started_run: FtsStartedRun,
         config: &FtsConfig,
         options: FtsExtractionOptions,
     ) -> ExtractResult<FtsExtractionSummary> {
         let analysis_workers = started_run.analysis_workers.max(1);
+        let max_indexed_file_bytes = config.max_indexed_file_bytes();
         let mut benchmark = BenchmarkSummary::new();
+        benchmark.insert_count("fts.analysis_workers", analysis_workers);
+        benchmark.insert_label(
+            "fts.max_indexed_file_bytes",
+            max_indexed_file_bytes.to_string(),
+        );
+        benchmark.insert_label("fts.index_path", index_path.to_string_lossy().to_string());
+
         let route_start_timer = Stopwatch::start_new();
         store
             .start_route_status(RouteStatusStartInput {
@@ -139,7 +144,15 @@ impl FtsExtractionRunner {
         benchmark.insert_duration_ms("fts.route_start", route_start_timer.elapsed());
 
         let discovery_timer = Stopwatch::start_new();
-        let exclusions = FtsExclusionSet::new(workspace_root, config, options)?;
+        let (runtime_excluded_directories, runtime_excluded_files) =
+            runtime_artifact_exclusions(workspace_root, db_path, index_path);
+        benchmark.insert_count(
+            "fts.runtime_excluded_directories",
+            runtime_excluded_directories.len(),
+        );
+        benchmark.insert_count("fts.runtime_excluded_files", runtime_excluded_files.len());
+        let exclusions = FtsExclusionSet::new(workspace_root, config, options)?
+            .with_runtime_exclusions(runtime_excluded_directories, runtime_excluded_files);
         let discovery = FtsFileDiscovery::discover(workspace_root, &exclusions)?;
         benchmark.insert_duration_ms("fts.discovery", discovery_timer.elapsed());
         let mut summary = FtsExtractionSummary {
@@ -180,7 +193,21 @@ impl FtsExtractionRunner {
         benchmark.insert_duration_ms("fts.active_hash_lookup", active_hash_lookup_timer.elapsed());
         benchmark.insert_count("fts.active_hashes", active_fts_document_hashes.len());
 
+        let index_exists = index_path.join("meta.json").exists();
+        benchmark.insert_label("fts.index_exists", index_exists.to_string());
+        let active_document_uris = active_fts_document_hashes
+            .keys()
+            .cloned()
+            .collect::<HashSet<_>>();
+        let worker_active_hashes = if index_exists {
+            active_fts_document_hashes
+        } else {
+            HashMap::new()
+        };
+
         let mut batch = FtsWriteBatchInput::default();
+        let mut tantivy_documents = Vec::new();
+        let mut current_document_uris = HashSet::new();
         let mut fingerprint_entries = Vec::new();
         let mut indexed_bytes = 0usize;
         let mut file_read_elapsed = Duration::from_millis(0);
@@ -190,10 +217,11 @@ impl FtsExtractionRunner {
         let file_processing_timer = Stopwatch::start_new();
         let (file_results, worker_metrics) = run_fts_file_workers(
             discovery.files().to_vec(),
-            active_fts_document_hashes,
+            worker_active_hashes,
             started_run.workspace_id,
             started_run.run_id,
             analysis_workers,
+            max_indexed_file_bytes,
             FTS_ROUTE,
         )
         .await?;
@@ -209,10 +237,19 @@ impl FtsExtractionRunner {
                 summary.files_hashed += 1;
             }
             if let Some(seen_document) = result.seen_document {
+                current_document_uris.insert(seen_document.uri.clone());
                 batch.seen_documents.push(seen_document);
                 summary.files_hash_unchanged += 1;
             }
             if let Some(document) = result.document {
+                current_document_uris.insert(document.uri.clone());
+                tantivy_documents.push(TantivyFtsDocument {
+                    uri: document.uri.clone(),
+                    path: document.path.clone(),
+                    language: document.language.clone(),
+                    content_hash: document.content_hash.clone(),
+                    content: document.content.clone(),
+                });
                 batch.documents.push(document);
                 summary.count_indexed_file();
                 summary.files_changed += 1;
@@ -220,11 +257,46 @@ impl FtsExtractionRunner {
             }
         }
         benchmark.insert_duration_ms("fts.file_processing", file_processing_timer.elapsed());
-        insert_fts_file_worker_metrics(&mut benchmark, &worker_metrics);
-        benchmark.insert_count("fts.analysis_workers", analysis_workers);
+        insert_fts_file_worker_metrics_with_prefix(&mut benchmark, "fts", &worker_metrics);
         benchmark.insert_duration_ms("fts.file_read", file_read_elapsed);
         benchmark.insert_duration_ms("fts.file_hash", file_hash_elapsed);
         benchmark.insert_duration_ms("fts.file_uri", file_uri_elapsed);
+
+        let mut deleted_uris = active_document_uris
+            .difference(&current_document_uris)
+            .cloned()
+            .collect::<Vec<_>>();
+        deleted_uris.sort();
+
+        let tantivy_update_timer = Stopwatch::start_new();
+        let tantivy_index = TantivyFtsIndex::open_or_create(index_path)
+            .map_err(|source| ExtractError::tantivy_search("open fts tantivy index", source))?;
+        let tantivy_update_summary = tantivy_index
+            .apply_update(TantivyFtsIndexUpdate {
+                documents: tantivy_documents,
+                deleted_uris,
+                indexing_workers: analysis_workers,
+            })
+            .map_err(|source| ExtractError::tantivy_search("update fts tantivy index", source))?;
+        benchmark.insert_duration_ms("fts.index_update", tantivy_update_timer.elapsed());
+        benchmark.insert_count(
+            "fts.indexed_documents",
+            tantivy_update_summary.indexed_documents,
+        );
+        benchmark.insert_count("fts.deleted_uris", tantivy_update_summary.deleted_uris);
+        benchmark.insert_label(
+            "fts.index_committed",
+            tantivy_update_summary.committed.to_string(),
+        );
+        benchmark.insert_count(
+            "fts.indexing_workers",
+            tantivy_update_summary.indexing_workers,
+        );
+        benchmark.insert_count(
+            "fts.index_memory_budget_bytes",
+            tantivy_update_summary.memory_budget_bytes,
+        );
+
         let write_batch_timer = Stopwatch::start_new();
         store
             .write_fts_batch(batch)
@@ -309,323 +381,45 @@ impl FtsExtractionRunner {
     }
 }
 
-pub(crate) async fn run_fts_file_workers(
-    files: Vec<FtsDiscoveredFile>,
-    active_fts_document_hashes: HashMap<String, String>,
-    workspace_id: i64,
-    run_id: i64,
-    analysis_workers: usize,
-    route: &'static str,
-) -> ExtractResult<(Vec<FtsFileWorkResult>, Vec<FtsFileWorkerMetric>)> {
-    if files.is_empty() {
-        return Ok((Vec::new(), Vec::new()));
+fn runtime_artifact_exclusions(
+    workspace_root: &Path,
+    db_path: &Path,
+    index_path: &Path,
+) -> (Vec<String>, Vec<String>) {
+    let mut directories = Vec::new();
+    let mut files = Vec::new();
+
+    if let Some(index_relative_path) = workspace_relative_artifact_path(workspace_root, index_path)
+    {
+        directories.push(index_relative_path);
+    }
+    if let Some(db_relative_path) = workspace_relative_artifact_path(workspace_root, db_path) {
+        files.push(db_relative_path.clone());
+        files.push(format!("{db_relative_path}-journal"));
+        files.push(format!("{db_relative_path}-shm"));
+        files.push(format!("{db_relative_path}-wal"));
     }
 
-    let worker_count = analysis_workers.max(1).min(files.len());
-    let queue = Arc::new(Mutex::new(VecDeque::from(files)));
-    let active_hashes = Arc::new(active_fts_document_hashes);
-    let failed = Arc::new(AtomicBool::new(false));
-    let mut handles = Vec::with_capacity(worker_count);
-
-    for worker_index in 0..worker_count {
-        let worker_queue = Arc::clone(&queue);
-        let worker_active_hashes = Arc::clone(&active_hashes);
-        let worker_failed = Arc::clone(&failed);
-        let worker_failed_for_result = Arc::clone(&worker_failed);
-        handles.push(tokio::task::spawn_blocking(move || {
-            let result = fts_file_worker(
-                worker_index,
-                worker_queue,
-                worker_active_hashes,
-                worker_failed,
-                workspace_id,
-                run_id,
-                route,
-            );
-            if result.is_err() {
-                worker_failed_for_result.store(true, Ordering::SeqCst);
-            }
-            result
-        }));
-    }
-
-    collect_fts_file_workers(handles).await
+    (directories, files)
 }
 
-fn fts_file_worker(
-    worker_index: usize,
-    queue: Arc<Mutex<VecDeque<FtsDiscoveredFile>>>,
-    active_fts_document_hashes: Arc<HashMap<String, String>>,
-    failed: Arc<AtomicBool>,
-    workspace_id: i64,
-    run_id: i64,
-    route: &'static str,
-) -> ExtractResult<(Vec<FtsFileWorkResult>, FtsFileWorkerMetric)> {
-    let timer = Stopwatch::start_new();
-    let mut results = Vec::new();
-    let mut files = 0;
-    let mut files_hashed = 0;
-    let mut files_changed = 0;
-    let mut files_hash_unchanged = 0;
-    let mut skipped_binary_or_unreadable = 0;
-
-    loop {
-        if failed.load(Ordering::SeqCst) {
-            return Ok((
-                results,
-                FtsFileWorkerMetric {
-                    worker_index,
-                    files,
-                    files_hashed,
-                    files_changed,
-                    files_hash_unchanged,
-                    skipped_binary_or_unreadable,
-                    elapsed: timer.elapsed(),
-                },
-            ));
-        }
-
-        let file = {
-            let mut queue = queue.lock().map_err(|error| {
-                ExtractError::process(
-                    "semantic-graph-extract",
-                    "fts worker queue",
-                    error.to_string(),
-                )
-            })?;
-            queue.pop_front()
-        };
-        let Some(file) = file else {
-            return Ok((
-                results,
-                FtsFileWorkerMetric {
-                    worker_index,
-                    files,
-                    files_hashed,
-                    files_changed,
-                    files_hash_unchanged,
-                    skipped_binary_or_unreadable,
-                    elapsed: timer.elapsed(),
-                },
-            ));
-        };
-
-        files += 1;
-        let result = process_fts_file(
-            &file,
-            &active_fts_document_hashes,
-            workspace_id,
-            run_id,
-            route,
-        )?;
-        if result.fingerprint_entry.is_some() {
-            files_hashed += 1;
-        }
-        if result.document.is_some() {
-            files_changed += 1;
-        }
-        if result.seen_document.is_some() {
-            files_hash_unchanged += 1;
-        }
-        if result.skip_reason == Some(FtsSkipReason::BinaryOrUnreadable) {
-            skipped_binary_or_unreadable += 1;
-        }
-        results.push(result);
-    }
-}
-
-async fn collect_fts_file_workers(
-    handles: Vec<FtsFileWorkerJoinHandle>,
-) -> ExtractResult<(Vec<FtsFileWorkResult>, Vec<FtsFileWorkerMetric>)> {
-    let mut file_results = Vec::new();
-    let mut worker_metrics = Vec::new();
-    let mut first_error = None;
-
-    for handle in handles {
-        match handle.await {
-            Ok(Ok((mut worker_results, worker_metric))) => {
-                file_results.append(&mut worker_results);
-                worker_metrics.push(worker_metric);
-            }
-            Ok(Err(error)) => {
-                if first_error.is_none() {
-                    first_error = Some(error);
-                }
-            }
-            Err(error) => {
-                if first_error.is_none() {
-                    first_error = Some(worker_join_error("fts.file_processing", error));
-                }
-            }
-        }
+fn workspace_relative_artifact_path(workspace_root: &Path, artifact_path: &Path) -> Option<String> {
+    if !artifact_path.is_absolute()
+        && artifact_path
+            .components()
+            .any(|component| component == Component::ParentDir)
+    {
+        return None;
     }
 
-    match first_error {
-        Some(error) => Err(error),
-        None => {
-            worker_metrics.sort_by_key(|metric| metric.worker_index);
-            Ok((file_results, worker_metrics))
-        }
-    }
-}
-
-fn process_fts_file(
-    file: &FtsDiscoveredFile,
-    active_fts_document_hashes: &HashMap<String, String>,
-    workspace_id: i64,
-    run_id: i64,
-    route: &str,
-) -> ExtractResult<FtsFileWorkResult> {
-    let file_read_timer = Stopwatch::start_new();
-    let text = match read_indexable_text(file.absolute_path())? {
-        Ok(text) => text,
-        Err(reason) => {
-            return Ok(FtsFileWorkResult::skipped(
-                reason,
-                file_read_timer.elapsed(),
-            ));
-        }
+    let absolute_path = if artifact_path.is_absolute() {
+        artifact_path.to_path_buf()
+    } else {
+        workspace_root.join(artifact_path)
     };
-    let file_read_elapsed = file_read_timer.elapsed();
-
-    let file_hash_timer = Stopwatch::start_new();
-    let content_hash = sha256_hex(text.as_bytes());
-    let file_hash_elapsed = file_hash_timer.elapsed();
-    let text_len = text.len();
-
-    let file_uri_timer = Stopwatch::start_new();
-    let file_uri = file_uri(file.absolute_path())?;
-    let file_uri_elapsed = file_uri_timer.elapsed();
-    let fingerprint_entry = Some(format!("{}:{content_hash}", file.relative_path()));
-
-    if active_fts_document_hashes.get(&file_uri) == Some(&content_hash) {
-        return Ok(FtsFileWorkResult {
-            document: None,
-            seen_document: Some(FtsWriteBatchSeenDocumentInput {
-                workspace_id,
-                uri: file_uri,
-                content_hash,
-                run_id,
-            }),
-            fingerprint_entry,
-            skip_reason: None,
-            indexed_bytes: 0,
-            file_read_elapsed,
-            file_hash_elapsed,
-            file_uri_elapsed,
-        });
-    }
-
-    Ok(FtsFileWorkResult {
-        document: Some(FtsWriteBatchDocumentInput {
-            workspace_id,
-            uri: file_uri,
-            path: file.relative_path().to_string(),
-            language: file.language().as_str().to_string(),
-            content_hash,
-            byte_len: text_len as i64,
-            run_id,
-            content: text,
-            properties_json: json!({ "route": route }),
-        }),
-        seen_document: None,
-        fingerprint_entry,
-        skip_reason: None,
-        indexed_bytes: text_len,
-        file_read_elapsed,
-        file_hash_elapsed,
-        file_uri_elapsed,
-    })
-}
-
-pub(crate) fn insert_fts_file_worker_metrics(
-    benchmark: &mut BenchmarkSummary,
-    worker_metrics: &[FtsFileWorkerMetric],
-) {
-    insert_fts_file_worker_metrics_with_prefix(benchmark, "fts", worker_metrics);
-}
-
-pub(crate) fn insert_fts_file_worker_metrics_with_prefix(
-    benchmark: &mut BenchmarkSummary,
-    prefix: &str,
-    worker_metrics: &[FtsFileWorkerMetric],
-) {
-    benchmark.insert_count(&format!("{prefix}.file_workers"), worker_metrics.len());
-    benchmark.insert_count(
-        &format!("{prefix}.file_active_workers"),
-        worker_metrics
-            .iter()
-            .filter(|metric| metric.files > 0)
-            .count(),
-    );
-
-    for metric in worker_metrics {
-        let worker_prefix = format!("{prefix}.worker.{}", metric.worker_index);
-        benchmark.insert_count(&format!("{worker_prefix}.files"), metric.files);
-        benchmark.insert_count(
-            &format!("{worker_prefix}.files_hashed"),
-            metric.files_hashed,
-        );
-        benchmark.insert_count(
-            &format!("{worker_prefix}.files_changed"),
-            metric.files_changed,
-        );
-        benchmark.insert_count(
-            &format!("{worker_prefix}.files_hash_unchanged"),
-            metric.files_hash_unchanged,
-        );
-        benchmark.insert_count(
-            &format!("{worker_prefix}.skipped_binary_or_unreadable"),
-            metric.skipped_binary_or_unreadable,
-        );
-        benchmark.insert_duration_ms(&format!("{worker_prefix}.elapsed"), metric.elapsed);
-    }
-}
-
-fn read_indexable_text(path: &Path) -> ExtractResult<Result<String, FtsSkipReason>> {
-    let metadata = match fs::metadata(path) {
-        Ok(metadata) => metadata,
-        Err(_error) => {
-            return Ok(Err(FtsSkipReason::BinaryOrUnreadable));
-        }
-    };
-    if metadata.len() > MAX_INDEXED_FILE_BYTES {
-        return Ok(Err(FtsSkipReason::BinaryOrUnreadable));
-    }
-
-    let bytes = match fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(_error) => {
-            return Ok(Err(FtsSkipReason::BinaryOrUnreadable));
-        }
-    };
-    if bytes.contains(&0) {
-        return Ok(Err(FtsSkipReason::BinaryOrUnreadable));
-    }
-
-    match String::from_utf8(bytes) {
-        Ok(text) => Ok(Ok(text)),
-        Err(_error) => Ok(Err(FtsSkipReason::BinaryOrUnreadable)),
-    }
-}
-
-fn worker_join_error(route: &str, error: JoinError) -> ExtractError {
-    ExtractError::process("semantic-graph-extract", route, error.to_string())
-}
-
-pub(crate) fn route_content_hash(mut entries: Vec<String>) -> String {
-    entries.sort();
-    let mut hasher = sha2::Sha256::new();
-    for entry in entries {
-        hasher.update(entry.as_bytes());
-        hasher.update(b"\n");
-    }
-
-    hex::encode(hasher.finalize())
-}
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    let mut hasher = sha2::Sha256::new();
-    hasher.update(bytes);
-    hex::encode(hasher.finalize())
+    absolute_path
+        .strip_prefix(workspace_root)
+        .ok()
+        .map(crate::fts::normalize_relative_path)
+        .filter(|relative_path| !relative_path.is_empty())
 }

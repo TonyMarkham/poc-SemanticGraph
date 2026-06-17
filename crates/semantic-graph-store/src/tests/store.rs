@@ -200,23 +200,12 @@ async fn migration_creates_empty_core_schema() -> Result<(), Box<dyn Error>> {
         SELECT COUNT(*)
         FROM sqlite_master
         WHERE type = 'table'
-          AND name IN ('fts_documents', 'fts_document_trigram_ci')
+          AND name IN ('fts_documents', 'fts_document_contents')
         "#,
     )
     .fetch_one(&pool)
     .await?;
     assert_eq!(fts_table_count, 2);
-    let trigram_sql: String = sqlx::query_scalar(
-        r#"
-        SELECT sql
-        FROM sqlite_master
-        WHERE type = 'table'
-          AND name = 'fts_document_trigram_ci'
-        "#,
-    )
-    .fetch_one(&pool)
-    .await?;
-    assert!(trigram_sql.contains("trigram case_sensitive 0"));
 
     Ok(())
 }

@@ -191,10 +191,6 @@ impl WriteWorker {
                 let result = run_write_command!(self, self.upsert_file(input));
                 self.send_write_response(response, result).await;
             }
-            Commands::UpsertFtsDocument { input, response } => {
-                let result = run_write_command!(self, self.upsert_fts_document(input));
-                self.send_write_response(response, result).await;
-            }
             Commands::UpsertNode { input, response } => {
                 let result = run_write_command!(self, self.upsert_node(input));
                 self.send_write_response(response, result).await;
@@ -237,10 +233,6 @@ impl WriteWorker {
             }
             Commands::WriteFtsBatch { input, response } => {
                 let result = run_write_command!(self, self.write_fts_batch(input));
-                self.send_write_response(response, result).await;
-            }
-            Commands::WriteFtsContentBatch { input, response } => {
-                let result = run_write_command!(self, self.write_fts_content_batch(input));
                 self.send_write_response(response, result).await;
             }
             Commands::CloseStaleNodesForRoute { input, response } => {
@@ -707,40 +699,6 @@ impl WriteWorker {
         .map_err(DbManagerError::database)?;
 
         Ok(())
-    }
-
-    async fn upsert_fts_document(&self, input: OwnedFtsDocumentInput) -> DbManagerResult<i64> {
-        let document_id = self.upsert_fts_document_metadata(&input).await?;
-        self.upsert_fts_document_content(document_id, &input)
-            .await?;
-
-        sqlx::query("DELETE FROM fts_document_trigram_ci WHERE document_id = ?")
-            .bind(document_id)
-            .execute(&self.pool)
-            .await
-            .map_err(DbManagerError::database)?;
-        sqlx::query(
-            r#"
-            INSERT INTO fts_document_trigram_ci (
-              document_id,
-              file_id,
-              path,
-              language,
-              content
-            )
-            VALUES (?, ?, ?, ?, ?)
-            "#,
-        )
-        .bind(document_id)
-        .bind(input.file_id)
-        .bind(&input.path)
-        .bind(&input.language)
-        .bind(&input.content)
-        .execute(&self.pool)
-        .await
-        .map_err(DbManagerError::database)?;
-
-        Ok(document_id)
     }
 
     async fn upsert_node(&self, input: OwnedNodeInput) -> DbManagerResult<String> {
@@ -1376,17 +1334,6 @@ impl WriteWorker {
         Ok(())
     }
 
-    async fn write_fts_content_batch(&self, input: FtsWriteBatchInput) -> DbManagerResult<()> {
-        for seen_document in input.seen_documents {
-            self.mark_fts_document_seen(seen_document).await?;
-        }
-        for document in input.documents {
-            self.upsert_fts_content_batch_document(document).await?;
-        }
-
-        Ok(())
-    }
-
     async fn mark_fts_document_seen(
         &self,
         input: FtsWriteBatchSeenDocumentInput,
@@ -1436,36 +1383,6 @@ impl WriteWorker {
     }
 
     async fn upsert_fts_batch_document(
-        &self,
-        input: FtsWriteBatchDocumentInput,
-    ) -> DbManagerResult<i64> {
-        let file_id = self
-            .upsert_file(OwnedFileInput {
-                workspace_id: input.workspace_id,
-                uri: input.uri,
-                path: input.path.clone(),
-                language: input.language.clone(),
-                content_hash: Some(input.content_hash.clone()),
-                last_seen_run_id: Some(input.run_id),
-                properties_json: input.properties_json.clone(),
-            })
-            .await?;
-
-        self.upsert_fts_document(OwnedFtsDocumentInput {
-            workspace_id: input.workspace_id,
-            file_id,
-            path: input.path,
-            language: input.language,
-            content_hash: input.content_hash,
-            byte_len: input.byte_len,
-            run_id: input.run_id,
-            content: input.content,
-            properties_json: input.properties_json,
-        })
-        .await
-    }
-
-    async fn upsert_fts_content_batch_document(
         &self,
         input: FtsWriteBatchDocumentInput,
     ) -> DbManagerResult<i64> {
@@ -1977,11 +1894,6 @@ impl WriteWorker {
         .map_err(DbManagerError::database)?;
 
         for document_id in &stale_document_ids {
-            sqlx::query("DELETE FROM fts_document_trigram_ci WHERE document_id = ?")
-                .bind(document_id)
-                .execute(&self.pool)
-                .await
-                .map_err(DbManagerError::database)?;
             sqlx::query("DELETE FROM fts_document_contents WHERE document_id = ?")
                 .bind(document_id)
                 .execute(&self.pool)

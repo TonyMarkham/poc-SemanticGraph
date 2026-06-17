@@ -27,8 +27,8 @@ use crate::{
 };
 
 use semantic_graph_config::{
-    CSharpConfig, LoadOptions, discover_config, ensure_config_with_csharp_defaults, load_config,
-    resolve_database_path,
+    CSharpConfig, FtsConfig, LoadOptions, discover_config, ensure_config_with_csharp_defaults,
+    load_config, resolve_database_path,
 };
 
 use std::{
@@ -49,6 +49,48 @@ pub fn resolve_cli_database_path(
     })
     .map(|resolved| resolved.into_path())
     .map_err(ExtractError::config)
+}
+
+pub fn resolve_cli_fts_database_path(
+    db: Option<PathBuf>,
+    config: &Option<PathBuf>,
+    workspace_root: &Path,
+    fts_config: &FtsConfig,
+) -> ExtractResult<PathBuf> {
+    if db.is_some() {
+        return resolve_cli_database_path(db, config, workspace_root);
+    }
+
+    let Some(fts_db_path) = fts_config.db_path() else {
+        return resolve_cli_database_path(None, config, workspace_root);
+    };
+    if fts_db_path.is_absolute() {
+        return Ok(fts_db_path.clone());
+    }
+
+    Ok(workspace_root.join(fts_db_path))
+}
+
+pub fn resolve_cli_fts_analysis_workers(
+    config: &Option<PathBuf>,
+    workspace_root: &Path,
+    analysis_workers: Option<usize>,
+    fts_config: &FtsConfig,
+) -> ExtractResult<usize> {
+    if let Some(analysis_workers) = analysis_workers {
+        return Ok(analysis_workers);
+    }
+    if let Some(analysis_workers) = fts_config.analysis_workers() {
+        return Ok(analysis_workers);
+    }
+
+    let config_path = resolve_cli_config_path(config, workspace_root)?;
+    let Some(config_path) = config_path else {
+        return Ok(1);
+    };
+
+    let config = load_config(config_path).map_err(ExtractError::config)?;
+    Ok(config.extractor().analysis_workers().unwrap_or(1))
 }
 
 pub fn resolve_rust_file_mode(
@@ -76,6 +118,16 @@ pub fn resolve_rust_file_mode(
         Ok(RustFileMode::Symbols)
     } else {
         Ok(RustFileMode::Full)
+    }
+}
+
+fn resolve_cli_config_path(
+    config: &Option<PathBuf>,
+    workspace_root: &Path,
+) -> ExtractResult<Option<PathBuf>> {
+    match config {
+        Some(path) => Ok(Some(path.clone())),
+        None => discover_config(workspace_root).map_err(ExtractError::config),
     }
 }
 

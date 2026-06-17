@@ -73,6 +73,9 @@ max_shortest_path_depth = 12
 max_shortest_path_visited = 5000
 
 [fts]
+db_path = ".refactor-radar/fts.db"
+analysis_workers = 8
+max_indexed_file_bytes = 209715200
 ignore-directories = []
 ignore-files = []
 
@@ -86,7 +89,13 @@ startup_timeout_ms = 120000
 request_timeout_ms = 30000
 "#;
 const FTS_TABLE_HEADER: &str = "[fts]";
-const FTS_DEFAULT_LINES: [(&str, &str); 2] = [
+const FTS_DEFAULT_LINES: [(&str, &str); 5] = [
+    ("db_path", "db_path = \".refactor-radar/fts.db\""),
+    ("analysis_workers", "analysis_workers = 8"),
+    (
+        "max_indexed_file_bytes",
+        "max_indexed_file_bytes = 209715200",
+    ),
     ("ignore-directories", "ignore-directories = []"),
     ("ignore-files", "ignore-files = []"),
 ];

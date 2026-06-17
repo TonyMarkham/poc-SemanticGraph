@@ -44,6 +44,9 @@ fn parses_valid_config() -> Result<(), Box<dyn Error>> {
     assert_eq!(config.csharp().analysis_workers(), 1);
     assert_eq!(config.csharp().startup_timeout_ms(), 120000);
     assert_eq!(config.csharp().request_timeout_ms(), 30000);
+    assert_eq!(config.fts().db_path(), None);
+    assert_eq!(config.fts().analysis_workers(), None);
+    assert_eq!(config.fts().max_indexed_file_bytes(), 209715200);
     assert_eq!(config.fts().ignore_directories(), &[] as &[String]);
     assert_eq!(config.fts().ignore_files(), &[] as &[String]);
     Ok(())
@@ -353,6 +356,9 @@ fn parses_fts_config() -> Result<(), Box<dyn Error>> {
 path = ".local/test.db"
 
 [fts]
+db_path = ".refactor-radar/fts.db"
+analysis_workers = 6
+max_indexed_file_bytes = 123456
 ignore-directories = ["target", "submodules\\graphify", "target"]
 ignore-files = ["README.md", "docs\\plan.md"]
 "#,
@@ -361,6 +367,12 @@ ignore-files = ["README.md", "docs\\plan.md"]
     let config = load_config(&config_path)?;
 
     assert_eq!(
+        config.fts().db_path(),
+        Some(&PathBuf::from(".refactor-radar/fts.db"))
+    );
+    assert_eq!(config.fts().analysis_workers(), Some(6));
+    assert_eq!(config.fts().max_indexed_file_bytes(), 123456);
+    assert_eq!(
         config.fts().ignore_directories(),
         &["submodules/graphify".to_string(), "target".to_string()]
     );
@@ -368,6 +380,48 @@ ignore-files = ["README.md", "docs\\plan.md"]
         config.fts().ignore_files(),
         &["README.md".to_string(), "docs/plan.md".to_string()]
     );
+    Ok(())
+}
+
+#[test]
+fn rejects_invalid_fts_limits() -> Result<(), Box<dyn Error>> {
+    let root = temp_dir("rejects-invalid-fts-limits")?;
+    let config_dir = root.join(".refactor-radar");
+    fs::create_dir_all(&config_dir)?;
+    let config_path = config_dir.join("config.toml");
+    fs::write(
+        &config_path,
+        r#"
+[database]
+path = ".local/test.db"
+
+[fts]
+analysis_workers = 0
+"#,
+    )?;
+
+    let error = load_config(&config_path)
+        .err()
+        .ok_or("expected config error")?;
+
+    assert!(matches!(error, ConfigError::InvalidFtsSetting { .. }));
+
+    fs::write(
+        &config_path,
+        r#"
+[database]
+path = ".local/test.db"
+
+[fts]
+max_indexed_file_bytes = 0
+"#,
+    )?;
+
+    let error = load_config(&config_path)
+        .err()
+        .ok_or("expected config error")?;
+
+    assert!(matches!(error, ConfigError::InvalidFtsSetting { .. }));
     Ok(())
 }
 
@@ -551,6 +605,9 @@ fn creates_default_config_template_when_missing() -> Result<(), Box<dyn Error>> 
     assert!(contents.contains("[writer]"));
     assert!(contents.contains("[query-service]"));
     assert!(contents.contains("[fts]"));
+    assert!(contents.contains("db_path = \".refactor-radar/fts.db\""));
+    assert!(contents.contains("analysis_workers = 8"));
+    assert!(contents.contains("max_indexed_file_bytes = 209715200"));
     assert!(contents.contains("[csharp]"));
     assert!(contents.contains("ignore-directories = []"));
     assert!(contents.contains("ignore-files = []"));

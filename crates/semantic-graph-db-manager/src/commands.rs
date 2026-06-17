@@ -4,9 +4,9 @@ use crate::{
     WriteSummary,
     models::{
         OwnedCloseStaleFileInput, OwnedCloseStaleFtsDocumentsInput, OwnedCloseStaleRouteInput,
-        OwnedEdgeEvidenceInput, OwnedEdgeInput, OwnedFileInput, OwnedFtsDocumentInput,
-        OwnedNodeInput, OwnedOccurrenceInput, OwnedRouteObservationInput,
-        OwnedRouteStatusCompleteInput, OwnedRouteStatusFailInput, OwnedRouteStatusStartInput,
+        OwnedEdgeEvidenceInput, OwnedEdgeInput, OwnedFileInput, OwnedNodeInput,
+        OwnedOccurrenceInput, OwnedRouteObservationInput, OwnedRouteStatusCompleteInput,
+        OwnedRouteStatusFailInput, OwnedRouteStatusStartInput,
     },
 };
 
@@ -66,10 +66,6 @@ pub(crate) enum Commands {
         input: OwnedFileInput,
         response: oneshot::Sender<DbManagerResult<i64>>,
     },
-    UpsertFtsDocument {
-        input: OwnedFtsDocumentInput,
-        response: oneshot::Sender<DbManagerResult<i64>>,
-    },
     UpsertNode {
         input: OwnedNodeInput,
         response: oneshot::Sender<DbManagerResult<String>>,
@@ -111,10 +107,6 @@ pub(crate) enum Commands {
         response: oneshot::Sender<DbManagerResult<DocumentSymbolWriteBatchSummary>>,
     },
     WriteFtsBatch {
-        input: FtsWriteBatchInput,
-        response: oneshot::Sender<DbManagerResult<()>>,
-    },
-    WriteFtsContentBatch {
         input: FtsWriteBatchInput,
         response: oneshot::Sender<DbManagerResult<()>>,
     },
@@ -161,7 +153,6 @@ impl Commands {
             Self::StartRun { .. } => "start_run",
             Self::FinishRun { .. } => "finish_run",
             Self::UpsertFile { .. } => "upsert_file",
-            Self::UpsertFtsDocument { .. } => "upsert_fts_document",
             Self::UpsertNode { .. } => "upsert_node",
             Self::UpsertEdge { .. } => "upsert_edge",
             Self::InsertOccurrence { .. } => "insert_occurrence",
@@ -173,7 +164,6 @@ impl Commands {
             Self::WriteRouteBatch { .. } => "write_route_batch",
             Self::WriteDocumentSymbolBatch { .. } => "write_document_symbol_batch",
             Self::WriteFtsBatch { .. } => "write_fts_batch",
-            Self::WriteFtsContentBatch { .. } => "write_fts_content_batch",
             Self::CloseStaleNodesForRoute { .. } => "close_stale_nodes_for_route",
             Self::CloseStaleFile { .. } => "close_stale_file",
             Self::CloseStaleFtsDocumentsForWorkspace { .. } => {

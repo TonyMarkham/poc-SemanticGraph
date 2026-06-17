@@ -1,10 +1,10 @@
 use crate::{
     ActiveFileSymbols, CloseStaleFileInput, CloseStaleFtsDocumentsInput, CloseStaleRouteInput,
     DbManagerError, DbManagerResult, DemoSeedSummary, DocumentSymbolWriteBatchInput,
-    DocumentSymbolWriteBatchSummary, EdgeEvidenceInput, EdgeInput, FileInput, FtsDocumentInput,
-    FtsWriteBatchInput, NodeInput, OccurrenceInput, RouteObservationInput,
-    RouteStatusCompleteInput, RouteStatusFailInput, RouteStatusStartInput, RouteWriteBatchInput,
-    StaleFileSummary, WriteProgress, WriteSummary, commands::Commands,
+    DocumentSymbolWriteBatchSummary, EdgeEvidenceInput, EdgeInput, FileInput, FtsWriteBatchInput,
+    NodeInput, OccurrenceInput, RouteObservationInput, RouteStatusCompleteInput,
+    RouteStatusFailInput, RouteStatusStartInput, RouteWriteBatchInput, StaleFileSummary,
+    WriteProgress, WriteSummary, commands::Commands,
 };
 
 use std::collections::HashMap;
@@ -181,17 +181,6 @@ impl WriteHandle {
         receiver.await?
     }
 
-    pub async fn upsert_fts_document(&self, input: FtsDocumentInput<'_>) -> DbManagerResult<i64> {
-        let (response, receiver) = oneshot::channel();
-        self.sender
-            .send(Commands::UpsertFtsDocument {
-                input: input.into(),
-                response,
-            })
-            .await?;
-        receiver.await?
-    }
-
     pub async fn upsert_node(&self, input: NodeInput<'_>) -> DbManagerResult<String> {
         let (response, receiver) = oneshot::channel();
         self.sender
@@ -312,14 +301,6 @@ impl WriteHandle {
         let (response, receiver) = oneshot::channel();
         self.sender
             .send(Commands::WriteFtsBatch { input, response })
-            .await?;
-        receiver.await?
-    }
-
-    pub async fn write_fts_content_batch(&self, input: FtsWriteBatchInput) -> DbManagerResult<()> {
-        let (response, receiver) = oneshot::channel();
-        self.sender
-            .send(Commands::WriteFtsContentBatch { input, response })
             .await?;
         receiver.await?
     }
