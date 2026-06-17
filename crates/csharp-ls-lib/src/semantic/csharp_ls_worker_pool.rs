@@ -1,11 +1,15 @@
 use crate::{CSharpLsLibError, CSharpLsLibResult, model::FileSemanticWork};
 
-use std::path::PathBuf;
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 
 use crate::semantic::CSharpLsWorker;
 
 pub struct CSharpLsWorkerPool {
     workers: Vec<CSharpLsWorker>,
+    opened_file_workers: HashMap<PathBuf, usize>,
 }
 
 impl CSharpLsWorkerPool {
@@ -40,7 +44,10 @@ impl CSharpLsWorkerPool {
             );
         }
 
-        Ok(Self { workers })
+        Ok(Self {
+            workers,
+            opened_file_workers: HashMap::new(),
+        })
     }
 
     pub fn worker_count(&self) -> usize {
@@ -51,13 +58,21 @@ impl CSharpLsWorkerPool {
         &mut self,
         file_paths: Vec<PathBuf>,
     ) -> CSharpLsLibResult<Vec<(PathBuf, Vec<lsp_types::DocumentSymbol>)>> {
-        let worker = self.workers.first_mut().ok_or_else(|| {
+        let worker_index = 0;
+        let worker = self.workers.get_mut(worker_index).ok_or_else(|| {
             CSharpLsLibError::response_shape(
                 "document_symbols_for_files",
                 "worker pool contained no workers",
             )
         })?;
-        worker.document_symbols_for_files(file_paths).await
+        let results = worker
+            .document_symbols_for_files(file_paths.clone())
+            .await?;
+        for file_path in file_paths {
+            self.opened_file_workers.insert(file_path, worker_index);
+        }
+
+        Ok(results)
     }
 
     pub async fn file_semantic_work_items(
@@ -66,11 +81,20 @@ impl CSharpLsWorkerPool {
     ) -> CSharpLsLibResult<Vec<crate::model::FileSemanticResult>> {
         let mut results = Vec::with_capacity(work_items.len());
         for (index, work) in work_items.into_iter().enumerate() {
-            let worker_index = index % self.workers.len();
+            let worker_index = self.worker_index_for_file(&work.file_path, index);
+            let file_path = work.file_path.clone();
             results.push(self.workers[worker_index].file_semantic_work(work).await?);
+            self.opened_file_workers.insert(file_path, worker_index);
         }
 
         Ok(results)
+    }
+
+    fn worker_index_for_file(&self, file_path: &Path, fallback_index: usize) -> usize {
+        self.opened_file_workers
+            .get(file_path)
+            .copied()
+            .unwrap_or(fallback_index % self.workers.len())
     }
 
     pub async fn shutdown(self) -> CSharpLsLibResult<()> {

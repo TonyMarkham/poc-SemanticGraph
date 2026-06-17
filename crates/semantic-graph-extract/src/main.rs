@@ -29,6 +29,7 @@ use semantic_graph_extract::{
 use clap::Parser;
 use sha2::Digest;
 use std::{
+    collections::BTreeMap,
     error::Error,
     path::{Path, PathBuf},
 };
@@ -1350,15 +1351,8 @@ async fn run_csharp_route_batch(
             reference_targets_timer.elapsed(),
         );
         let reference_work_build_timer = Stopwatch::start_new();
-        let work_items = reference_targets
-            .iter()
-            .cloned()
-            .map(|target| csharp_ls_lib::FileSemanticWork {
-                file_path: target.file_path.clone(),
-                reference_targets: vec![target],
-                call_targets: Vec::new(),
-            })
-            .collect::<Vec<_>>();
+        let reference_targets_queried = reference_targets.len();
+        let work_items = csharp_reference_work_items_by_file(reference_targets);
         benchmark.insert_count(
             &format!("{route_prefix}.reference_work_items"),
             work_items.len(),
@@ -1385,7 +1379,7 @@ async fn run_csharp_route_batch(
             &document_request,
             document_symbols.clone(),
             reference_sets,
-            reference_targets.len(),
+            reference_targets_queried,
         )?;
         benchmark.insert_duration_ms(
             &format!("{route_prefix}.references_map"),
@@ -1420,15 +1414,8 @@ async fn run_csharp_route_batch(
             call_targets_timer.elapsed(),
         );
         let call_work_build_timer = Stopwatch::start_new();
-        let work_items = call_targets
-            .iter()
-            .cloned()
-            .map(|target| csharp_ls_lib::FileSemanticWork {
-                file_path: target.file_path.clone(),
-                reference_targets: Vec::new(),
-                call_targets: vec![target],
-            })
-            .collect::<Vec<_>>();
+        let call_targets_queried = call_targets.len();
+        let work_items = csharp_call_work_items_by_file(call_targets);
         benchmark.insert_count(&format!("{route_prefix}.call_work_items"), work_items.len());
         benchmark.insert_duration_ms(
             &format!("{route_prefix}.call_work_build"),
@@ -1452,7 +1439,7 @@ async fn run_csharp_route_batch(
             &document_request,
             document_symbols,
             incoming_call_sets,
-            call_targets.len(),
+            call_targets_queried,
         )?;
         benchmark.insert_duration_ms(
             &format!("{route_prefix}.calls_map"),
@@ -1497,6 +1484,53 @@ async fn run_csharp_route_batch(
         reference_route_summary,
         call_route_summary,
     })
+}
+
+fn csharp_reference_work_items_by_file(
+    targets: Vec<csharp_ls_lib::ResolvedReferenceTarget>,
+) -> Vec<csharp_ls_lib::FileSemanticWork> {
+    let mut targets_by_file =
+        BTreeMap::<PathBuf, Vec<csharp_ls_lib::ResolvedReferenceTarget>>::new();
+    for target in targets {
+        targets_by_file
+            .entry(target.file_path.clone())
+            .or_default()
+            .push(target);
+    }
+
+    targets_by_file
+        .into_iter()
+        .map(
+            |(file_path, reference_targets)| csharp_ls_lib::FileSemanticWork {
+                file_path,
+                reference_targets,
+                call_targets: Vec::new(),
+            },
+        )
+        .collect()
+}
+
+fn csharp_call_work_items_by_file(
+    targets: Vec<csharp_ls_lib::ResolvedCallTarget>,
+) -> Vec<csharp_ls_lib::FileSemanticWork> {
+    let mut targets_by_file = BTreeMap::<PathBuf, Vec<csharp_ls_lib::ResolvedCallTarget>>::new();
+    for target in targets {
+        targets_by_file
+            .entry(target.file_path.clone())
+            .or_default()
+            .push(target);
+    }
+
+    targets_by_file
+        .into_iter()
+        .map(
+            |(file_path, call_targets)| csharp_ls_lib::FileSemanticWork {
+                file_path,
+                reference_targets: Vec::new(),
+                call_targets,
+            },
+        )
+        .collect()
 }
 
 fn resolve_threaded_route_analysis_workers(
