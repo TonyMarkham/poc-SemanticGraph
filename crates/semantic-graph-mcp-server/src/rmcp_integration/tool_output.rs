@@ -50,8 +50,15 @@ pub(crate) fn query_error_to_mcp(error: QueryError) -> ErrorData {
             sanitize_transcript_text(&message, DEFAULT_TEXT_CAP),
             None,
         ),
+        QueryError::Setup { message, .. } => {
+            ErrorData::invalid_params(sanitize_transcript_text(&message, DEFAULT_TEXT_CAP), None)
+        }
+        QueryError::FtsConsistency { message, .. } => {
+            ErrorData::internal_error(sanitize_transcript_text(&message, DEFAULT_TEXT_CAP), None)
+        }
         QueryError::Database { .. } => ErrorData::internal_error("database error", None),
         QueryError::Json { .. } => ErrorData::internal_error("json error", None),
+        QueryError::TantivySearch { .. } => ErrorData::internal_error("tantivy search error", None),
     }
 }
 

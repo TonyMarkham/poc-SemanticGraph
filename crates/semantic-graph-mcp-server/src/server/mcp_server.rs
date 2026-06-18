@@ -3,10 +3,10 @@ use crate::{
     rmcp_integration::{deserialize_tool_arguments, query_error_to_mcp, structured_tool_result},
     server::ServerState,
     tools::{
-        EdgeDetailsParams, EmptyToolParams, FileSummaryParams, GRAPH_EDGE_DETAILS,
-        GRAPH_FILE_SUMMARY, GRAPH_NEIGHBORS, GRAPH_NODE_DETAILS, GRAPH_PROJECTION,
-        GRAPH_ROUTE_STATUS, GRAPH_SEARCH_NODES, GRAPH_SHORTEST_PATH, GRAPH_STATS, NeighborsParams,
-        NodeDetailsParams, ProjectionParams, RouteStatusParams, SearchNodesParams,
+        EdgeDetailsParams, EmptyToolParams, FTS_SEARCH, FileSummaryParams, FtsSearchParams,
+        GRAPH_EDGE_DETAILS, GRAPH_FILE_SUMMARY, GRAPH_NEIGHBORS, GRAPH_NODE_DETAILS,
+        GRAPH_PROJECTION, GRAPH_ROUTE_STATUS, GRAPH_SEARCH_NODES, GRAPH_SHORTEST_PATH, GRAPH_STATS,
+        NeighborsParams, NodeDetailsParams, ProjectionParams, RouteStatusParams, SearchNodesParams,
         ShortestPathParams, ToolRegistry,
     },
 };
@@ -162,6 +162,20 @@ impl ServerHandler for SemanticGraphMcpServer {
                     .await
                     .map_err(query_error_to_mcp)?;
                 structured_tool_result("Route status loaded.", results)
+            }
+            FTS_SEARCH => {
+                let params = deserialize_tool_arguments::<FtsSearchParams>(request.arguments)?;
+                let service = self.state.fts_query_service().ok_or_else(|| {
+                    ErrorData::invalid_params(
+                        "FTS search is not configured for this MCP server",
+                        None,
+                    )
+                })?;
+                let results = service
+                    .search(params.into())
+                    .await
+                    .map_err(query_error_to_mcp)?;
+                structured_tool_result("FTS search completed.", results)
             }
             name => Err(ErrorData::invalid_params(
                 "unknown tool",

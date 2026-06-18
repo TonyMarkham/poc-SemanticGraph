@@ -1,6 +1,6 @@
 use crate::tools::{
-    EdgeDetailsParams, EmptyToolParams, FileSummaryParams, NeighborsParams, NodeDetailsParams,
-    ProjectionParams, RouteStatusParams, SearchNodesParams, ShortestPathParams,
+    EdgeDetailsParams, EmptyToolParams, FileSummaryParams, FtsSearchParams, NeighborsParams,
+    NodeDetailsParams, ProjectionParams, RouteStatusParams, SearchNodesParams, ShortestPathParams,
 };
 
 use rmcp::{
@@ -17,6 +17,7 @@ pub const GRAPH_NEIGHBORS: &str = "graph_neighbors";
 pub const GRAPH_SHORTEST_PATH: &str = "graph_shortest_path";
 pub const GRAPH_FILE_SUMMARY: &str = "graph_file_summary";
 pub const GRAPH_ROUTE_STATUS: &str = "graph_route_status";
+pub const FTS_SEARCH: &str = "fts_search";
 
 pub struct ToolRegistry;
 
@@ -33,6 +34,7 @@ impl ToolRegistry {
             GRAPH_SHORTEST_PATH,
             GRAPH_FILE_SUMMARY,
             GRAPH_ROUTE_STATUS,
+            FTS_SEARCH,
         ]
     }
 
@@ -74,6 +76,10 @@ impl ToolRegistry {
                 GRAPH_ROUTE_STATUS,
                 "Return route freshness rows filtered by workspace, route, scope, or file.",
             ),
+            tool::<FtsSearchParams>(
+                FTS_SEARCH,
+                "Search indexed file contents with Tantivy-backed ranking and SQLite snippets.",
+            ),
         ]
     }
 }
@@ -93,7 +99,7 @@ where
 #[cfg(test)]
 mod tests {
     use crate::tools::{
-        GRAPH_EDGE_DETAILS, GRAPH_FILE_SUMMARY, GRAPH_NEIGHBORS, GRAPH_NODE_DETAILS,
+        FTS_SEARCH, GRAPH_EDGE_DETAILS, GRAPH_FILE_SUMMARY, GRAPH_NEIGHBORS, GRAPH_NODE_DETAILS,
         GRAPH_PROJECTION, GRAPH_ROUTE_STATUS, GRAPH_SEARCH_NODES, GRAPH_SHORTEST_PATH, GRAPH_STATS,
         NodeDetailsParams, ToolRegistry,
     };
@@ -111,6 +117,7 @@ mod tests {
                 GRAPH_SHORTEST_PATH,
                 GRAPH_FILE_SUMMARY,
                 GRAPH_ROUTE_STATUS,
+                FTS_SEARCH,
             ],
             ToolRegistry::tool_names()
         );

@@ -4,20 +4,21 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-clap                      = { workspace = true }
-error-location            = { workspace = true }
-rmcp                      = { workspace = true }
-schemars                  = { workspace = true }
-semantic-graph-config     = { workspace = true }
-semantic-graph-query      = { workspace = true }
-serde                     = { workspace = true }
-serde_json                = { workspace = true }
-thiserror                 = { workspace = true }
-tokio                     = { workspace = true }
+clap                          = { workspace = true }
+error-location                = { workspace = true }
+rmcp                          = { workspace = true }
+schemars                      = { workspace = true }
+semantic-graph-config         = { workspace = true }
+semantic-graph-query          = { workspace = true }
+serde                         = { workspace = true }
+serde_json                    = { workspace = true }
+thiserror                     = { workspace = true }
+tokio                         = { workspace = true }
 
 [dev-dependencies]
-semantic-graph-db-manager = { workspace = true }
-sqlx                      = { workspace = true }
+semantic-graph-db-manager     = { workspace = true }
+semantic-graph-search-tantivy = { workspace = true }
+sqlx                          = { workspace = true }
 
 [lints]
-workspace                 = true
+workspace                     = true

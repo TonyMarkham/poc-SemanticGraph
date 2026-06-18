@@ -1,18 +1,23 @@
 use semantic_graph_config::{QueryServiceConfig, QueryServiceConfigValues};
 use semantic_graph_db_manager::{
-    CloseStaleFileInput, EdgeEvidenceInput, EdgeInput, FileInput, NodeInput, OccurrenceInput,
-    RouteObservationInput, RouteStatusCompleteInput, RouteStatusStartInput, TextRange, WriteHandle,
-    WriteManager, edge_id, node_id,
+    CloseStaleFileInput, EdgeEvidenceInput, EdgeInput, FileInput, FtsWriteBatchDocumentInput,
+    FtsWriteBatchInput, NodeInput, OccurrenceInput, RouteObservationInput,
+    RouteStatusCompleteInput, RouteStatusStartInput, TextRange, WriteHandle, WriteManager, edge_id,
+    node_id,
 };
 use semantic_graph_query::{
-    EdgeDetailsRequest, FileSummaryRequest, GraphQueryService, NeighborDirection, NeighborsRequest,
-    NodeDetailsRequest, NodeSearchRequest, ProjectionRequest, QueryError, RouteStatusRequest,
-    ShortestPathRequest,
+    EdgeDetailsRequest, FileSummaryRequest, FtsQueryService, FtsSearchRequest, GraphQueryService,
+    NeighborDirection, NeighborsRequest, NodeDetailsRequest, NodeSearchRequest, ProjectionRequest,
+    QueryError, RouteStatusRequest, ShortestPathRequest,
+};
+use semantic_graph_search_tantivy::{
+    TantivyFtsDocument, TantivyFtsIndex, TantivyFtsIndexUpdate, TantivyFtsSearchRequest,
 };
 use serde_json::{Value, json};
 use std::{
     error::Error,
-    path::PathBuf,
+    fs,
+    path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -462,9 +467,212 @@ async fn route_status_filters_and_parses_diagnostics() -> Result<(), Box<dyn Err
 }
 
 #[tokio::test]
+async fn fts_search_preserves_tantivy_order_and_hydrates_snippets() -> Result<(), Box<dyn Error>> {
+    let fixture = seeded_database().await?;
+    let service = FtsQueryService::new(
+        fixture.database_path.clone(),
+        fixture.fts_index_path.clone(),
+    );
+    let raw_index = TantivyFtsIndex::open_read_only(&fixture.fts_index_path)?;
+    let raw_results = raw_index.search(TantivyFtsSearchRequest {
+        query: "NeedleToken".to_string(),
+        limit: 2,
+        offset: 0,
+        language: None,
+        path_prefix: None,
+        case_sensitive: false,
+    })?;
+
+    let first_page = service
+        .search(FtsSearchRequest {
+            query: "NeedleToken".to_string(),
+            limit: Some(1),
+            language: None,
+            path_prefix: None,
+            case_sensitive: Some(false),
+            context_lines: Some(1),
+            cursor: None,
+        })
+        .await?;
+
+    assert_eq!(Some(1), first_page.requested_limit);
+    assert_eq!(1, first_page.applied_limit);
+    assert_eq!(
+        fixture.database_path.display().to_string(),
+        first_page.fts_database_path
+    );
+    assert_eq!(
+        fixture.fts_index_path.display().to_string(),
+        first_page.tantivy_index_path
+    );
+    assert_eq!(Some("1"), first_page.next_cursor.as_deref());
+    assert_eq!(raw_results.hits[0].uri, first_page.hits[0].uri);
+    assert!(first_page.hits[0].snippets[0].text.contains("NeedleToken"));
+    assert_eq!(1, first_page.hits[0].snippets[0].line_range.start_line);
+
+    let second_page = service
+        .search(FtsSearchRequest {
+            query: "NeedleToken".to_string(),
+            limit: Some(1),
+            language: None,
+            path_prefix: None,
+            case_sensitive: Some(false),
+            context_lines: Some(0),
+            cursor: first_page.next_cursor.clone(),
+        })
+        .await?;
+
+    assert_eq!(raw_results.hits[1].uri, second_page.hits[0].uri);
+    assert!(second_page.next_cursor.is_none());
+
+    remove_database(fixture.database_path)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn fts_search_applies_tantivy_filters_and_case_sensitivity() -> Result<(), Box<dyn Error>> {
+    let fixture = seeded_database().await?;
+    let service = FtsQueryService::new(
+        fixture.database_path.clone(),
+        fixture.fts_index_path.clone(),
+    );
+
+    let filtered = service
+        .search(FtsSearchRequest {
+            query: "NeedleToken".to_string(),
+            limit: Some(10),
+            language: Some("rust".to_string()),
+            path_prefix: Some("src/z".to_string()),
+            case_sensitive: Some(false),
+            context_lines: Some(0),
+            cursor: None,
+        })
+        .await?;
+    assert_eq!(1, filtered.hits.len());
+    assert_eq!("src/z.rs", filtered.hits[0].path);
+
+    let case_insensitive = service
+        .search(FtsSearchRequest {
+            query: "exactcasetoken".to_string(),
+            limit: Some(10),
+            language: None,
+            path_prefix: None,
+            case_sensitive: Some(false),
+            context_lines: Some(0),
+            cursor: None,
+        })
+        .await?;
+    assert_eq!(1, case_insensitive.hits.len());
+    assert_eq!("src/lib.rs", case_insensitive.hits[0].path);
+
+    let case_sensitive = service
+        .search(FtsSearchRequest {
+            query: "exactcasetoken".to_string(),
+            limit: Some(10),
+            language: None,
+            path_prefix: None,
+            case_sensitive: Some(true),
+            context_lines: Some(0),
+            cursor: None,
+        })
+        .await?;
+    assert!(case_sensitive.hits.is_empty());
+
+    remove_database(fixture.database_path)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn fts_search_reports_consistency_errors_for_unhydrated_tantivy_hits()
+-> Result<(), Box<dyn Error>> {
+    let fixture = seeded_database().await?;
+    let inconsistent_index_path = fixture.database_path.with_extension("inconsistent.tantivy");
+    let inconsistent_index = TantivyFtsIndex::open_or_create(&inconsistent_index_path)?;
+    inconsistent_index.apply_update(TantivyFtsIndexUpdate {
+        documents: vec![TantivyFtsDocument {
+            uri: "file:///fixture/src/missing.rs".to_string(),
+            path: "src/missing.rs".to_string(),
+            language: "rust".to_string(),
+            content_hash: "missing-hash".to_string(),
+            content: "MissingOnlyToken\n".to_string(),
+        }],
+        deleted_uris: Vec::new(),
+        indexing_workers: 1,
+    })?;
+    let service = FtsQueryService::new(
+        fixture.database_path.clone(),
+        inconsistent_index_path.clone(),
+    );
+
+    assert_fts_consistency(
+        service
+            .search(FtsSearchRequest {
+                query: "MissingOnlyToken".to_string(),
+                limit: Some(10),
+                language: None,
+                path_prefix: None,
+                case_sensitive: Some(false),
+                context_lines: Some(0),
+                cursor: None,
+            })
+            .await,
+        "file:///fixture/src/missing.rs",
+    )?;
+
+    if inconsistent_index_path.exists() {
+        fs::remove_dir_all(inconsistent_index_path)?;
+    }
+    remove_database(fixture.database_path)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn fts_search_reports_missing_database_setup() -> Result<(), Box<dyn Error>> {
+    let missing_database_path = temp_database_path()?;
+    let index_path = missing_database_path.with_extension("tantivy");
+    let index = TantivyFtsIndex::open_or_create(&index_path)?;
+    index.apply_update(TantivyFtsIndexUpdate {
+        documents: vec![TantivyFtsDocument {
+            uri: "file:///fixture/src/lib.rs".to_string(),
+            path: "src/lib.rs".to_string(),
+            language: "rust".to_string(),
+            content_hash: "lib-hash".to_string(),
+            content: "NeedleToken\n".to_string(),
+        }],
+        deleted_uris: Vec::new(),
+        indexing_workers: 1,
+    })?;
+    let service = FtsQueryService::new(missing_database_path, index_path.clone());
+
+    assert_setup(
+        service
+            .search(FtsSearchRequest {
+                query: "NeedleToken".to_string(),
+                limit: Some(10),
+                language: None,
+                path_prefix: None,
+                case_sensitive: Some(false),
+                context_lines: Some(0),
+                cursor: None,
+            })
+            .await,
+        "FTS SQLite database not found",
+    )?;
+
+    if index_path.exists() {
+        fs::remove_dir_all(index_path)?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn validation_rejects_blank_inputs_and_excessive_limits() -> Result<(), Box<dyn Error>> {
     let fixture = seeded_database().await?;
     let service = GraphQueryService::new(fixture.database_path.clone());
+    let fts_service = FtsQueryService::new(
+        fixture.database_path.clone(),
+        fixture.fts_index_path.clone(),
+    );
 
     assert_invalid_params(
         service
@@ -547,6 +755,62 @@ async fn validation_rejects_blank_inputs_and_excessive_limits() -> Result<(), Bo
             .await,
         "workspaceId must be positive",
     )?;
+    assert_invalid_params(
+        fts_service
+            .search(FtsSearchRequest {
+                query: " ".to_string(),
+                limit: None,
+                language: None,
+                path_prefix: None,
+                case_sensitive: None,
+                context_lines: None,
+                cursor: None,
+            })
+            .await,
+        "query must not be blank",
+    )?;
+    assert_invalid_params(
+        fts_service
+            .search(FtsSearchRequest {
+                query: "NeedleToken".to_string(),
+                limit: Some(51),
+                language: None,
+                path_prefix: None,
+                case_sensitive: None,
+                context_lines: None,
+                cursor: None,
+            })
+            .await,
+        "limit must be between 1 and 50",
+    )?;
+    assert_invalid_params(
+        fts_service
+            .search(FtsSearchRequest {
+                query: "NeedleToken".to_string(),
+                limit: None,
+                language: None,
+                path_prefix: None,
+                case_sensitive: None,
+                context_lines: Some(21),
+                cursor: None,
+            })
+            .await,
+        "contextLines must be between 0 and 20",
+    )?;
+    assert_invalid_params(
+        fts_service
+            .search(FtsSearchRequest {
+                query: "NeedleToken".to_string(),
+                limit: None,
+                language: None,
+                path_prefix: None,
+                case_sensitive: None,
+                context_lines: None,
+                cursor: Some("not-a-cursor".to_string()),
+            })
+            .await,
+        "cursor must be a non-negative offset",
+    )?;
 
     let missing_node = service
         .node_details(NodeDetailsRequest {
@@ -627,6 +891,44 @@ where
     }
 }
 
+fn assert_fts_consistency<T>(
+    result: Result<T, QueryError>,
+    expected_message_part: &str,
+) -> Result<(), Box<dyn Error>>
+where
+    T: std::fmt::Debug,
+{
+    match result {
+        Err(QueryError::FtsConsistency { message, .. }) => {
+            assert!(
+                message.contains(expected_message_part),
+                "expected consistency message containing {expected_message_part}, got {message}"
+            );
+            Ok(())
+        }
+        other => Err(format!("expected fts consistency error, got {other:?}").into()),
+    }
+}
+
+fn assert_setup<T>(
+    result: Result<T, QueryError>,
+    expected_message_part: &str,
+) -> Result<(), Box<dyn Error>>
+where
+    T: std::fmt::Debug,
+{
+    match result {
+        Err(QueryError::Setup { message, .. }) => {
+            assert!(
+                message.contains(expected_message_part),
+                "expected setup message containing {expected_message_part}, got {message}"
+            );
+            Ok(())
+        }
+        other => Err(format!("expected setup error, got {other:?}").into()),
+    }
+}
+
 async fn seeded_database() -> Result<Fixture, Box<dyn Error>> {
     let database_path = temp_database_path()?;
     let writer = WriteManager::start(&database_path).await?;
@@ -640,6 +942,7 @@ async fn seed_fixture_database(
     writer: &WriteHandle,
     database_path: PathBuf,
 ) -> Result<Fixture, Box<dyn Error>> {
+    let fts_index_path = database_path.with_extension("tantivy");
     let workspace_id = writer.create_workspace("file:///fixture", "rust").await?;
     let run_id = writer
         .start_run(workspace_id, "rust-analyzer", Some("fixture"), None)
@@ -694,6 +997,7 @@ async fn seed_fixture_database(
     seed_edge_evidence(writer, run_id, lib_file_id, old_file_id, &ids).await?;
     seed_route_statuses(writer, workspace_id, run_id, lib_file_id).await?;
     seed_route_observations(writer, workspace_id, run_id, lib_file_id, &ids).await?;
+    seed_fts_documents(writer, workspace_id, run_id, &fts_index_path).await?;
     writer.finish_run(run_id, "complete").await?;
 
     let stale_run_id = writer
@@ -710,10 +1014,85 @@ async fn seed_fixture_database(
 
     Ok(Fixture {
         database_path,
+        fts_index_path,
         workspace_id,
         stale_run_id,
         ids,
     })
+}
+
+async fn seed_fts_documents(
+    writer: &WriteHandle,
+    workspace_id: i64,
+    run_id: i64,
+    fts_index_path: &Path,
+) -> Result<(), Box<dyn Error>> {
+    let documents = vec![
+        fts_document_input(
+            workspace_id,
+            "file:///fixture/src/lib.rs",
+            "src/lib.rs",
+            "rust",
+            "fts-lib-hash",
+            "pub fn run() {\n    let token = \"NeedleToken\";\n    let exact = \"ExactCaseToken\";\n}\n",
+            run_id,
+        ),
+        fts_document_input(
+            workspace_id,
+            "file:///fixture/src/z.rs",
+            "src/z.rs",
+            "rust",
+            "fts-z-hash",
+            "pub fn helper() {\n    println!(\"NeedleToken in helper\");\n}\n",
+            run_id,
+        ),
+    ];
+    writer
+        .write_fts_batch(FtsWriteBatchInput {
+            documents: documents.clone(),
+            seen_documents: Vec::new(),
+        })
+        .await?;
+
+    let index = TantivyFtsIndex::open_or_create(fts_index_path)?;
+    index.apply_update(TantivyFtsIndexUpdate {
+        documents: documents
+            .into_iter()
+            .map(|document| TantivyFtsDocument {
+                uri: document.uri,
+                path: document.path,
+                language: document.language,
+                content_hash: document.content_hash,
+                content: document.content,
+            })
+            .collect(),
+        deleted_uris: Vec::new(),
+        indexing_workers: 1,
+    })?;
+
+    Ok(())
+}
+
+fn fts_document_input(
+    workspace_id: i64,
+    uri: &str,
+    path: &str,
+    language: &str,
+    content_hash: &str,
+    content: &str,
+    run_id: i64,
+) -> FtsWriteBatchDocumentInput {
+    FtsWriteBatchDocumentInput {
+        workspace_id,
+        uri: uri.to_string(),
+        path: path.to_string(),
+        language: language.to_string(),
+        content_hash: content_hash.to_string(),
+        byte_len: content.len() as i64,
+        run_id,
+        content: content.to_string(),
+        properties_json: json!({ "route": "fts.full_text" }),
+    }
 }
 
 async fn seed_nodes(
@@ -1481,6 +1860,7 @@ async fn seed_route_observations(
 #[derive(Debug)]
 struct Fixture {
     database_path: PathBuf,
+    fts_index_path: PathBuf,
     workspace_id: i64,
     stale_run_id: i64,
     ids: FixtureIds,
@@ -1590,7 +1970,11 @@ fn temp_database_path() -> Result<PathBuf, Box<dyn Error>> {
 }
 
 fn remove_database(database_path: PathBuf) -> Result<(), Box<dyn Error>> {
-    std::fs::remove_file(database_path)?;
+    let fts_index_path = database_path.with_extension("tantivy");
+    if fts_index_path.exists() {
+        fs::remove_dir_all(fts_index_path)?;
+    }
+    fs::remove_file(database_path)?;
     Ok(())
 }
 

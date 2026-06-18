@@ -1,8 +1,9 @@
 use semantic_graph_db_manager::{
-    EdgeEvidenceInput, EdgeInput, FileInput, NodeInput, OccurrenceInput, RouteObservationInput,
-    RouteStatusCompleteInput, RouteStatusStartInput, TextRange, WriteHandle, WriteManager, edge_id,
-    node_id,
+    EdgeEvidenceInput, EdgeInput, FileInput, FtsWriteBatchDocumentInput, FtsWriteBatchInput,
+    NodeInput, OccurrenceInput, RouteObservationInput, RouteStatusCompleteInput,
+    RouteStatusStartInput, TextRange, WriteHandle, WriteManager, edge_id, node_id,
 };
+use semantic_graph_search_tantivy::{TantivyFtsDocument, TantivyFtsIndex, TantivyFtsIndexUpdate};
 
 use serde_json::{Value, json};
 use std::{
@@ -50,6 +51,7 @@ async fn stdio_server_handles_phase_two_tools_and_resources_from_config()
             "graph_shortest_path",
             "graph_file_summary",
             "graph_route_status",
+            "fts_search",
         ],
     )?;
 
@@ -171,33 +173,52 @@ async fn stdio_server_handles_phase_two_tools_and_resources_from_config()
         tool_data(&route_status)?["statuses"][0]["route"]
     );
 
-    read_resource(&mut server, 13, "semantic-graph://schema", "nodes").await?;
-    read_resource(&mut server, 14, "semantic-graph://workspace", "read-only").await?;
+    let fts = call_tool(
+        &mut server,
+        13,
+        "fts_search",
+        json!({
+            "query": "NeedleToken",
+            "limit": 10,
+            "contextLines": 1
+        }),
+    )
+    .await?;
+    assert_eq!("src/lib.rs", tool_data(&fts)?["hits"][0]["path"]);
+    assert!(
+        tool_data(&fts)?["hits"][0]["snippets"][0]["text"]
+            .as_str()
+            .ok_or("snippet text should be a string")?
+            .contains("NeedleToken")
+    );
+
+    read_resource(&mut server, 14, "semantic-graph://schema", "nodes").await?;
+    read_resource(&mut server, 15, "semantic-graph://workspace", "read-only").await?;
     read_resource(
         &mut server,
-        15,
+        16,
         "semantic-graph://routes",
         "rust.document_symbols",
     )
     .await?;
     read_resource(
         &mut server,
-        16,
+        17,
         "semantic-graph://local-testbeds",
         "prior art",
     )
     .await?;
 
-    let bad_args = call_tool_error(&mut server, 17, "graph_node_details", json!({})).await?;
+    let bad_args = call_tool_error(&mut server, 18, "graph_node_details", json!({})).await?;
     assert_eq!(json!(-32602), bad_args["error"]["code"]);
 
-    let unknown_tool = call_tool_error(&mut server, 18, "graph_missing", json!({})).await?;
+    let unknown_tool = call_tool_error(&mut server, 19, "graph_missing", json!({})).await?;
     assert_eq!(json!(-32602), unknown_tool["error"]["code"]);
 
     let unknown_resource = server
         .request(json!({
             "jsonrpc": "2.0",
-            "id": 19,
+            "id": 20,
             "method": "resources/read",
             "params": { "uri": "semantic-graph://missing" }
         }))
@@ -223,6 +244,44 @@ async fn stdio_server_database_path_override_bypasses_config() -> Result<(), Box
     let stats = call_tool(&mut server, 20, "graph_stats", json!({})).await?;
 
     assert_eq!(json!(1), tool_data(&stats)?["workspaceCount"]);
+    let fts = call_tool(
+        &mut server,
+        21,
+        "fts_search",
+        json!({ "query": "NeedleToken", "limit": 10 }),
+    )
+    .await?;
+    assert_eq!("src/lib.rs", tool_data(&fts)?["hits"][0]["path"]);
+    server.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn stdio_server_reports_missing_fts_setup_without_breaking_graph_tools()
+-> Result<(), Box<dyn Error>> {
+    let fixture = Fixture::seed_graph_only("missing-fts").await?;
+    write_config(&fixture.root, &fixture.database_path)?;
+    let mut server = StdioServer::start(&fixture.root, Vec::new()).await?;
+
+    initialize(&mut server).await?;
+    let stats = call_tool(&mut server, 30, "graph_stats", json!({})).await?;
+    assert_eq!(json!(1), tool_data(&stats)?["workspaceCount"]);
+
+    let fts_error = call_tool_error(
+        &mut server,
+        31,
+        "fts_search",
+        json!({ "query": "NeedleToken" }),
+    )
+    .await?;
+    assert_eq!(json!(-32602), fts_error["error"]["code"]);
+    assert!(
+        fts_error["error"]["message"]
+            .as_str()
+            .ok_or("error message should be a string")?
+            .contains("FTS Tantivy index not found")
+    );
+
     server.shutdown().await?;
     Ok(())
 }
@@ -496,8 +555,17 @@ struct Fixture {
 
 impl Fixture {
     async fn seed(name: &str) -> Result<Self, Box<dyn Error>> {
+        Self::seed_with_fts(name, true).await
+    }
+
+    async fn seed_graph_only(name: &str) -> Result<Self, Box<dyn Error>> {
+        Self::seed_with_fts(name, false).await
+    }
+
+    async fn seed_with_fts(name: &str, include_fts: bool) -> Result<Self, Box<dyn Error>> {
         let root = temp_dir(name)?;
         let database_path = root.join("semantic-graph.db");
+        let fts_index_path = database_path.with_extension("tantivy");
         let writer = WriteManager::start(&database_path).await?;
         writer.migrate().await?;
         let workspace_id = writer
@@ -551,6 +619,9 @@ impl Fixture {
             &call_edge_id,
         )
         .await?;
+        if include_fts {
+            seed_fts_documents(&writer, workspace_id, run_id, &fts_index_path).await?;
+        }
         writer.finish_run(run_id, "complete").await?;
         writer.shutdown().await?;
 
@@ -564,6 +635,50 @@ impl Fixture {
             call_edge_id,
         })
     }
+}
+
+async fn seed_fts_documents(
+    writer: &WriteHandle,
+    workspace_id: i64,
+    run_id: i64,
+    fts_index_path: &Path,
+) -> Result<(), Box<dyn Error>> {
+    let content = "fn run() {\n    let token = \"NeedleToken\";\n    helper();\n}\n";
+    let documents = vec![FtsWriteBatchDocumentInput {
+        workspace_id,
+        uri: "file:///mcp-fixture/src/lib.rs".to_string(),
+        path: "src/lib.rs".to_string(),
+        language: "rust".to_string(),
+        content_hash: "fts-lib-hash".to_string(),
+        byte_len: content.len() as i64,
+        run_id,
+        content: content.to_string(),
+        properties_json: json!({ "route": "fts.full_text" }),
+    }];
+    writer
+        .write_fts_batch(FtsWriteBatchInput {
+            documents: documents.clone(),
+            seen_documents: Vec::new(),
+        })
+        .await?;
+
+    let index = TantivyFtsIndex::open_or_create(fts_index_path)?;
+    index.apply_update(TantivyFtsIndexUpdate {
+        documents: documents
+            .into_iter()
+            .map(|document| TantivyFtsDocument {
+                uri: document.uri,
+                path: document.path,
+                language: document.language,
+                content_hash: document.content_hash,
+                content: document.content,
+            })
+            .collect(),
+        deleted_uris: Vec::new(),
+        indexing_workers: 1,
+    })?;
+
+    Ok(())
 }
 
 async fn seed_nodes(

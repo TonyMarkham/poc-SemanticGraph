@@ -7,7 +7,7 @@ fragment_root = "agent-assets/fragments"
 
 [skill]
 name = "semantic-graph"
-description = "Use SemanticGraph MCP tools as the first semantic repo search and code-navigation surface for files, symbols, modules, relationships, references, call graphs, provenance, route freshness, and graph refresh planning work."
+description = "Use SemanticGraph MCP tools as the first surface for semantic repo search, file-content text search, code navigation, files, symbols, modules, relationships, references, call graphs, provenance, route freshness, and graph refresh planning work."
 output_path = ".agents/skills/semantic-graph/SKILL.md"
 fragments = [
   "common/semantic-graph-purpose.md",

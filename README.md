@@ -441,8 +441,17 @@ falls back to `[database].path` when unset. Add `--no-rust`, `--no-csharp`, or
 the SQLite DB or Tantivy sidecar are inside the scanned
 workspace, the route excludes its own artifacts from discovery. Tantivy remains
 a rebuildable sidecar artifact; SQLite remains the source of truth for file
-identity and stored content. Text query, MCP, and visualizer integration are
-separate later work.
+identity and stored content.
+
+The stdio MCP server exposes indexed file-content search as the read-only
+`fts_search` tool. It uses Tantivy for membership, ranking, and pagination, then
+hydrates snippets from `fts_document_contents` in SQLite. The MCP server does
+not run `semantic-graph-extract fts` or create missing FTS stores; run the
+extractor first, then start the server with config discovery or
+`--fts-database-path`. When `[fts].db_path` is unset, MCP uses the graph
+database path as the FTS fallback and looks for the sidecar at
+`db.with_extension("tantivy")`. Visualizer integration remains separate later
+work.
 
 ## Visualize A Rust Workspace
 
