@@ -44,6 +44,34 @@ fn parses_valid_config() -> Result<(), Box<dyn Error>> {
     assert_eq!(config.csharp().analysis_workers(), 1);
     assert_eq!(config.csharp().startup_timeout_ms(), 120000);
     assert_eq!(config.csharp().request_timeout_ms(), 30000);
+    assert_eq!(
+        config.soul().scan().excluded_dirs(),
+        &[
+            ".git".to_string(),
+            ".soul".to_string(),
+            "target".to_string(),
+            ".idea".to_string(),
+            ".vscode".to_string(),
+            ".vs".to_string(),
+            ".codex".to_string(),
+            "node_modules".to_string(),
+            "obj".to_string(),
+        ]
+    );
+    assert_eq!(
+        config.soul().scan().excluded_dir_suffixes(),
+        &[
+            "Tests".to_string(),
+            ".Tests".to_string(),
+            "tests".to_string(),
+            ".tests".to_string(),
+        ]
+    );
+    assert_eq!(
+        config.soul().scan().excluded_bin_except_under(),
+        &["src".to_string()]
+    );
+    assert!(config.soul().plugins().is_empty());
     assert_eq!(config.fts().db_path(), None);
     assert_eq!(config.fts().analysis_workers(), None);
     assert_eq!(config.fts().max_indexed_file_bytes(), 209715200);
@@ -344,6 +372,95 @@ analysis_workers = 7
 }
 
 #[test]
+fn parses_soul_config() -> Result<(), Box<dyn Error>> {
+    let root = temp_dir("parses-soul-config")?;
+    let config_dir = root.join(".refactor-radar");
+    fs::create_dir_all(&config_dir)?;
+    let config_path = config_dir.join("config.toml");
+    fs::write(
+        &config_path,
+        r#"
+[database]
+path = ".local/test.db"
+
+[soul.scan]
+excluded_dirs = [".git", "custom"]
+excluded_dir_suffixes = ["Spec"]
+excluded_bin_except_under = ["src", "tools"]
+
+[[soul.plugins]]
+language = "rust"
+path = ".soul/plugins/rust.so"
+"#,
+    )?;
+
+    let config = load_config(&config_path)?;
+
+    assert_eq!(
+        config.soul().scan().excluded_dirs(),
+        &[".git".to_string(), "custom".to_string()]
+    );
+    assert_eq!(
+        config.soul().scan().excluded_dir_suffixes(),
+        &["Spec".to_string()]
+    );
+    assert_eq!(
+        config.soul().scan().excluded_bin_except_under(),
+        &["src".to_string(), "tools".to_string()]
+    );
+    assert_eq!(config.soul().plugins().len(), 1);
+    assert_eq!(config.soul().plugins()[0].language(), "rust");
+    assert_eq!(
+        config.soul().plugins()[0].path(),
+        &PathBuf::from(".soul/plugins/rust.so")
+    );
+    Ok(())
+}
+
+#[test]
+fn rejects_invalid_soul_config() -> Result<(), Box<dyn Error>> {
+    let root = temp_dir("rejects-invalid-soul-config")?;
+    let config_dir = root.join(".refactor-radar");
+    fs::create_dir_all(&config_dir)?;
+    let config_path = config_dir.join("config.toml");
+    fs::write(
+        &config_path,
+        r#"
+[database]
+path = ".local/test.db"
+
+[soul.scan]
+excluded_dirs = [""]
+"#,
+    )?;
+
+    let error = load_config(&config_path)
+        .err()
+        .ok_or("expected config error")?;
+
+    assert!(matches!(error, ConfigError::InvalidSoulSetting { .. }));
+
+    fs::write(
+        &config_path,
+        r#"
+[database]
+path = ".local/test.db"
+
+[[soul.plugins]]
+language = ""
+path = ".soul/plugins/rust.so"
+"#,
+    )?;
+
+    let error = load_config(&config_path)
+        .err()
+        .ok_or("expected config error")?;
+
+    assert!(matches!(error, ConfigError::InvalidSoulSetting { .. }));
+    Ok(())
+}
+
+#[test]
 fn parses_fts_config() -> Result<(), Box<dyn Error>> {
     let root = temp_dir("parses-fts-config")?;
     let config_dir = root.join(".refactor-radar");
@@ -609,16 +726,29 @@ fn creates_default_config_template_when_missing() -> Result<(), Box<dyn Error>> 
     assert!(contents.contains("analysis_workers = 8"));
     assert!(contents.contains("max_indexed_file_bytes = 209715200"));
     assert!(contents.contains("[csharp]"));
+    assert!(contents.contains("[soul.scan]"));
     assert!(contents.contains("ignore-directories = []"));
     assert!(contents.contains("ignore-files = []"));
     assert!(contents.contains("max_shortest_path_visited = 5000"));
     assert!(contents.contains("solution = \"SemanticGraph.Visualizer.slnx\""));
+    assert!(contents.contains("excluded_dirs = [\".git\", \".soul\", \"target\""));
+    assert!(contents.contains("excluded_bin_except_under = [\"src\"]"));
+    assert!(contents.contains("[[soul.plugins]]"));
+    assert!(contents.contains(&format!(
+        "path = \"./.soul/plugins/rust{}\"",
+        std::env::consts::DLL_SUFFIX
+    )));
+    assert!(contents.contains(&format!(
+        "path = \"./.soul/plugins/csharp{}\"",
+        std::env::consts::DLL_SUFFIX
+    )));
 
     let config = load_config(&config_path)?;
     assert_eq!(
         config.csharp().solution(),
         Some(&PathBuf::from("SemanticGraph.Visualizer.slnx"))
     );
+    assert_eq!(config.soul().plugins().len(), 2);
     Ok(())
 }
 
@@ -636,6 +766,13 @@ fn adds_missing_csharp_table_without_changing_existing_values() -> Result<(), Bo
     assert!(contents.contains("[csharp]"));
     assert!(contents.contains("binary = \"csharp-ls\""));
     assert!(contents.contains("request_timeout_ms = 30000"));
+    assert!(contents.contains("[soul.scan]"));
+    assert!(contents.contains("excluded_dir_suffixes = [\"Tests\", \".Tests\""));
+    assert!(contents.contains("[[soul.plugins]]"));
+    assert!(contents.contains(&format!(
+        "path = \"./.soul/plugins/rust{}\"",
+        std::env::consts::DLL_SUFFIX
+    )));
     Ok(())
 }
 
@@ -671,6 +808,40 @@ analysis_workers = 5
         &PathBuf::from("/custom/csharp-ls")
     );
     assert_eq!(config.csharp().analysis_workers(), 5);
+    Ok(())
+}
+
+#[test]
+fn adds_missing_soul_scan_without_overwriting_existing_plugins() -> Result<(), Box<dyn Error>> {
+    let root = temp_dir("keeps-existing-soul-plugins")?;
+    let config_dir = root.join(".refactor-radar");
+    fs::create_dir_all(&config_dir)?;
+    let config_path = config_dir.join("config.toml");
+    fs::write(
+        &config_path,
+        r#"
+[database]
+path = ".local/custom.db"
+
+[[soul.plugins]]
+language = "rust"
+path = "custom/rust.so"
+"#,
+    )?;
+
+    ensure_config_with_csharp_defaults(&config_path)?;
+
+    let contents = fs::read_to_string(&config_path)?;
+    assert!(contents.contains("[soul.scan]"));
+    assert!(contents.contains("path = \"custom/rust.so\""));
+    assert!(!contents.contains("path = \"./.soul/plugins/csharp"));
+
+    let config = load_config(&config_path)?;
+    assert_eq!(config.soul().plugins().len(), 1);
+    assert_eq!(
+        config.soul().plugins()[0].path(),
+        &PathBuf::from("custom/rust.so")
+    );
     Ok(())
 }
 

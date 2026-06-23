@@ -92,6 +92,17 @@ Language intelligence:
   Because the C# call route is currently incoming-call based, changed solution
   relation passes still query the active symbol graph as targets so calls from
   changed files to unchanged symbols can be refreshed.
+- Soul semantic facts should come from the checked-in Soul submodule through
+  `crates/soul-lsp-lib`. Do not shell out to the `soul-lsp` CLI/server for
+  extractor work unless the user explicitly asks for that design change.
+  The extractor reads Soul settings from `[soul]` in
+  `.refactor-radar/config.toml` and passes them to `soul-lsp-lib` in-process;
+  do not route extractor work through `.soul/soul.toml`. `soul-lsp-lib`
+  live-scans with Soul `indexer` APIs and the configured Soul parser plugins;
+  those plugins are required for code annotation files. It must not use Soul's
+  `.soul/index.db`. Current Soul extraction supports `soul.document_symbols`
+  and `soul.references`; Soul calls are not supported because Soul LSP has no
+  call hierarchy route.
 
 Visualization:
 

@@ -144,4 +144,30 @@ pub enum Command {
         #[arg(long)]
         symbols: bool,
     },
+
+    #[command(name = "soul-file")]
+    SoulFile {
+        #[arg(long)]
+        db: Option<PathBuf>,
+        #[arg(long, value_name = "WORKSPACE_ROOT", default_value = ".")]
+        workspace_root: PathBuf,
+        #[arg(long)]
+        references: bool,
+        #[arg(long)]
+        symbols: bool,
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+    },
+
+    #[command(name = "soul-workspace")]
+    SoulWorkspace {
+        #[arg(long)]
+        db: Option<PathBuf>,
+        #[arg(long, value_name = "WORKSPACE_ROOT", default_value = ".")]
+        workspace_root: PathBuf,
+        #[arg(long)]
+        references: bool,
+        #[arg(long)]
+        symbols: bool,
+    },
 }

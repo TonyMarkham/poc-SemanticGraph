@@ -14,9 +14,15 @@ mod raw_database_config;
 mod raw_extractor_config;
 mod raw_fts_config;
 mod raw_query_service_config;
+mod raw_soul_config;
+mod raw_soul_plugin_config;
+mod raw_soul_scan_config;
 mod raw_writer_config;
 mod resolved_database_path;
 mod resolved_database_path_source;
+mod soul_config;
+mod soul_plugin_config;
+mod soul_scan_config;
 #[cfg(test)]
 mod tests;
 mod writer_config;
@@ -28,6 +34,9 @@ pub(crate) use raw_database_config::RawDatabaseConfig;
 pub(crate) use raw_extractor_config::RawExtractorConfig;
 pub(crate) use raw_fts_config::RawFtsConfig;
 pub(crate) use raw_query_service_config::RawQueryServiceConfig;
+pub(crate) use raw_soul_config::RawSoulConfig;
+pub(crate) use raw_soul_plugin_config::RawSoulPluginConfig;
+pub(crate) use raw_soul_scan_config::RawSoulScanConfig;
 pub(crate) use raw_writer_config::RawWriterConfig;
 
 pub use config::Config;
@@ -43,6 +52,9 @@ pub use query_service_config_values::QueryServiceConfigValues;
 pub use raw_config::load_config;
 pub use resolved_database_path::ResolvedDatabasePath;
 pub use resolved_database_path_source::ResolvedDatabasePathSource;
+pub use soul_config::SoulConfig;
+pub use soul_plugin_config::SoulPluginConfig;
+pub use soul_scan_config::SoulScanConfig;
 pub use writer_config::WriterConfig;
 
 // ---------------------------------------------------------------------------------------------- //
@@ -87,6 +99,11 @@ features = []
 analysis_workers = 1
 startup_timeout_ms = 120000
 request_timeout_ms = 30000
+
+[soul.scan]
+excluded_dirs = [".git", ".soul", "target", ".idea", ".vscode", ".vs", ".codex", "node_modules", "obj"]
+excluded_dir_suffixes = ["Tests", ".Tests", "tests", ".tests"]
+excluded_bin_except_under = ["src"]
 "#;
 const FTS_TABLE_HEADER: &str = "[fts]";
 const FTS_DEFAULT_LINES: [(&str, &str); 5] = [
@@ -109,6 +126,22 @@ const CSHARP_DEFAULT_LINES: [(&str, &str); 7] = [
     ("startup_timeout_ms", "startup_timeout_ms = 120000"),
     ("request_timeout_ms", "request_timeout_ms = 30000"),
 ];
+const SOUL_SCAN_TABLE_HEADER: &str = "[soul.scan]";
+const SOUL_SCAN_DEFAULT_LINES: [(&str, &str); 3] = [
+    (
+        "excluded_dirs",
+        "excluded_dirs = [\".git\", \".soul\", \"target\", \".idea\", \".vscode\", \".vs\", \".codex\", \"node_modules\", \"obj\"]",
+    ),
+    (
+        "excluded_dir_suffixes",
+        "excluded_dir_suffixes = [\"Tests\", \".Tests\", \"tests\", \".tests\"]",
+    ),
+    (
+        "excluded_bin_except_under",
+        "excluded_bin_except_under = [\"src\"]",
+    ),
+];
+const SOUL_DEFAULT_PLUGIN_HEADER: &str = "[[soul.plugins]]";
 
 pub fn discover_config(start_dir: impl AsRef<Path>) -> ConfigResult<Option<PathBuf>> {
     let start_dir = absolute_start_dir(start_dir.as_ref())?;
@@ -135,7 +168,7 @@ pub fn ensure_config_with_csharp_defaults(config_path: impl AsRef<Path>) -> Conf
                 )
             })?;
         }
-        fs::write(config_path, DEFAULT_CONFIG_TEMPLATE).map_err(|source| {
+        fs::write(config_path, default_config_template()).map_err(|source| {
             ConfigError::io(
                 "write default refactor radar config",
                 Some(config_path.to_path_buf()),
@@ -160,6 +193,13 @@ pub fn ensure_config_with_csharp_defaults(config_path: impl AsRef<Path>) -> Conf
         CSHARP_TABLE_HEADER,
         &CSHARP_DEFAULT_LINES,
     )?;
+    let updated = ensure_default_table_lines(
+        &updated,
+        config_path,
+        SOUL_SCAN_TABLE_HEADER,
+        &SOUL_SCAN_DEFAULT_LINES,
+    )?;
+    let updated = ensure_default_soul_plugins(&updated, config_path)?;
 
     if updated == contents {
         return Ok(());
@@ -173,6 +213,12 @@ pub fn ensure_config_with_csharp_defaults(config_path: impl AsRef<Path>) -> Conf
     })
 }
 
+fn default_config_template() -> String {
+    let mut template = DEFAULT_CONFIG_TEMPLATE.to_string();
+    template.push_str(&default_soul_plugins_section());
+    template
+}
+
 fn absolute_start_dir(start_dir: &Path) -> ConfigResult<PathBuf> {
     if start_dir.is_absolute() {
         return Ok(start_dir.to_path_buf());
@@ -181,6 +227,51 @@ fn absolute_start_dir(start_dir: &Path) -> ConfigResult<PathBuf> {
     let current_dir = env::current_dir()
         .map_err(|source| ConfigError::io("read current directory", None, source))?;
     Ok(current_dir.join(start_dir))
+}
+
+fn ensure_default_soul_plugins(contents: &str, config_path: &Path) -> ConfigResult<String> {
+    let parsed = toml::from_str::<toml::Value>(contents)
+        .map_err(|source| ConfigError::toml(config_path, source))?;
+    let root = parsed
+        .as_table()
+        .ok_or_else(|| ConfigError::invalid_soul_setting("soul", "config root must be a table"))?;
+    let plugins = root
+        .get("soul")
+        .and_then(toml::Value::as_table)
+        .and_then(|soul| soul.get("plugins"));
+
+    match plugins {
+        Some(value) if value.as_array().is_some() => Ok(contents.to_string()),
+        Some(_) => Err(ConfigError::invalid_soul_setting(
+            "soul.plugins",
+            "must be an array of plugin tables",
+        )),
+        None => {
+            let mut updated = contents.to_string();
+            if !updated.ends_with('\n') {
+                updated.push('\n');
+            }
+            if !updated.ends_with("\n\n") {
+                updated.push('\n');
+            }
+            updated.push_str(&default_soul_plugins_section());
+            Ok(updated)
+        }
+    }
+}
+
+fn default_soul_plugins_section() -> String {
+    let suffix = std::env::consts::DLL_SUFFIX;
+    format!(
+        r#"{SOUL_DEFAULT_PLUGIN_HEADER}
+language = "rust"
+path = "./.soul/plugins/rust{suffix}"
+
+{SOUL_DEFAULT_PLUGIN_HEADER}
+language = "csharp"
+path = "./.soul/plugins/csharp{suffix}"
+"#
+    )
 }
 
 fn ensure_default_table_lines(
@@ -195,16 +286,12 @@ fn ensure_default_table_lines(
     let root = parsed
         .as_table()
         .ok_or_else(|| invalid_default_table_setting(table_name, "config root must be a table"))?;
-    let missing_lines = match root.get(table_name) {
-        Some(value) => {
-            let table = value
-                .as_table()
-                .ok_or_else(|| invalid_default_table_setting(table_name, "must be a TOML table"))?;
-            default_lines
-                .iter()
-                .filter_map(|(key, line)| (!table.contains_key(*key)).then_some(*line))
-                .collect::<Vec<_>>()
-        }
+    let table = table_at_path(root, table_name)?;
+    let missing_lines = match table {
+        Some(table) => default_lines
+            .iter()
+            .filter_map(|(key, line)| (!table.contains_key(*key)).then_some(*line))
+            .collect::<Vec<_>>(),
         None => default_lines
             .iter()
             .map(|(_key, line)| *line)
@@ -215,7 +302,7 @@ fn ensure_default_table_lines(
         return Ok(contents.to_string());
     }
 
-    if root.contains_key(table_name) {
+    if table.is_some() {
         Ok(insert_missing_table_lines(
             contents,
             table_header,
@@ -226,10 +313,32 @@ fn ensure_default_table_lines(
     }
 }
 
+fn table_at_path<'a>(
+    root: &'a toml::value::Table,
+    table_name: &str,
+) -> ConfigResult<Option<&'a toml::value::Table>> {
+    let mut current = root;
+    for part in table_name.split('.') {
+        let Some(value) = current.get(part) else {
+            return Ok(None);
+        };
+        let Some(table) = value.as_table() else {
+            return Err(invalid_default_table_setting(
+                table_name,
+                "must be a TOML table",
+            ));
+        };
+        current = table;
+    }
+
+    Ok(Some(current))
+}
+
 fn invalid_default_table_setting(table_name: &str, message: &str) -> ConfigError {
-    match table_name {
+    match table_name.split('.').next().unwrap_or(table_name) {
         "fts" => ConfigError::invalid_fts_setting(table_name, message),
         "csharp" => ConfigError::invalid_csharp_setting(table_name, message),
+        "soul" => ConfigError::invalid_soul_setting(table_name, message),
         _ => ConfigError::invalid_csharp_setting(table_name, message),
     }
 }

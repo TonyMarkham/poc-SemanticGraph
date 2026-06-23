@@ -16,6 +16,10 @@ impl ProviderId {
         Self("csharp-language-server")
     }
 
+    pub const fn soul_lsp() -> Self {
+        Self("soul-lsp")
+    }
+
     pub const fn as_str(self) -> &'static str {
         self.0
     }

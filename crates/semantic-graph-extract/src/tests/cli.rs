@@ -1,9 +1,10 @@
 use crate::{
     cli::{
-        CSharpFileMode, Cli, Command, RustFileMode, resolve_cli_database_path,
+        CSharpFileMode, Cli, Command, RustFileMode, SoulFileMode, resolve_cli_database_path,
         resolve_cli_fts_analysis_workers, resolve_cli_fts_database_path,
         resolve_csharp_extractor_plan, resolve_csharp_file_mode, resolve_csharp_workspace_routes,
         resolve_rust_file_mode, resolve_rust_workspace_routes, resolve_solution_from,
+        resolve_soul_file_mode, resolve_soul_lsp_config, resolve_soul_workspace_routes,
         validate_deleted_rust_file_request,
     },
     workspace_extraction::WorkspaceExtractionRoutes,
@@ -347,6 +348,109 @@ fn rust_workspace_routes_default_to_all_and_allow_combinations() {
         resolve_rust_workspace_routes(false, false, true).label(),
         "symbols"
     );
+}
+
+#[test]
+fn soul_file_defaults_workspace_root_and_supports_symbols_mode() -> Result<(), Box<dyn Error>> {
+    let cli = Cli::try_parse_from([
+        "semantic-graph-extract",
+        "soul-file",
+        "--workspace-root",
+        ".",
+        "docs/feature.md",
+        "--symbols",
+    ])?;
+
+    match cli.command {
+        Command::SoulFile {
+            db,
+            workspace_root,
+            references,
+            symbols,
+            file,
+        } => {
+            assert_eq!(db, None);
+            assert_eq!(workspace_root, PathBuf::from("."));
+            assert!(!references);
+            assert!(symbols);
+            assert_eq!(file, PathBuf::from("docs/feature.md"));
+        }
+        _ => return Err("expected soul-file command".into()),
+    }
+
+    Ok(())
+}
+
+#[test]
+fn soul_file_modes_are_mutually_exclusive() -> Result<(), Box<dyn Error>> {
+    assert_eq!(resolve_soul_file_mode(false, false)?, SoulFileMode::Full);
+    assert_eq!(resolve_soul_file_mode(false, true)?, SoulFileMode::Symbols);
+    assert_eq!(
+        resolve_soul_file_mode(true, false)?,
+        SoulFileMode::References
+    );
+    assert!(resolve_soul_file_mode(true, true).is_err());
+    Ok(())
+}
+
+#[test]
+fn soul_workspace_defaults_to_symbols_and_references_without_calls() {
+    let routes = resolve_soul_workspace_routes(false, false);
+    assert!(routes.includes_symbols());
+    assert!(routes.includes_references());
+    assert!(!routes.includes_calls());
+
+    let symbols = resolve_soul_workspace_routes(false, true);
+    assert!(symbols.includes_symbols());
+    assert!(!symbols.includes_references());
+    assert!(!symbols.includes_calls());
+}
+
+#[test]
+fn soul_lsp_config_resolves_from_refactor_radar_config() -> Result<(), Box<dyn Error>> {
+    let root = temp_dir("soul-lsp-config-resolves")?;
+    let config_dir = root.join(".refactor-radar");
+    fs::create_dir_all(&config_dir)?;
+    let config_path = config_dir.join("config.toml");
+    fs::write(
+        &config_path,
+        r#"
+[database]
+path = ".local/graph.db"
+
+[soul.scan]
+excluded_dirs = [".git", "target", "generated"]
+excluded_dir_suffixes = ["Spec"]
+excluded_bin_except_under = ["src", "tools"]
+
+[[soul.plugins]]
+language = "rust"
+path = ".soul/plugins/rust.so"
+"#,
+    )?;
+
+    let config = resolve_soul_lsp_config(&None, &root)?;
+
+    assert_eq!(
+        config.scan().excluded_dirs(),
+        &[
+            ".git".to_string(),
+            "target".to_string(),
+            "generated".to_string()
+        ]
+    );
+    assert_eq!(config.scan().excluded_dir_suffixes(), &["Spec".to_string()]);
+    assert_eq!(
+        config.scan().excluded_bin_except_under(),
+        &["src".to_string(), "tools".to_string()]
+    );
+    assert_eq!(config.plugins().len(), 1);
+    assert_eq!(config.plugins()[0].language(), "rust");
+    assert_eq!(
+        config.plugins()[0].path(),
+        &PathBuf::from(".soul/plugins/rust.so")
+    );
+    Ok(())
 }
 
 #[test]

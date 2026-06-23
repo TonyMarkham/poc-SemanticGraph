@@ -30,10 +30,19 @@ impl RouteName {
         value: "csharp.calls",
     };
 
+    pub const SOUL_DOCUMENT_SYMBOLS: Self = Self {
+        value: "soul.document_symbols",
+    };
+
+    pub const SOUL_REFERENCES: Self = Self {
+        value: "soul.references",
+    };
+
     pub fn document_symbols_for_language(language: GraphLanguage) -> Self {
         match language {
             GraphLanguage::Rust => Self::RUST_DOCUMENT_SYMBOLS,
             GraphLanguage::CSharp => Self::CSHARP_DOCUMENT_SYMBOLS,
+            GraphLanguage::Soul => Self::SOUL_DOCUMENT_SYMBOLS,
         }
     }
 
@@ -41,6 +50,7 @@ impl RouteName {
         match language {
             GraphLanguage::Rust => Self::RUST_REFERENCES,
             GraphLanguage::CSharp => Self::CSHARP_REFERENCES,
+            GraphLanguage::Soul => Self::SOUL_REFERENCES,
         }
     }
 
@@ -48,6 +58,9 @@ impl RouteName {
         match language {
             GraphLanguage::Rust => Self::RUST_CALLS,
             GraphLanguage::CSharp => Self::CSHARP_CALLS,
+            GraphLanguage::Soul => Self {
+                value: "soul.calls.unsupported",
+            },
         }
     }
 

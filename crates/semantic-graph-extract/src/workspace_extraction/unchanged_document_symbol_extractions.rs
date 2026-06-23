@@ -191,6 +191,7 @@ fn graph_language_from_store(
     match language {
         "rust" => Ok(GraphLanguage::Rust),
         "csharp" => Ok(GraphLanguage::CSharp),
+        "soul" => Ok(GraphLanguage::Soul),
         _ => Err(ExtractError::response_shape(
             provider,
             method,

@@ -46,3 +46,16 @@ features = []
 analysis_workers = 8
 startup_timeout_ms = 120000
 request_timeout_ms = 30000
+
+[soul.scan]
+excluded_dirs = [".git", ".soul", "target", ".idea", ".vscode", ".vs", ".codex", "node_modules", "obj", ".archive", ".claude"]
+excluded_dir_suffixes = ["Tests", ".Tests", "tests", ".tests"]
+excluded_bin_except_under = ["src"]
+
+[[soul.plugins]]
+language = "rust"
+path = "./.soul/plugins/rust.so"
+
+[[soul.plugins]]
+language = "csharp"
+path = "./.soul/plugins/csharp.so"

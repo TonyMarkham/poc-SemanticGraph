@@ -2,6 +2,7 @@
 members = [
     "crates/csharp-ls-lib",
     "crates/rust-analyzer-lib",
+    "crates/soul-lsp-lib",
     "crates/semantic-graph-config",
     "crates/semantic-graph-db-manager",
     "crates/semantic-graph-extract",
@@ -16,7 +17,7 @@ members = [
     "crates/wip",
 ]
 resolver = "3"
-exclude = ["submodules/rust-analyzer"]
+exclude = ["submodules/rust-analyzer", "submodules/soul"]
 
 [workspace.package]
 version = "0.1.0"
@@ -50,6 +51,7 @@ tree-sitter-rust              = { version = "0.24.2" }
 
 rust-analyzer-lib             = { path = "crates/rust-analyzer-lib" }
 csharp-ls-lib                 = { path = "crates/csharp-ls-lib" }
+soul-lsp-lib                  = { path = "crates/soul-lsp-lib" }
 semantic-graph-config         = { path = "crates/semantic-graph-config" }
 semantic-graph-db-manager     = { path = "crates/semantic-graph-db-manager" }
 semantic-graph-extract        = { path = "crates/semantic-graph-extract" }
@@ -62,6 +64,7 @@ semantic-graph-store          = { path = "crates/semantic-graph-store" }
 
 ide                           = { path = "submodules/rust-analyzer/crates/ide" }
 ide-db                        = { path = "submodules/rust-analyzer/crates/ide-db" }
+indexer                       = { path = "submodules/soul/crates/indexer" }
 load-cargo                    = { path = "submodules/rust-analyzer/crates/load-cargo" }
 paths                         = { path = "submodules/rust-analyzer/crates/paths" }
 project-model                 = { path = "submodules/rust-analyzer/crates/project-model" }

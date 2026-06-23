@@ -15,6 +15,7 @@ tokio                         = { workspace = true }
 
 csharp-ls-lib                 = { workspace = true }
 rust-analyzer-lib             = { workspace = true }
+soul-lsp-lib                  = { workspace = true }
 semantic-graph-config         = { workspace = true }
 semantic-graph-db-manager     = { workspace = true }
 semantic-graph-search-tantivy = { workspace = true }

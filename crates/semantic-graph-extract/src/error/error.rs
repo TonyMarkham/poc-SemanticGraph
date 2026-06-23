@@ -99,6 +99,14 @@ pub enum ExtractError {
         location: ErrorLocation,
     },
 
+    #[error("soul-lsp-lib error during {context} at {location}")]
+    SoulLspLib {
+        context: String,
+        #[source]
+        source: Box<soul_lsp_lib::SoulLspLibError>,
+        location: ErrorLocation,
+    },
+
     #[error("configuration error at {location}")]
     Config {
         #[source]
@@ -242,6 +250,15 @@ impl ExtractError {
     }
 
     #[track_caller]
+    pub fn soul_lsp_lib(context: impl Into<String>, source: soul_lsp_lib::SoulLspLibError) -> Self {
+        Self::SoulLspLib {
+            context: context.into(),
+            source: Box::new(source),
+            location: ErrorLocation::from(Location::caller()),
+        }
+    }
+
+    #[track_caller]
     pub fn config(source: ConfigError) -> Self {
         Self::Config {
             source: Box::new(source),
@@ -270,6 +287,7 @@ impl ExtractError {
             Self::InvalidPath { .. } => "invalid input path",
             Self::RustAnalyzerLib { .. } => "rust-analyzer-lib error",
             Self::CSharpLsLib { .. } => "csharp-ls-lib error",
+            Self::SoulLspLib { .. } => "soul-lsp-lib error",
             Self::Config { .. } => "configuration error",
             Self::TantivySearch { .. } => "tantivy search error",
         }
@@ -287,6 +305,7 @@ impl ExtractError {
             | Self::InvalidPath { location, .. }
             | Self::RustAnalyzerLib { location, .. }
             | Self::CSharpLsLib { location, .. }
+            | Self::SoulLspLib { location, .. }
             | Self::Config { location, .. }
             | Self::TantivySearch { location, .. } => *location,
         }

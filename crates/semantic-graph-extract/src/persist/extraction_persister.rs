@@ -4201,6 +4201,7 @@ fn symbol_prerequisite_commands(language: GraphLanguage) -> &'static str {
         GraphLanguage::CSharp => {
             "csharp-solution --symbols, csharp-project --symbols, or csharp-file --symbols"
         }
+        GraphLanguage::Soul => "soul-workspace --symbols or soul-file --symbols",
     }
 }
 

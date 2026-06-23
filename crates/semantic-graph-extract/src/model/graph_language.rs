@@ -2,6 +2,7 @@
 pub enum GraphLanguage {
     Rust,
     CSharp,
+    Soul,
 }
 
 impl GraphLanguage {
@@ -9,6 +10,7 @@ impl GraphLanguage {
         match self {
             Self::Rust => "rust",
             Self::CSharp => "csharp",
+            Self::Soul => "soul",
         }
     }
 

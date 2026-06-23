@@ -48,6 +48,13 @@ pub enum ConfigError {
         location: ErrorLocation,
     },
 
+    #[error("invalid soul setting setting={setting} at {location}: {message}")]
+    InvalidSoulSetting {
+        setting: String,
+        message: String,
+        location: ErrorLocation,
+    },
+
     #[error("invalid query service setting setting={setting} at {location}: {message}")]
     InvalidQueryServiceSetting {
         setting: String,
@@ -122,6 +129,15 @@ impl ConfigError {
     }
 
     #[track_caller]
+    pub fn invalid_soul_setting(setting: impl Into<String>, message: impl Into<String>) -> Self {
+        Self::InvalidSoulSetting {
+            setting: setting.into(),
+            message: message.into(),
+            location: ErrorLocation::from(Location::caller()),
+        }
+    }
+
+    #[track_caller]
     pub fn invalid_query_service_setting(
         setting: impl Into<String>,
         message: impl Into<String>,
@@ -150,6 +166,7 @@ impl ConfigError {
             Self::InvalidWriterSetting { .. } => "invalid writer setting",
             Self::InvalidExtractorSetting { .. } => "invalid extractor setting",
             Self::InvalidCSharpSetting { .. } => "invalid csharp setting",
+            Self::InvalidSoulSetting { .. } => "invalid soul setting",
             Self::InvalidQueryServiceSetting { .. } => "invalid query service setting",
             Self::InvalidFtsSetting { .. } => "invalid fts setting",
         }
@@ -163,6 +180,7 @@ impl ConfigError {
             | Self::InvalidWriterSetting { location, .. }
             | Self::InvalidExtractorSetting { location, .. }
             | Self::InvalidCSharpSetting { location, .. }
+            | Self::InvalidSoulSetting { location, .. }
             | Self::InvalidQueryServiceSetting { location, .. }
             | Self::InvalidFtsSetting { location, .. } => *location,
         }

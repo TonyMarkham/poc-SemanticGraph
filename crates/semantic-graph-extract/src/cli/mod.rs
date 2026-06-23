@@ -7,6 +7,8 @@ mod csharp_file_mode;
 mod resolved_csharp_extractor_plan;
 mod rust_file_extractions;
 mod rust_file_mode;
+mod soul_file_extractions;
+mod soul_file_mode;
 
 // ---------------------------------------------------------------------------------------------- //
 
@@ -17,6 +19,8 @@ pub use csharp_file_mode::CSharpFileMode;
 pub use resolved_csharp_extractor_plan::ResolvedCSharpExtractorPlan;
 pub use rust_file_extractions::RustFileExtractions;
 pub use rust_file_mode::RustFileMode;
+pub use soul_file_extractions::SoulFileExtractions;
+pub use soul_file_mode::SoulFileMode;
 
 // ---------------------------------------------------------------------------------------------- //
 
@@ -27,8 +31,8 @@ use crate::{
 };
 
 use semantic_graph_config::{
-    CSharpConfig, FtsConfig, LoadOptions, discover_config, ensure_config_with_csharp_defaults,
-    load_config, resolve_database_path,
+    CSharpConfig, FtsConfig, LoadOptions, SoulConfig, discover_config,
+    ensure_config_with_csharp_defaults, load_config, resolve_database_path,
 };
 
 use std::{
@@ -173,6 +177,40 @@ pub fn resolve_csharp_workspace_routes(
     symbols: bool,
 ) -> WorkspaceExtractionRoutes {
     WorkspaceExtractionRoutes::from_selectors(symbols, references, calls)
+}
+
+pub fn resolve_soul_file_mode(references: bool, symbols: bool) -> ExtractResult<SoulFileMode> {
+    if references && symbols {
+        return Err(ExtractError::response_shape(
+            "soul-lsp",
+            "soul-file",
+            "--references and --symbols are mutually exclusive",
+        ));
+    }
+
+    if references {
+        Ok(SoulFileMode::References)
+    } else if symbols {
+        Ok(SoulFileMode::Symbols)
+    } else {
+        Ok(SoulFileMode::Full)
+    }
+}
+
+pub fn resolve_soul_workspace_routes(references: bool, symbols: bool) -> WorkspaceExtractionRoutes {
+    if references || symbols {
+        WorkspaceExtractionRoutes::from_selectors(symbols, references, false)
+    } else {
+        WorkspaceExtractionRoutes::from_selectors(true, true, false)
+    }
+}
+
+pub fn resolve_soul_lsp_config(
+    config: &Option<PathBuf>,
+    discovery_start_dir: &Path,
+) -> ExtractResult<soul_lsp_lib::SoulLspConfig> {
+    let soul_config = resolve_cli_soul_config(config, discovery_start_dir)?;
+    Ok(soul_lsp_config_from(&soul_config))
 }
 
 pub fn resolve_solution(
@@ -331,6 +369,44 @@ fn resolve_cli_csharp_config(
     let config_dir = config_path.parent().map(Path::to_path_buf);
 
     Ok((loaded.csharp().clone(), config_dir))
+}
+
+fn resolve_cli_soul_config(
+    config: &Option<PathBuf>,
+    discovery_start_dir: &Path,
+) -> ExtractResult<SoulConfig> {
+    let config_path = match config {
+        Some(path) => path.clone(),
+        None => match discover_config(discovery_start_dir).map_err(ExtractError::config)? {
+            Some(path) => path,
+            None => discovery_start_dir.join(".refactor-radar/config.toml"),
+        },
+    };
+
+    ensure_config_with_csharp_defaults(&config_path).map_err(ExtractError::config)?;
+    let loaded = load_config(&config_path).map_err(ExtractError::config)?;
+
+    Ok(loaded.soul().clone())
+}
+
+fn soul_lsp_config_from(config: &SoulConfig) -> soul_lsp_lib::SoulLspConfig {
+    soul_lsp_lib::SoulLspConfig::new(
+        soul_lsp_lib::SoulLspScanConfig::new(
+            config.scan().excluded_dirs().to_vec(),
+            config.scan().excluded_dir_suffixes().to_vec(),
+            config.scan().excluded_bin_except_under().to_vec(),
+        ),
+        config
+            .plugins()
+            .iter()
+            .map(|plugin| {
+                soul_lsp_lib::SoulLspPluginConfig::new(
+                    plugin.language().to_string(),
+                    plugin.path().clone(),
+                )
+            })
+            .collect(),
+    )
 }
 
 fn resolve_config_relative_path(path: &Path, config_dir: Option<&Path>) -> PathBuf {

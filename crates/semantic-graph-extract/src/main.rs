@@ -5,11 +5,12 @@ use semantic_graph_extract::{
     benchmark::{BenchmarkSummary, Stopwatch},
     cli::{
         CSharpFileExtractions, CSharpFileMode, Cli, Command, ResolvedCSharpExtractorPlan,
-        RustFileExtractions, RustFileMode, normalize_lexical_path, resolve_cli_database_path,
-        resolve_cli_fts_analysis_workers, resolve_cli_fts_database_path,
-        resolve_csharp_extractor_plan, resolve_csharp_file_mode, resolve_csharp_workspace_routes,
-        resolve_rust_file_mode, resolve_rust_workspace_routes, symbol_key_belongs_to_file,
-        validate_deleted_rust_file_request,
+        RustFileExtractions, RustFileMode, SoulFileExtractions, SoulFileMode,
+        normalize_lexical_path, resolve_cli_database_path, resolve_cli_fts_analysis_workers,
+        resolve_cli_fts_database_path, resolve_csharp_extractor_plan, resolve_csharp_file_mode,
+        resolve_csharp_workspace_routes, resolve_rust_file_mode, resolve_rust_workspace_routes,
+        resolve_soul_file_mode, resolve_soul_lsp_config, resolve_soul_workspace_routes,
+        symbol_key_belongs_to_file, validate_deleted_rust_file_request,
     },
     document_symbols::paths::{file_uri, validate_document_symbol_batch_request},
     fts::{FtsExtractionOptions, FtsExtractionRunner, FtsExtractionSummary},
@@ -20,6 +21,7 @@ use semantic_graph_extract::{
     persist::{ExtractionPersister, PersistenceSummary},
     providers::csharp_ls::CSharpLsProvider,
     providers::rust_analyzer::RustAnalyzerProvider,
+    providers::soul_lsp::SoulLspProvider,
     workspace_extraction::{
         CSharpRouteBatchContext, CSharpRouteBatchScope, SharedWorkspaceExtractionRunner,
         ThreadedWorkspaceExtractionConfig, ThreadedWorkspaceExtractionRunner,
@@ -409,6 +411,74 @@ async fn run() -> ExtractResult<()> {
             .await?;
 
             print_csharp_route_batch_summary("solution", routes, &summary);
+            print_benchmark_summary(&summary.benchmark);
+        }
+        Command::SoulFile {
+            db,
+            workspace_root,
+            references,
+            symbols,
+            file,
+        } => {
+            let mode = resolve_soul_file_mode(references, symbols)?;
+            let document_request =
+                validate_document_symbol_batch_request(DocumentSymbolBatchRequest {
+                    package_path: workspace_root.clone(),
+                    workspace_root,
+                    file_paths: vec![file],
+                })?;
+            let workspace_root_uri = file_uri(&document_request.workspace_root)?;
+            let soul_config = resolve_soul_lsp_config(&config, &document_request.workspace_root)?;
+            let db = resolve_cli_database_path(db, &config, &document_request.workspace_root)?;
+            let store = start_writer(db, &config, &document_request.workspace_root).await?;
+
+            let provider = SoulLspProvider::new();
+            let extractions = extract_soul_file_with_single_worker(
+                &provider,
+                &soul_config,
+                document_request,
+                mode,
+            )
+            .await?;
+            let summary =
+                persist_soul_file_extractions(&store, &workspace_root_uri, mode, &extractions)
+                    .await?;
+            shutdown_writer(&store).await?;
+
+            print_soul_file_summary(mode, &summary);
+        }
+        Command::SoulWorkspace {
+            db,
+            workspace_root,
+            references,
+            symbols,
+        } => {
+            let routes = resolve_soul_workspace_routes(references, symbols);
+            let provider = SoulLspProvider::new();
+            let soul_config = resolve_soul_lsp_config(&config, &workspace_root)?;
+
+            let discovery_timer = Stopwatch::start_new();
+            let file_paths = provider.discover_soul_source_files(&workspace_root, &soul_config)?;
+            let discovery_elapsed = discovery_timer.elapsed();
+
+            let document_request =
+                validate_document_symbol_batch_request(DocumentSymbolBatchRequest {
+                    package_path: workspace_root.clone(),
+                    workspace_root,
+                    file_paths,
+                })?;
+            let summary = run_soul_route_batch(
+                &config,
+                db,
+                &provider,
+                &soul_config,
+                document_request,
+                routes,
+                Some(("discovery", discovery_elapsed)),
+            )
+            .await?;
+
+            print_soul_route_batch_summary("workspace", routes, &summary);
             print_benchmark_summary(&summary.benchmark);
         }
     }
@@ -944,6 +1014,174 @@ async fn persist_csharp_file_extractions(
     })
 }
 
+async fn extract_soul_file_with_single_worker(
+    provider: &SoulLspProvider,
+    soul_config: &soul_lsp_lib::SoulLspConfig,
+    document_request: DocumentSymbolBatchRequest,
+    mode: SoulFileMode,
+) -> ExtractResult<SoulFileExtractions> {
+    let worker = soul_lsp_lib::AnalysisWorker::start_with_config(
+        &document_request.workspace_root,
+        soul_config.clone(),
+    )
+    .map_err(|source| ExtractError::soul_lsp_lib("start single soul-file worker", source))?;
+    let result =
+        extract_soul_file_with_worker(provider, soul_config, &worker, document_request, mode).await;
+    let shutdown_result = worker
+        .shutdown()
+        .await
+        .map_err(|source| ExtractError::soul_lsp_lib("shutdown single soul-file worker", source));
+
+    match (result, shutdown_result) {
+        (Ok(extractions), Ok(())) => Ok(extractions),
+        (Err(error), _) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+    }
+}
+
+async fn extract_soul_file_with_worker(
+    provider: &SoulLspProvider,
+    soul_config: &soul_lsp_lib::SoulLspConfig,
+    worker: &soul_lsp_lib::AnalysisWorkerHandle,
+    document_request: DocumentSymbolBatchRequest,
+    mode: SoulFileMode,
+) -> ExtractResult<SoulFileExtractions> {
+    let file_scope_key = file_uri(&document_request.file_paths[0])?;
+    let document_symbols =
+        soul_document_symbols_with_worker(provider, worker, document_request.clone()).await?;
+
+    if !mode.includes_references() {
+        return Ok(SoulFileExtractions {
+            file_scope_key,
+            document_symbols,
+            references: None,
+        });
+    }
+
+    let (relation_document_request, relation_document_symbols) =
+        soul_file_relation_document_symbols(provider, soul_config, worker, &document_request)
+            .await?;
+    let reference_targets = provider.reference_targets_for_document_symbols(
+        &relation_document_request,
+        &relation_document_symbols,
+    )?;
+    let reference_target_count = reference_targets.len();
+    let reference_result = worker
+        .file_semantic_work(soul_lsp_lib::FileSemanticWork {
+            file_path: document_request.file_paths[0].clone(),
+            reference_targets,
+        })
+        .await
+        .map_err(|source| ExtractError::soul_lsp_lib("soul-lsp-lib file_semantic_work", source))?;
+    let reference_sets = soul_reference_sets_for_file_relations(
+        reference_result.reference_sets,
+        &document_request.file_paths[0],
+    );
+    let references = Some(provider.map_reference_sets(
+        &relation_document_request,
+        relation_document_symbols,
+        reference_sets,
+        reference_target_count,
+    )?);
+
+    Ok(SoulFileExtractions {
+        file_scope_key,
+        document_symbols,
+        references,
+    })
+}
+
+async fn soul_document_symbols_with_worker(
+    provider: &SoulLspProvider,
+    worker: &soul_lsp_lib::AnalysisWorkerHandle,
+    document_request: DocumentSymbolBatchRequest,
+) -> ExtractResult<DocumentSymbolBatchExtraction> {
+    let document_symbol_items = worker
+        .document_symbols_for_files(document_request.file_paths.clone())
+        .await
+        .map_err(|source| {
+            ExtractError::soul_lsp_lib("soul-lsp-lib document_symbols_for_files", source)
+        })?;
+
+    provider.map_document_symbol_items(document_request, document_symbol_items)
+}
+
+async fn soul_file_relation_document_symbols(
+    provider: &SoulLspProvider,
+    soul_config: &soul_lsp_lib::SoulLspConfig,
+    worker: &soul_lsp_lib::AnalysisWorkerHandle,
+    document_request: &DocumentSymbolBatchRequest,
+) -> ExtractResult<(DocumentSymbolBatchRequest, DocumentSymbolBatchExtraction)> {
+    let mut file_paths =
+        provider.discover_soul_source_files(&document_request.workspace_root, soul_config)?;
+    file_paths.push(document_request.file_paths[0].clone());
+
+    let relation_document_request =
+        validate_document_symbol_batch_request(DocumentSymbolBatchRequest {
+            package_path: document_request.workspace_root.clone(),
+            workspace_root: document_request.workspace_root.clone(),
+            file_paths,
+        })?;
+    let relation_document_symbols =
+        soul_document_symbols_with_worker(provider, worker, relation_document_request.clone())
+            .await?;
+
+    Ok((relation_document_request, relation_document_symbols))
+}
+
+fn soul_reference_sets_for_file_relations(
+    mut reference_sets: Vec<soul_lsp_lib::ResolvedReferenceSet>,
+    file_path: &Path,
+) -> Vec<soul_lsp_lib::ResolvedReferenceSet> {
+    for reference_set in &mut reference_sets {
+        let target_is_in_file = reference_set.target_file_path == file_path;
+        reference_set
+            .references
+            .retain(|location| target_is_in_file || location.file_path == file_path);
+    }
+
+    reference_sets
+        .into_iter()
+        .filter(|reference_set| !reference_set.references.is_empty())
+        .collect()
+}
+
+async fn persist_soul_file_extractions(
+    store: &WriteHandle,
+    workspace_root_uri: &str,
+    mode: SoulFileMode,
+    extractions: &SoulFileExtractions,
+) -> ExtractResult<PersistenceSummary> {
+    let mut summary = None;
+
+    if mode.includes_symbols() {
+        let document_summary = ExtractionPersister
+            .persist_document_symbol_batch(store, workspace_root_uri, &extractions.document_symbols)
+            .await?;
+        merge_optional_summary(&mut summary, document_summary);
+    }
+
+    if let Some(references) = &extractions.references {
+        let reference_summary = ExtractionPersister
+            .persist_reference_file_batch_for_file(
+                store,
+                workspace_root_uri,
+                &extractions.file_scope_key,
+                references,
+            )
+            .await?;
+        merge_optional_summary(&mut summary, reference_summary);
+    }
+
+    summary.ok_or_else(|| {
+        ExtractError::response_shape(
+            "soul-lsp",
+            "soul-file",
+            "soul-file extraction produced no persistence work",
+        )
+    })
+}
+
 fn merge_optional_summary(target: &mut Option<PersistenceSummary>, source: PersistenceSummary) {
     match target {
         Some(target) => {
@@ -1003,6 +1241,29 @@ fn print_rust_file_deleted_summary(relative_path: &str, summary: &PersistenceSum
 }
 
 fn print_csharp_file_summary(mode: CSharpFileMode, summary: &PersistenceSummary) {
+    let contains_edges = summary
+        .edges
+        .saturating_sub(summary.reference_edges + summary.call_edges);
+    println!(
+        "mode={} workspace={} last_run={} files={} nodes={} contains_edges={} references_edges={} reference_occurrences={} calls_edges={} call_occurrences={} evidence={} routes_complete={} stale_nodes_closed={} stale_edges_closed={}",
+        mode.label(),
+        summary.workspace_id,
+        summary.run_id,
+        summary.files,
+        summary.nodes,
+        contains_edges,
+        summary.reference_edges,
+        summary.reference_occurrences,
+        summary.call_edges,
+        summary.call_occurrences,
+        summary.evidence,
+        summary.routes_complete,
+        summary.stale_nodes_closed,
+        summary.stale_edges_closed
+    );
+}
+
+fn print_soul_file_summary(mode: SoulFileMode, summary: &PersistenceSummary) {
     let contains_edges = summary
         .edges
         .saturating_sub(summary.reference_edges + summary.call_edges);
@@ -1747,6 +2008,146 @@ async fn run_csharp_route_batch(
     })
 }
 
+async fn run_soul_route_batch(
+    config: &Option<PathBuf>,
+    db: Option<PathBuf>,
+    provider: &SoulLspProvider,
+    soul_config: &soul_lsp_lib::SoulLspConfig,
+    document_request: DocumentSymbolBatchRequest,
+    routes: WorkspaceExtractionRoutes,
+    discovery_metric: Option<(&str, std::time::Duration)>,
+) -> ExtractResult<WorkspaceExtractionSummary> {
+    let total_timer = Stopwatch::start_new();
+    let mut benchmark = BenchmarkSummary::new();
+
+    if let Some((name, elapsed)) = discovery_metric {
+        benchmark.insert_duration_ms(name, elapsed);
+    }
+    benchmark.insert_label("execution_mode", "soul_live_scan");
+    benchmark.insert_label("mode", "soul-workspace");
+    benchmark.insert_label("routes", routes.label());
+    benchmark.insert_count("files_discovered", document_request.file_paths.len());
+
+    let workspace_root_uri_timer = Stopwatch::start_new();
+    let workspace_root_uri = file_uri(&document_request.workspace_root)?;
+    benchmark.insert_duration_ms("workspace_root_uri", workspace_root_uri_timer.elapsed());
+
+    let writer_ready_timer = Stopwatch::start_new();
+    let db = resolve_cli_database_path(db, config, &document_request.workspace_root)?;
+    let store = start_writer(db, config, &document_request.workspace_root).await?;
+    benchmark.insert_duration_ms("writer_ready", writer_ready_timer.elapsed());
+
+    let worker_start_timer = Stopwatch::start_new();
+    let worker = soul_lsp_lib::AnalysisWorker::start_with_config(
+        &document_request.workspace_root,
+        soul_config.clone(),
+    )
+    .map_err(|source| ExtractError::soul_lsp_lib("start Soul analysis worker", source))?;
+    benchmark.insert_duration_ms("worker_start", worker_start_timer.elapsed());
+
+    let document_symbols_query_timer = Stopwatch::start_new();
+    let document_symbol_items = worker
+        .document_symbols_for_files(document_request.file_paths.clone())
+        .await
+        .map_err(|source| {
+            ExtractError::soul_lsp_lib("soul-lsp-lib document_symbols_for_files", source)
+        })?;
+    benchmark.insert_duration_ms(
+        "document_symbols_query",
+        document_symbols_query_timer.elapsed(),
+    );
+
+    let document_symbols_map_timer = Stopwatch::start_new();
+    let document_symbols =
+        provider.map_document_symbol_items(document_request.clone(), document_symbol_items)?;
+    benchmark.insert_duration_ms("document_symbols_map", document_symbols_map_timer.elapsed());
+    benchmark.insert_count("document_files", document_symbols.extractions.len());
+    benchmark.insert_count("document_symbols", document_symbol_count(&document_symbols));
+
+    let mut document_summary = if routes.includes_symbols() {
+        let document_symbols_persist_timer = Stopwatch::start_new();
+        let summary = ExtractionPersister
+            .persist_document_symbol_batch(&store, &workspace_root_uri, &document_symbols)
+            .await?;
+        benchmark.insert_duration_ms(
+            "document_symbols_persist",
+            document_symbols_persist_timer.elapsed(),
+        );
+        summary
+    } else {
+        empty_persistence_summary(
+            existing_soul_workspace_id(&store, &workspace_root_uri).await?,
+            0,
+        )
+    };
+
+    let mut reference_summary = empty_persistence_summary(document_summary.workspace_id, 0);
+    let call_summary = empty_persistence_summary(document_summary.workspace_id, 0);
+    let mut reference_route_summary = empty_reference_route_summary();
+    let call_route_summary = empty_call_route_summary();
+
+    if routes.includes_references() {
+        let reference_targets_timer = Stopwatch::start_new();
+        let reference_targets = provider
+            .reference_targets_for_document_symbols(&document_request, &document_symbols)?;
+        let reference_targets_queried = reference_targets.len();
+        benchmark.insert_count("reference_targets", reference_targets_queried);
+        benchmark.insert_duration_ms("reference_targets_build", reference_targets_timer.elapsed());
+
+        let reference_work_timer = Stopwatch::start_new();
+        let file_result = worker
+            .file_semantic_work(soul_lsp_lib::FileSemanticWork {
+                file_path: document_request.workspace_root.clone(),
+                reference_targets,
+            })
+            .await
+            .map_err(|source| {
+                ExtractError::soul_lsp_lib("soul-lsp-lib workspace reference work", source)
+            })?;
+        benchmark.insert_duration_ms("reference_work", reference_work_timer.elapsed());
+
+        let references_map_timer = Stopwatch::start_new();
+        let extraction = provider.map_reference_sets(
+            &document_request,
+            document_symbols,
+            file_result.reference_sets,
+            reference_targets_queried,
+        )?;
+        benchmark.insert_duration_ms("references_map", references_map_timer.elapsed());
+        reference_route_summary = extraction.summary.clone();
+
+        let references_persist_timer = Stopwatch::start_new();
+        reference_summary = ExtractionPersister
+            .persist_reference_batch(&store, &workspace_root_uri, &extraction)
+            .await?;
+        benchmark.insert_duration_ms("references_persist", references_persist_timer.elapsed());
+        if document_summary.workspace_id == 0 {
+            document_summary.workspace_id = reference_summary.workspace_id;
+        }
+    }
+
+    let worker_shutdown_timer = Stopwatch::start_new();
+    worker
+        .shutdown()
+        .await
+        .map_err(|source| ExtractError::soul_lsp_lib("shutdown Soul analysis worker", source))?;
+    benchmark.insert_duration_ms("worker_shutdown", worker_shutdown_timer.elapsed());
+
+    let writer_shutdown_timer = Stopwatch::start_new();
+    shutdown_writer(&store).await?;
+    benchmark.insert_duration_ms("writer_shutdown", writer_shutdown_timer.elapsed());
+
+    benchmark.insert_duration_ms("total", total_timer.elapsed());
+    Ok(WorkspaceExtractionSummary {
+        benchmark,
+        document_summary,
+        reference_summary,
+        call_summary,
+        reference_route_summary,
+        call_route_summary,
+    })
+}
+
 fn csharp_reference_work_items_by_file(
     targets: Vec<csharp_ls_lib::ResolvedReferenceTarget>,
 ) -> Vec<csharp_ls_lib::FileSemanticWork> {
@@ -1837,6 +2238,14 @@ fn print_rust_route_batch_summary(
             + summary.reference_summary.stale_edges_closed
             + summary.call_summary.stale_edges_closed
     );
+}
+
+fn print_soul_route_batch_summary(
+    scope: &str,
+    routes: WorkspaceExtractionRoutes,
+    summary: &WorkspaceExtractionSummary,
+) {
+    print_rust_route_batch_summary(scope, routes, summary);
 }
 
 fn selected_route_last_run(
@@ -1968,6 +2377,25 @@ async fn existing_csharp_workspace_id(
                 "csharp route-only extraction",
                 format!(
                     "workspace {workspace_root_uri} is missing; run csharp-solution --symbols, csharp-project --symbols, or csharp-file --symbols first"
+                ),
+            )
+        })
+}
+
+async fn existing_soul_workspace_id(
+    store: &WriteHandle,
+    workspace_root_uri: &str,
+) -> ExtractResult<i64> {
+    store
+        .workspace_id(workspace_root_uri)
+        .await
+        .map_err(ExtractError::storage)?
+        .ok_or_else(|| {
+            ExtractError::response_shape(
+                "soul-lsp",
+                "soul route-only extraction",
+                format!(
+                    "workspace {workspace_root_uri} is missing; run soul-workspace --symbols or soul-file --symbols first"
                 ),
             )
         })

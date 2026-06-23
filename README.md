@@ -396,6 +396,61 @@ relative to the resolved solution directory. The command records completed
 file-scoped `csharp.document_symbols`, `csharp.references`, and `csharp.calls`
 routes with zero observations and soft-closes active graph facts for that file.
 
+## Extract Soul Documents And Annotations
+
+Soul extraction uses the checked-in Soul submodule in-process through
+`soul-lsp-lib`. It live-scans the workspace with Soul's `indexer` APIs and the
+`[soul]` section in `.refactor-radar/config.toml`. It does not run the
+`soul-lsp` CLI and does not read or write Soul's `.soul/index.db`.
+
+The extractor-owned Soul config mirrors Soul's scan settings and plugin list.
+Plugins are required for code annotation files; without them Soul only sees
+markdown documents and wikilinks.
+
+```toml
+[soul.scan]
+excluded_dirs = [".git", ".soul", "target", ".idea", ".vscode", ".vs", ".codex", "node_modules", "obj"]
+excluded_dir_suffixes = ["Tests", ".Tests", "tests", ".tests"]
+excluded_bin_except_under = ["src"]
+
+[[soul.plugins]]
+language = "rust"
+path = "./.soul/plugins/rust.so"
+
+[[soul.plugins]]
+language = "csharp"
+path = "./.soul/plugins/csharp.so"
+```
+
+Run one Soul-backed file:
+
+```sh
+./target/release/semantic-graph-extract soul-file \
+  --db .local/soul-extract.db \
+  docs/feature.md
+```
+
+Run the Soul workspace:
+
+```sh
+./target/release/semantic-graph-extract soul-workspace \
+  --db .local/soul-workspace-extract.db
+```
+
+`soul-file` supports one route selector at a time:
+
+```sh
+./target/release/semantic-graph-extract soul-file docs/feature.md --symbols
+./target/release/semantic-graph-extract soul-file docs/feature.md --references
+```
+
+`soul-workspace` uses combinable `--symbols` and `--references` selectors. With
+no selector, it refreshes `soul.document_symbols` and `soul.references`.
+Relation-only `--references` runs require the Soul symbol graph to already exist
+in the target database unless `--symbols` is selected in the same invocation.
+Soul calls are not currently extracted because Soul LSP has no call hierarchy
+route.
+
 ## Index File Text
 
 Use `fts` to index workspace file contents without adding semantic nodes or

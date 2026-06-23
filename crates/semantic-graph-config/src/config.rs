@@ -1,5 +1,6 @@
 use crate::{
-    CSharpConfig, DatabaseConfig, ExtractorConfig, FtsConfig, QueryServiceConfig, WriterConfig,
+    CSharpConfig, DatabaseConfig, ExtractorConfig, FtsConfig, QueryServiceConfig, SoulConfig,
+    WriterConfig,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -9,6 +10,7 @@ pub struct Config {
     writer: WriterConfig,
     query_service: QueryServiceConfig,
     csharp: CSharpConfig,
+    soul: SoulConfig,
     fts: FtsConfig,
 }
 
@@ -19,6 +21,7 @@ impl Config {
         writer: WriterConfig,
         query_service: QueryServiceConfig,
         csharp: CSharpConfig,
+        soul: SoulConfig,
         fts: FtsConfig,
     ) -> Self {
         Self {
@@ -27,6 +30,7 @@ impl Config {
             writer,
             query_service,
             csharp,
+            soul,
             fts,
         }
     }
@@ -49,6 +53,10 @@ impl Config {
 
     pub fn csharp(&self) -> &CSharpConfig {
         &self.csharp
+    }
+
+    pub fn soul(&self) -> &SoulConfig {
+        &self.soul
     }
 
     pub fn fts(&self) -> &FtsConfig {
