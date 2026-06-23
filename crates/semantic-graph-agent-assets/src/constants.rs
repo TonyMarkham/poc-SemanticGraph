@@ -33,6 +33,8 @@ pub mod generated_paths {
         ".agents/skills/semantic-graph/references/rust-extraction.md";
     pub const RUST_REFRESH_AGENT: &str = ".codex/agents/semantic-graph-rust-refresh.toml";
     pub const SKILL: &str = ".agents/skills/semantic-graph/SKILL.md";
+    pub const SOUL_EXTRACTION_REFERENCE: &str =
+        ".agents/skills/semantic-graph/references/soul-extraction.md";
     pub const TROUBLESHOOTING_REFERENCE: &str =
         ".agents/skills/semantic-graph/references/troubleshooting.md";
 
@@ -43,6 +45,7 @@ pub mod generated_paths {
         LOCAL_TESTBEDS_REFERENCE,
         MCP_TOOLS_REFERENCE,
         RUST_EXTRACTION_REFERENCE,
+        SOUL_EXTRACTION_REFERENCE,
         TROUBLESHOOTING_REFERENCE,
         CSHARP_REFRESH_AGENT,
         EXPLORER_AGENT,

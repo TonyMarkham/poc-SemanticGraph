@@ -12,6 +12,8 @@ mod node_relation_summary_row;
 mod node_search_result_row;
 mod node_summary_row;
 mod route_status_row;
+mod soul_id_row;
+mod soul_linked_source_row;
 
 // ---------------------------------------------------------------------------------------------- //
 
@@ -29,3 +31,5 @@ pub(crate) use node_relation_summary_row::NodeRelationSummaryRow;
 pub(crate) use node_search_result_row::NodeSearchResultRow;
 pub(crate) use node_summary_row::NodeSummaryRow;
 pub(crate) use route_status_row::RouteStatusRow;
+pub(crate) use soul_id_row::SoulIdRow;
+pub(crate) use soul_linked_source_row::SoulLinkedSourceRow;

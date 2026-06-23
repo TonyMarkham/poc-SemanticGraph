@@ -14,6 +14,7 @@ pub use model::{
     NeighborDirection, NeighborsRequest, NodeDetails, NodeDetailsRequest, NodeNeighbor,
     NodeNeighbors, NodeOccurrence, NodeRelationSummary, NodeSearchRequest, NodeSearchResult,
     NodeSearchResults, NodeSummary, ProjectionMetadata, ProjectionRequest, RouteStatus,
-    RouteStatusRequest, RouteStatusResults, ShortestPathRequest,
+    RouteStatusRequest, RouteStatusResults, ShortestPathRequest, SoulLinkedSource,
+    SoulSearchRequest, SoulSearchResult, SoulSearchResults,
 };
 pub use service::{FtsQueryService, GraphQueryService};

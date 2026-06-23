@@ -1,6 +1,7 @@
 use crate::tools::{
     EdgeDetailsParams, EmptyToolParams, FileSummaryParams, FtsSearchParams, NeighborsParams,
     NodeDetailsParams, ProjectionParams, RouteStatusParams, SearchNodesParams, ShortestPathParams,
+    SoulSearchParams,
 };
 
 use rmcp::{
@@ -18,6 +19,7 @@ pub const GRAPH_SHORTEST_PATH: &str = "graph_shortest_path";
 pub const GRAPH_FILE_SUMMARY: &str = "graph_file_summary";
 pub const GRAPH_ROUTE_STATUS: &str = "graph_route_status";
 pub const FTS_SEARCH: &str = "fts_search";
+pub const SOUL_SEARCH: &str = "soul_search";
 
 pub struct ToolRegistry;
 
@@ -35,6 +37,7 @@ impl ToolRegistry {
             GRAPH_FILE_SUMMARY,
             GRAPH_ROUTE_STATUS,
             FTS_SEARCH,
+            SOUL_SEARCH,
         ]
     }
 
@@ -80,6 +83,10 @@ impl ToolRegistry {
                 FTS_SEARCH,
                 "Search indexed file contents with Tantivy-backed ranking and SQLite snippets.",
             ),
+            tool::<SoulSearchParams>(
+                SOUL_SEARCH,
+                "Search stored Soul graph facts by ID/name/path and return documents, optional source annotations, references, pagination, and coverage gaps.",
+            ),
         ]
     }
 }
@@ -101,7 +108,7 @@ mod tests {
     use crate::tools::{
         FTS_SEARCH, GRAPH_EDGE_DETAILS, GRAPH_FILE_SUMMARY, GRAPH_NEIGHBORS, GRAPH_NODE_DETAILS,
         GRAPH_PROJECTION, GRAPH_ROUTE_STATUS, GRAPH_SEARCH_NODES, GRAPH_SHORTEST_PATH, GRAPH_STATS,
-        NodeDetailsParams, ToolRegistry,
+        NodeDetailsParams, SOUL_SEARCH, ToolRegistry,
     };
 
     #[test]
@@ -118,6 +125,7 @@ mod tests {
                 GRAPH_FILE_SUMMARY,
                 GRAPH_ROUTE_STATUS,
                 FTS_SEARCH,
+                SOUL_SEARCH,
             ],
             ToolRegistry::tool_names()
         );

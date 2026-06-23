@@ -8,7 +8,7 @@ use semantic_graph_db_manager::{
 use semantic_graph_query::{
     EdgeDetailsRequest, FileSummaryRequest, FtsQueryService, FtsSearchRequest, GraphQueryService,
     NeighborDirection, NeighborsRequest, NodeDetailsRequest, NodeSearchRequest, ProjectionRequest,
-    QueryError, RouteStatusRequest, ShortestPathRequest,
+    QueryError, RouteStatusRequest, ShortestPathRequest, SoulSearchRequest,
 };
 use semantic_graph_search_tantivy::{
     TantivyFtsDocument, TantivyFtsIndex, TantivyFtsIndexUpdate, TantivyFtsSearchRequest,
@@ -461,6 +461,233 @@ async fn route_status_filters_and_parses_diagnostics() -> Result<(), Box<dyn Err
     assert_eq!(1, limited.statuses.len());
     assert_eq!(Some(1), limited.requested_limit);
     assert_eq!(1, limited.applied_limit);
+
+    remove_database(fixture.database_path)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn soul_search_returns_documents_source_links_markdown_references_and_gaps()
+-> Result<(), Box<dyn Error>> {
+    let fixture = seeded_soul_database().await?;
+    let service = GraphQueryService::new(fixture.database_path.clone());
+
+    let checkout = service
+        .soul_search(SoulSearchRequest {
+            workspace_id: Some(fixture.workspace_id),
+            root_uri: None,
+            query: Some("feature.checkout".to_string()),
+            include_markdown_sources: Some(true),
+            include_source_annotations: None,
+            coverage: None,
+            limit: Some(10),
+            cursor: None,
+        })
+        .await?;
+
+    assert_eq!(1, checkout.results.len());
+    assert_eq!(1, checkout.total_results);
+    assert!(checkout.next_cursor.is_none());
+    let checkout = &checkout.results[0];
+    assert_eq!(fixture.workspace_id, checkout.workspace_id);
+    assert_eq!("file:///soul-fixture", checkout.root_uri);
+    assert_eq!("feature.checkout", checkout.soul_id);
+    assert!(checkout.has_document);
+    assert_eq!(
+        Some("docs/checkout.md"),
+        checkout
+            .document
+            .as_ref()
+            .and_then(|document| document.source_file_path.as_deref())
+    );
+    assert_eq!(2, checkout.source_annotation_count);
+    assert_eq!(2, checkout.linked_source_annotation_count);
+    assert_eq!(1, checkout.markdown_reference_count);
+    assert!(
+        checkout
+            .source_annotations
+            .iter()
+            .any(|source| source.source_file_language == "rust"
+                && source.source.source_file_path.as_deref() == Some("src/backend.rs")
+                && source.edge.is_some())
+    );
+    assert!(
+        checkout
+            .source_annotations
+            .iter()
+            .any(|source| source.source_file_language == "csharp"
+                && source.source.source_file_path.as_deref() == Some("frontend/Checkout.cs")
+                && source.edge.is_some())
+    );
+    assert_eq!(
+        Some("docs/related.md"),
+        checkout.markdown_references[0]
+            .source
+            .source_file_path
+            .as_deref()
+    );
+    assert!(checkout.markdown_references[0].edge.is_some());
+
+    let by_source_path = service
+        .soul_search(SoulSearchRequest {
+            workspace_id: Some(fixture.workspace_id),
+            root_uri: None,
+            query: Some("backend.rs".to_string()),
+            include_markdown_sources: Some(false),
+            include_source_annotations: None,
+            coverage: None,
+            limit: Some(10),
+            cursor: None,
+        })
+        .await?;
+    assert_eq!(1, by_source_path.results.len());
+    assert_eq!("feature.checkout", by_source_path.results[0].soul_id);
+    assert!(by_source_path.results[0].markdown_references.is_empty());
+
+    let unlinked = service
+        .soul_search(SoulSearchRequest {
+            workspace_id: Some(fixture.workspace_id),
+            root_uri: None,
+            query: Some("feature.unlinked".to_string()),
+            include_markdown_sources: Some(true),
+            include_source_annotations: None,
+            coverage: None,
+            limit: Some(10),
+            cursor: None,
+        })
+        .await?;
+    assert_eq!(1, unlinked.results.len());
+    assert_eq!("feature.unlinked", unlinked.results[0].soul_id);
+    assert!(!unlinked.results[0].has_document);
+    assert_eq!(1, unlinked.results[0].source_annotation_count);
+    assert_eq!(0, unlinked.results[0].linked_source_annotation_count);
+
+    remove_database(fixture.database_path)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn soul_search_supports_blank_query_pagination_and_coverage_filters()
+-> Result<(), Box<dyn Error>> {
+    let fixture = seeded_soul_database().await?;
+    let service = GraphQueryService::new(fixture.database_path.clone());
+
+    let first_page = service
+        .soul_search(SoulSearchRequest {
+            workspace_id: Some(fixture.workspace_id),
+            root_uri: None,
+            query: Some(" ".to_string()),
+            include_markdown_sources: Some(false),
+            include_source_annotations: None,
+            coverage: None,
+            limit: Some(1),
+            cursor: None,
+        })
+        .await?;
+    assert_eq!(3, first_page.total_results);
+    assert_eq!(1, first_page.results.len());
+    assert_eq!(Some("1"), first_page.next_cursor.as_deref());
+    assert!(first_page.results[0].source_annotations.is_empty());
+    assert!(first_page.results[0].source_annotation_count > 0);
+
+    let second_page = service
+        .soul_search(SoulSearchRequest {
+            workspace_id: Some(fixture.workspace_id),
+            root_uri: None,
+            query: None,
+            include_markdown_sources: Some(false),
+            include_source_annotations: None,
+            coverage: None,
+            limit: Some(1),
+            cursor: first_page.next_cursor.clone(),
+        })
+        .await?;
+    assert_eq!(3, second_page.total_results);
+    assert_eq!(1, second_page.results.len());
+    assert_ne!(
+        first_page.results[0].soul_id,
+        second_page.results[0].soul_id
+    );
+    assert!(second_page.results[0].source_annotations.is_empty());
+
+    let linked = service
+        .soul_search(SoulSearchRequest {
+            workspace_id: Some(fixture.workspace_id),
+            root_uri: None,
+            query: None,
+            include_markdown_sources: Some(false),
+            include_source_annotations: None,
+            coverage: Some("linked".to_string()),
+            limit: Some(10),
+            cursor: None,
+        })
+        .await?;
+    assert_eq!(1, linked.results.len());
+    assert_eq!("feature.checkout", linked.results[0].soul_id);
+
+    let docs_without_source = service
+        .soul_search(SoulSearchRequest {
+            workspace_id: Some(fixture.workspace_id),
+            root_uri: None,
+            query: None,
+            include_markdown_sources: Some(false),
+            include_source_annotations: None,
+            coverage: Some("docs_without_source".to_string()),
+            limit: Some(10),
+            cursor: None,
+        })
+        .await?;
+    assert_eq!(1, docs_without_source.results.len());
+    assert_eq!("feature.doc-only", docs_without_source.results[0].soul_id);
+
+    let annotations_without_doc = service
+        .soul_search(SoulSearchRequest {
+            workspace_id: Some(fixture.workspace_id),
+            root_uri: None,
+            query: None,
+            include_markdown_sources: Some(false),
+            include_source_annotations: None,
+            coverage: Some("annotations_without_doc".to_string()),
+            limit: Some(10),
+            cursor: None,
+        })
+        .await?;
+    assert_eq!(1, annotations_without_doc.results.len());
+    assert_eq!(
+        "feature.unlinked",
+        annotations_without_doc.results[0].soul_id
+    );
+
+    let unlinked_annotations = service
+        .soul_search(SoulSearchRequest {
+            workspace_id: Some(fixture.workspace_id),
+            root_uri: None,
+            query: None,
+            include_markdown_sources: Some(false),
+            include_source_annotations: None,
+            coverage: Some("unlinked_annotations".to_string()),
+            limit: Some(10),
+            cursor: None,
+        })
+        .await?;
+    assert_eq!(1, unlinked_annotations.results.len());
+    assert_eq!("feature.unlinked", unlinked_annotations.results[0].soul_id);
+
+    assert_invalid_params(
+        service
+            .soul_search(SoulSearchRequest {
+                workspace_id: Some(fixture.workspace_id),
+                root_uri: None,
+                query: None,
+                include_markdown_sources: Some(false),
+                include_source_annotations: None,
+                coverage: Some("garbage".to_string()),
+                limit: Some(10),
+                cursor: None,
+            })
+            .await,
+        "coverage must be one of all, linked, docs_without_source, annotations_without_doc, unlinked_annotations",
+    )?;
 
     remove_database(fixture.database_path)?;
     Ok(())
@@ -936,6 +1163,261 @@ async fn seeded_database() -> Result<Fixture, Box<dyn Error>> {
     let fixture = seed_fixture_database(&writer, database_path).await?;
     writer.shutdown().await?;
     Ok(fixture)
+}
+
+async fn seeded_soul_database() -> Result<SoulFixture, Box<dyn Error>> {
+    let database_path = temp_database_path()?;
+    let writer = WriteManager::start(&database_path).await?;
+    writer.migrate().await?;
+    let workspace_id = writer
+        .create_workspace("file:///soul-fixture", "soul")
+        .await?;
+    let run_id = writer
+        .start_run(workspace_id, "soul-lsp", Some("fixture"), None)
+        .await?;
+    let doc_file_id = writer
+        .upsert_file(FileInput {
+            workspace_id,
+            uri: "file:///soul-fixture/docs/checkout.md",
+            path: "docs/checkout.md",
+            language: "soul",
+            content_hash: Some("doc-hash"),
+            last_seen_run_id: Some(run_id),
+            properties_json: json!({}),
+        })
+        .await?;
+    let related_doc_file_id = writer
+        .upsert_file(FileInput {
+            workspace_id,
+            uri: "file:///soul-fixture/docs/related.md",
+            path: "docs/related.md",
+            language: "soul",
+            content_hash: Some("related-hash"),
+            last_seen_run_id: Some(run_id),
+            properties_json: json!({}),
+        })
+        .await?;
+    let doc_only_file_id = writer
+        .upsert_file(FileInput {
+            workspace_id,
+            uri: "file:///soul-fixture/docs/doc-only.md",
+            path: "docs/doc-only.md",
+            language: "soul",
+            content_hash: Some("doc-only-hash"),
+            last_seen_run_id: Some(run_id),
+            properties_json: json!({}),
+        })
+        .await?;
+    let rust_file_id = writer
+        .upsert_file(FileInput {
+            workspace_id,
+            uri: "file:///soul-fixture/src/backend.rs",
+            path: "src/backend.rs",
+            language: "soul",
+            content_hash: Some("rust-hash"),
+            last_seen_run_id: Some(run_id),
+            properties_json: json!({}),
+        })
+        .await?;
+    let csharp_file_id = writer
+        .upsert_file(FileInput {
+            workspace_id,
+            uri: "file:///soul-fixture/frontend/Checkout.cs",
+            path: "frontend/Checkout.cs",
+            language: "soul",
+            content_hash: Some("csharp-hash"),
+            last_seen_run_id: Some(run_id),
+            properties_json: json!({}),
+        })
+        .await?;
+    let unlinked_file_id = writer
+        .upsert_file(FileInput {
+            workspace_id,
+            uri: "file:///soul-fixture/src/unlinked.rs",
+            path: "src/unlinked.rs",
+            language: "soul",
+            content_hash: Some("unlinked-hash"),
+            last_seen_run_id: Some(run_id),
+            properties_json: json!({}),
+        })
+        .await?;
+
+    let doc_node_id = upsert_soul_node(SoulNodeFixtureInput {
+        writer: &writer,
+        workspace_id,
+        run_id,
+        file_id: doc_file_id,
+        kind: "file",
+        name: "feature.checkout",
+        symbol_key: "soul-doc:feature.checkout",
+        range: range(0, 0, 0, 0),
+    })
+    .await?;
+    let markdown_reference_node_id = upsert_soul_node(SoulNodeFixtureInput {
+        writer: &writer,
+        workspace_id,
+        run_id,
+        file_id: related_doc_file_id,
+        kind: "string",
+        name: "feature.checkout",
+        symbol_key: "soul-reference:feature.related-to-checkout",
+        range: range(5, 12, 5, 32),
+    })
+    .await?;
+    upsert_soul_node(SoulNodeFixtureInput {
+        writer: &writer,
+        workspace_id,
+        run_id,
+        file_id: doc_only_file_id,
+        kind: "file",
+        name: "feature.doc-only",
+        symbol_key: "soul-doc:feature.doc-only",
+        range: range(0, 0, 0, 0),
+    })
+    .await?;
+    let rust_annotation_node_id = upsert_soul_node(SoulNodeFixtureInput {
+        writer: &writer,
+        workspace_id,
+        run_id,
+        file_id: rust_file_id,
+        kind: "object",
+        name: "feature.checkout",
+        symbol_key: "soul-annotation:rust:feature.checkout",
+        range: range(10, 0, 10, 30),
+    })
+    .await?;
+    let csharp_annotation_node_id = upsert_soul_node(SoulNodeFixtureInput {
+        writer: &writer,
+        workspace_id,
+        run_id,
+        file_id: csharp_file_id,
+        kind: "object",
+        name: "feature.checkout",
+        symbol_key: "soul-annotation:csharp:feature.checkout",
+        range: range(20, 0, 20, 30),
+    })
+    .await?;
+    upsert_soul_node(SoulNodeFixtureInput {
+        writer: &writer,
+        workspace_id,
+        run_id,
+        file_id: unlinked_file_id,
+        kind: "object",
+        name: "feature.unlinked",
+        symbol_key: "soul-annotation:rust:feature.unlinked",
+        range: range(30, 0, 30, 30),
+    })
+    .await?;
+
+    upsert_soul_reference_edge(
+        &writer,
+        workspace_id,
+        run_id,
+        rust_file_id,
+        &rust_annotation_node_id,
+        &doc_node_id,
+        range(10, 0, 10, 30),
+    )
+    .await?;
+    upsert_soul_reference_edge(
+        &writer,
+        workspace_id,
+        run_id,
+        csharp_file_id,
+        &csharp_annotation_node_id,
+        &doc_node_id,
+        range(20, 0, 20, 30),
+    )
+    .await?;
+    upsert_soul_reference_edge(
+        &writer,
+        workspace_id,
+        run_id,
+        related_doc_file_id,
+        &markdown_reference_node_id,
+        &doc_node_id,
+        range(5, 12, 5, 32),
+    )
+    .await?;
+
+    writer.finish_run(run_id, "complete").await?;
+    writer.shutdown().await?;
+
+    Ok(SoulFixture {
+        database_path,
+        workspace_id,
+    })
+}
+
+struct SoulNodeFixtureInput<'a> {
+    writer: &'a WriteHandle,
+    workspace_id: i64,
+    run_id: i64,
+    file_id: i64,
+    kind: &'a str,
+    name: &'a str,
+    symbol_key: &'a str,
+    range: TextRange,
+}
+
+async fn upsert_soul_node(input: SoulNodeFixtureInput<'_>) -> Result<String, Box<dyn Error>> {
+    input
+        .writer
+        .upsert_node(NodeInput {
+            workspace_id: input.workspace_id,
+            language: "soul",
+            kind: input.kind,
+            name: input.name,
+            qualified_name: Some(input.name),
+            display_name: Some(input.name),
+            symbol_key: input.symbol_key,
+            file_id: Some(input.file_id),
+            range: Some(input.range),
+            selection_range: Some(input.range),
+            container_node_id: None,
+            properties_json: json!({}),
+            run_id: Some(input.run_id),
+        })
+        .await
+        .map_err(Into::into)
+}
+
+async fn upsert_soul_reference_edge(
+    writer: &WriteHandle,
+    workspace_id: i64,
+    run_id: i64,
+    file_id: i64,
+    source_node_id: &str,
+    target_node_id: &str,
+    range: TextRange,
+) -> Result<(), Box<dyn Error>> {
+    let edge_id = writer
+        .upsert_edge(EdgeInput {
+            workspace_id,
+            src_node_id: source_node_id,
+            dst_node_id: target_node_id,
+            relation: "references",
+            context: Some("symbol"),
+            confidence: "EXTRACTED",
+            confidence_score: 1.0,
+            weight: 1.0,
+            properties_json: json!({ "source_resolution": "symbol" }),
+            run_id: Some(run_id),
+        })
+        .await?;
+    writer
+        .insert_edge_evidence(EdgeEvidenceInput {
+            edge_id: &edge_id,
+            run_id,
+            provider: "soul-lsp",
+            lsp_method: Some("textDocument/references"),
+            file_id: Some(file_id),
+            range: Some(range),
+            raw_json: Some(json!({ "source": "soul-fixture" })),
+        })
+        .await?;
+
+    Ok(())
 }
 
 async fn seed_fixture_database(
@@ -1864,6 +2346,12 @@ struct Fixture {
     workspace_id: i64,
     stale_run_id: i64,
     ids: FixtureIds,
+}
+
+#[derive(Debug)]
+struct SoulFixture {
+    database_path: PathBuf,
+    workspace_id: i64,
 }
 
 #[derive(Debug)]

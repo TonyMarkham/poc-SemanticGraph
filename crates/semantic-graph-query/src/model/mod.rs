@@ -34,6 +34,10 @@ mod route_status;
 mod route_status_request;
 mod route_status_results;
 mod shortest_path_request;
+mod soul_linked_source;
+mod soul_search_request;
+mod soul_search_result;
+mod soul_search_results;
 
 // ---------------------------------------------------------------------------------------------- //
 
@@ -73,3 +77,7 @@ pub use route_status::RouteStatus;
 pub use route_status_request::RouteStatusRequest;
 pub use route_status_results::RouteStatusResults;
 pub use shortest_path_request::ShortestPathRequest;
+pub use soul_linked_source::SoulLinkedSource;
+pub use soul_search_request::SoulSearchRequest;
+pub use soul_search_result::SoulSearchResult;
+pub use soul_search_results::SoulSearchResults;

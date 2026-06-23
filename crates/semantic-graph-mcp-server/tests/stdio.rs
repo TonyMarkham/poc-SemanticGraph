@@ -52,6 +52,7 @@ async fn stdio_server_handles_phase_two_tools_and_resources_from_config()
             "graph_file_summary",
             "graph_route_status",
             "fts_search",
+            "soul_search",
         ],
     )?;
 
@@ -252,6 +253,92 @@ async fn stdio_server_database_path_override_bypasses_config() -> Result<(), Box
     )
     .await?;
     assert_eq!("src/lib.rs", tool_data(&fts)?["hits"][0]["path"]);
+    server.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn stdio_server_exposes_soul_search_without_fts_or_live_soul() -> Result<(), Box<dyn Error>> {
+    let fixture = SoulFixture::seed("soul-search").await?;
+    write_config(&fixture.root, &fixture.database_path)?;
+    let mut server = StdioServer::start(&fixture.root, Vec::new()).await?;
+
+    initialize(&mut server).await?;
+    let search = call_tool(
+        &mut server,
+        25,
+        "soul_search",
+        json!({
+            "workspaceId": fixture.workspace_id,
+            "query": "feature.checkout",
+            "includeMarkdownSources": true,
+            "limit": 200
+        }),
+    )
+    .await?;
+
+    let data = tool_data(&search)?;
+    assert_eq!(json!(200), data["appliedLimit"]);
+    assert_eq!(json!(1), data["totalResults"]);
+    assert!(data["nextCursor"].is_null());
+    assert_eq!("feature.checkout", data["results"][0]["soulId"]);
+    assert_eq!(json!(true), data["results"][0]["hasDocument"]);
+    assert_eq!(
+        "docs/checkout.md",
+        data["results"][0]["document"]["sourceFilePath"]
+    );
+    assert_eq!(json!(2), data["results"][0]["sourceAnnotationCount"]);
+    assert_eq!(json!(2), data["results"][0]["linkedSourceAnnotationCount"]);
+    assert_eq!(json!(1), data["results"][0]["markdownReferenceCount"]);
+    assert!(
+        data["results"][0]["sourceAnnotations"]
+            .as_array()
+            .ok_or("source annotations should be an array")?
+            .iter()
+            .any(|source| source["sourceFileLanguage"] == "rust"
+                && source["source"]["sourceFilePath"] == "src/backend.rs"
+                && source["edge"].is_object())
+    );
+    assert!(
+        data["results"][0]["sourceAnnotations"]
+            .as_array()
+            .ok_or("source annotations should be an array")?
+            .iter()
+            .any(|source| source["sourceFileLanguage"] == "csharp"
+                && source["source"]["sourceFilePath"] == "frontend/Checkout.cs"
+                && source["edge"].is_object())
+    );
+
+    let concise = call_tool(
+        &mut server,
+        26,
+        "soul_search",
+        json!({
+            "workspaceId": fixture.workspace_id,
+            "includeMarkdownSources": false,
+            "limit": 200
+        }),
+    )
+    .await?;
+    let concise_data = tool_data(&concise)?;
+    assert_eq!(json!(1), concise_data["totalResults"]);
+    assert_eq!("feature.checkout", concise_data["results"][0]["soulId"]);
+    assert_eq!(
+        json!(2),
+        concise_data["results"][0]["sourceAnnotationCount"]
+    );
+    assert_eq!(
+        json!(2),
+        concise_data["results"][0]["linkedSourceAnnotationCount"]
+    );
+    assert_eq!(
+        0,
+        concise_data["results"][0]["sourceAnnotations"]
+            .as_array()
+            .ok_or("source annotations should be an array")?
+            .len()
+    );
+
     server.shutdown().await?;
     Ok(())
 }
@@ -551,6 +638,225 @@ struct Fixture {
     run_node_id: String,
     helper_node_id: String,
     call_edge_id: String,
+}
+
+struct SoulFixture {
+    root: PathBuf,
+    database_path: PathBuf,
+    workspace_id: i64,
+}
+
+impl SoulFixture {
+    async fn seed(name: &str) -> Result<Self, Box<dyn Error>> {
+        let root = temp_dir(name)?;
+        let database_path = root.join("semantic-graph.db");
+        let writer = WriteManager::start(&database_path).await?;
+        writer.migrate().await?;
+        let workspace_id = writer
+            .create_workspace("file:///mcp-soul-fixture", "soul")
+            .await?;
+        let run_id = writer
+            .start_run(workspace_id, "soul-lsp", Some("fixture"), None)
+            .await?;
+        let doc_file_id = writer
+            .upsert_file(FileInput {
+                workspace_id,
+                uri: "file:///mcp-soul-fixture/docs/checkout.md",
+                path: "docs/checkout.md",
+                language: "soul",
+                content_hash: Some("doc-hash"),
+                last_seen_run_id: Some(run_id),
+                properties_json: json!({}),
+            })
+            .await?;
+        let related_file_id = writer
+            .upsert_file(FileInput {
+                workspace_id,
+                uri: "file:///mcp-soul-fixture/docs/related.md",
+                path: "docs/related.md",
+                language: "soul",
+                content_hash: Some("related-hash"),
+                last_seen_run_id: Some(run_id),
+                properties_json: json!({}),
+            })
+            .await?;
+        let rust_file_id = writer
+            .upsert_file(FileInput {
+                workspace_id,
+                uri: "file:///mcp-soul-fixture/src/backend.rs",
+                path: "src/backend.rs",
+                language: "soul",
+                content_hash: Some("rust-hash"),
+                last_seen_run_id: Some(run_id),
+                properties_json: json!({}),
+            })
+            .await?;
+        let csharp_file_id = writer
+            .upsert_file(FileInput {
+                workspace_id,
+                uri: "file:///mcp-soul-fixture/frontend/Checkout.cs",
+                path: "frontend/Checkout.cs",
+                language: "soul",
+                content_hash: Some("csharp-hash"),
+                last_seen_run_id: Some(run_id),
+                properties_json: json!({}),
+            })
+            .await?;
+
+        let doc_node_id = upsert_soul_node(SoulNodeInput {
+            writer: &writer,
+            workspace_id,
+            run_id,
+            file_id: doc_file_id,
+            kind: "file",
+            name: "feature.checkout",
+            symbol_key: "soul-doc:feature.checkout",
+            range: range(0, 0, 0, 0),
+        })
+        .await?;
+        let related_node_id = upsert_soul_node(SoulNodeInput {
+            writer: &writer,
+            workspace_id,
+            run_id,
+            file_id: related_file_id,
+            kind: "string",
+            name: "feature.checkout",
+            symbol_key: "soul-reference:feature.related-to-checkout",
+            range: range(5, 12, 5, 32),
+        })
+        .await?;
+        let rust_node_id = upsert_soul_node(SoulNodeInput {
+            writer: &writer,
+            workspace_id,
+            run_id,
+            file_id: rust_file_id,
+            kind: "object",
+            name: "feature.checkout",
+            symbol_key: "soul-annotation:rust:feature.checkout",
+            range: range(10, 0, 10, 30),
+        })
+        .await?;
+        let csharp_node_id = upsert_soul_node(SoulNodeInput {
+            writer: &writer,
+            workspace_id,
+            run_id,
+            file_id: csharp_file_id,
+            kind: "object",
+            name: "feature.checkout",
+            symbol_key: "soul-annotation:csharp:feature.checkout",
+            range: range(20, 0, 20, 30),
+        })
+        .await?;
+
+        upsert_soul_reference(
+            &writer,
+            workspace_id,
+            run_id,
+            rust_file_id,
+            &rust_node_id,
+            &doc_node_id,
+            range(10, 0, 10, 30),
+        )
+        .await?;
+        upsert_soul_reference(
+            &writer,
+            workspace_id,
+            run_id,
+            csharp_file_id,
+            &csharp_node_id,
+            &doc_node_id,
+            range(20, 0, 20, 30),
+        )
+        .await?;
+        upsert_soul_reference(
+            &writer,
+            workspace_id,
+            run_id,
+            related_file_id,
+            &related_node_id,
+            &doc_node_id,
+            range(5, 12, 5, 32),
+        )
+        .await?;
+
+        writer.finish_run(run_id, "complete").await?;
+        writer.shutdown().await?;
+
+        Ok(Self {
+            root,
+            database_path,
+            workspace_id,
+        })
+    }
+}
+
+struct SoulNodeInput<'a> {
+    writer: &'a WriteHandle,
+    workspace_id: i64,
+    run_id: i64,
+    file_id: i64,
+    kind: &'a str,
+    name: &'a str,
+    symbol_key: &'a str,
+    range: TextRange,
+}
+
+async fn upsert_soul_node(input: SoulNodeInput<'_>) -> Result<String, Box<dyn Error>> {
+    Ok(input
+        .writer
+        .upsert_node(NodeInput {
+            workspace_id: input.workspace_id,
+            language: "soul",
+            kind: input.kind,
+            name: input.name,
+            qualified_name: Some(input.name),
+            display_name: Some(input.name),
+            symbol_key: input.symbol_key,
+            file_id: Some(input.file_id),
+            range: Some(input.range),
+            selection_range: Some(input.range),
+            container_node_id: None,
+            properties_json: json!({}),
+            run_id: Some(input.run_id),
+        })
+        .await?)
+}
+
+async fn upsert_soul_reference(
+    writer: &WriteHandle,
+    workspace_id: i64,
+    run_id: i64,
+    file_id: i64,
+    source_node_id: &str,
+    target_node_id: &str,
+    range: TextRange,
+) -> Result<(), Box<dyn Error>> {
+    let edge_id = writer
+        .upsert_edge(EdgeInput {
+            workspace_id,
+            src_node_id: source_node_id,
+            dst_node_id: target_node_id,
+            relation: "references",
+            context: Some("symbol"),
+            confidence: "EXTRACTED",
+            confidence_score: 1.0,
+            weight: 1.0,
+            properties_json: json!({ "source_resolution": "symbol" }),
+            run_id: Some(run_id),
+        })
+        .await?;
+    writer
+        .insert_edge_evidence(EdgeEvidenceInput {
+            edge_id: &edge_id,
+            run_id,
+            provider: "soul-lsp",
+            lsp_method: Some("textDocument/references"),
+            file_id: Some(file_id),
+            range: Some(range),
+            raw_json: Some(json!({ "source": "soul-fixture" })),
+        })
+        .await?;
+    Ok(())
 }
 
 impl Fixture {

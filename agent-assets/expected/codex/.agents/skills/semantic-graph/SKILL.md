@@ -13,6 +13,8 @@ For semantic repo search, the first search choice must always be the SemanticGra
 
 For requests asking which files contain text, searching file contents, literal terms, case-insensitive text, snippets, or grep-like results, call `fts_search` first with `limit` no higher than 50. Follow `nextCursor` until it is absent or null. For file-list questions, collect and deduplicate `hits[].path` from the MCP pages and answer with the complete MCP-derived path list. Do not substitute `graph_search_nodes` for file-content search. Do not announce, run, recommend, or cite `rg`, `find`, `grep`, `git grep`, IDE search, or other shell text search after successful FTS results. Fall back to shell/text search only when `fts_search` is unavailable, errors, has stale or missing coverage, or cannot answer the requested scope.
 
+For Soul questions about IDs, docs, source annotations, Rust/C# source links, Markdown backlinks, or documentation/source gaps, call `soul_search` and treat a successful paginated response as the answer source. For ID-list questions, omit `query`; the tool defaults to concise output and returns counts without source annotation arrays. Follow `nextCursor` until null. Use `coverage` values `linked`, `docs_without_source`, `annotations_without_doc`, or `unlinked_annotations` for gap checks. Do not use `fts_search` as evidence for Soul doc/source linkage; FTS can only prove literal text presence. Do not call Soul MCP/CLI tools such as `soul_list_documents`, `soul_list_gaps`, or `soul_index`, and do not inspect `.soul/index.db`, unless the user explicitly asks for Soul's own index instead of SemanticGraph.
+
 If you fall back from MCP to shell or text search, state the fallback reason in the work notes or final answer.
 
 ## SemanticGraph Facts
@@ -29,12 +31,13 @@ Stale graph state is soft-closed. Treat stale rows as historical evidence unless
 2. For file-content or grep-like text requests, call `fts_search` directly; do not call `graph_stats` as a preflight for text search.
 3. Use `limit <= 50`, follow `nextCursor` until exhausted, and deduplicate `hits[].path` for file-list answers.
 4. Answer file-list requests with the complete MCP-derived path list. Do not provide a shell command as a substitute for the list.
-5. For symbol, file, module, ownership, behavior, relationship, reference, or call-graph requests, check graph availability with `graph_stats`, then use MCP graph tools first: `graph_search_nodes`, `graph_file_summary`, `graph_route_status`, `graph_neighbors`, or `graph_projection`.
-6. Fall back to `rg`, `find`, `grep`, `git grep`, or direct file reads only when the relevant MCP search is unavailable, returns no useful result, route/FTS coverage is stale or missing, or exact source text is needed after MCP identifies candidate files. Do not announce, run, recommend, cite, or use shell search to verify a successful paginated `fts_search` file-list answer.
-7. Use node details, edge details, occurrences, and edge evidence to ground findings.
-8. Check route freshness when current behavior, recently changed files, or refresh validity matter.
-9. Refresh the graph only when the user asked for implementation, refresh, or validation work that requires current graph facts.
-10. Cite source files or graph evidence and label uncertain inferences.
+5. For Soul relationship or ID questions, call `soul_search`. Do not refresh Soul, call Soul-specific tools, or query `.soul/index.db` after `soul_search` succeeds.
+6. For symbol, file, module, ownership, behavior, relationship, reference, or call-graph requests, check graph availability with `graph_stats`, then use MCP graph tools first: `graph_search_nodes`, `graph_file_summary`, `graph_route_status`, `graph_neighbors`, or `graph_projection`.
+7. Fall back to `rg`, `find`, `grep`, `git grep`, or direct file reads only when the relevant MCP search is unavailable, returns no useful result, route/FTS coverage is stale or missing, or exact source text is needed after MCP identifies candidate files. Do not announce, run, recommend, cite, or use shell search to verify a successful paginated `fts_search` file-list answer.
+8. Use node details, edge details, occurrences, and edge evidence to ground findings.
+9. Check route freshness when current behavior, recently changed files, or refresh validity matter.
+10. Refresh the graph only when the user asked for implementation, refresh, or validation work that requires current graph facts. For Soul questions, do not run Soul's own index refresh as a substitute for SemanticGraph extraction.
+11. Cite source files or graph evidence and label uncertain inferences.
 
 ## Boundaries
 
@@ -47,6 +50,7 @@ Use the progressive references for command boundaries, custom-agent handoffs, lo
 - `references/mcp-tools.md` - MCP Tools And Resources
 - `references/rust-extraction.md` - Rust Extraction
 - `references/csharp-extraction.md` - CSharp Extraction
+- `references/soul-extraction.md` - Soul Extraction
 - `references/local-testbeds.md` - Local Testbeds
 - `references/agent-handoffs.md` - Agent Handoffs
 - `references/troubleshooting.md` - Troubleshooting

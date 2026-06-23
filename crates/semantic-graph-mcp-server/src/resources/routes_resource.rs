@@ -11,6 +11,8 @@ pub fn routes_resource_text() -> String {
         "- csharp.document_symbols",
         "- csharp.references",
         "- csharp.calls",
+        "- soul.document_symbols",
+        "- soul.references",
         "",
         "Scopes are file and workspace. File-scoped statuses use the database file path or URI as the scope key. Workspace-scoped statuses use the workspace root URI.",
         "The query tools return stored route values exactly as recorded in SQLite.",

@@ -230,6 +230,7 @@ fn generated_skill_contains_trigger_guidance_and_references() -> TestResult {
     assert!(skill.content().contains("references/mcp-tools.md"));
     assert!(skill.content().contains("references/rust-extraction.md"));
     assert!(skill.content().contains("references/csharp-extraction.md"));
+    assert!(skill.content().contains("references/soul-extraction.md"));
     assert!(skill.content().contains("references/local-testbeds.md"));
     assert!(skill.content().contains("references/agent-handoffs.md"));
     assert!(skill.content().contains("references/troubleshooting.md"));
@@ -300,7 +301,7 @@ fn generate_writes_expected_tree_in_temp_copy() -> TestResult {
     let temp = create_temp_repo(test_constants::GENERATE_WRITES_TEMP_NAME)?;
     let report = generate_assets(&temp)?;
 
-    assert_eq!(14, report.created.len());
+    assert_eq!(generated_paths::ALL.len(), report.created.len());
     assert!(
         temp.join(test_constants::GENERATED_EXPECTED_ROOT)
             .join(generated_paths::SKILL)
@@ -316,7 +317,7 @@ fn check_passes_against_matching_generated_expected_artifacts() -> TestResult {
     generate_assets(&temp)?;
     let report = check_assets(&temp)?;
 
-    assert_eq!(14, report.checked.len());
+    assert_eq!(generated_paths::ALL.len(), report.checked.len());
     cleanup_temp_repo(&temp)?;
     Ok(())
 }

@@ -270,7 +270,7 @@ fn fresh_install_writes_expected_project_local_files() -> TestResult {
     let project = temp_dir("fresh-install")?;
     let report = run_install(&project, &[])?;
 
-    assert_eq!(15, report.actions().len());
+    assert_eq!(expected_installed_paths().len(), report.actions().len());
     assert_eq!(
         expected_installed_paths()
             .into_iter()
@@ -312,7 +312,10 @@ fn fresh_install_writes_expected_project_local_files() -> TestResult {
         "semantic-graph-agent-assets",
         manifest.asset_source.asset_generation
     );
-    assert_eq!(14, manifest.managed_files.len());
+    assert_eq!(
+        expected_non_manifest_managed_paths().len(),
+        manifest.managed_files.len()
+    );
     assert_manifest_checksums(&project, &manifest)?;
 
     let server = semantic_graph_server_config(&project)?;
@@ -364,7 +367,7 @@ fn dry_run_reports_plan_without_writing_files() -> TestResult {
     let project = temp_dir("dry-run")?;
     let report = run_install(&project, &["--dry-run"])?;
 
-    assert_eq!(15, report.actions().len());
+    assert_eq!(expected_installed_paths().len(), report.actions().len());
     assert!(report.lines()[0].contains("no files written"));
     assert!(!project.join(".agents").exists());
     assert!(!project.join(".codex").exists());

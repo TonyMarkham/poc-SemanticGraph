@@ -6,6 +6,8 @@ For semantic repo search, the first search choice must always be the SemanticGra
 
 For requests asking which files contain text, searching file contents, literal terms, case-insensitive text, snippets, or grep-like results, call `fts_search` first with `limit` no higher than 50. Follow `nextCursor` until it is absent or null. For file-list questions, collect and deduplicate `hits[].path` from the MCP pages and answer with the complete MCP-derived path list. Do not substitute `graph_search_nodes` for file-content search. Do not announce, run, recommend, or cite `rg`, `find`, `grep`, `git grep`, IDE search, or other shell text search after successful FTS results. Fall back to shell/text search only when `fts_search` is unavailable, errors, has stale or missing coverage, or cannot answer the requested scope.
 
+For Soul questions about IDs, docs, source annotations, Rust/C# source links, Markdown backlinks, or documentation/source gaps, call `soul_search` and treat a successful paginated response as the answer source. For ID-list questions, omit `query`; the tool defaults to concise output and returns counts without source annotation arrays. Follow `nextCursor` until null. Use `coverage` values `linked`, `docs_without_source`, `annotations_without_doc`, or `unlinked_annotations` for gap checks. Do not use `fts_search` as evidence for Soul doc/source linkage; FTS can only prove literal text presence. Do not call Soul MCP/CLI tools such as `soul_list_documents`, `soul_list_gaps`, or `soul_index`, and do not inspect `.soul/index.db`, unless the user explicitly asks for Soul's own index instead of SemanticGraph.
+
 If you fall back from MCP to shell or text search, state the fallback reason in the work notes or final answer.
 
 ## SemanticGraph Facts

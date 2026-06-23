@@ -12,6 +12,7 @@
 - `graph_file_summary`: return symbols, touching edges, and route freshness for a known database file path.
 - `graph_route_status`: return route freshness rows filtered by workspace, route, scope, or file.
 - `fts_search`: search indexed file contents with Tantivy-backed ranking and SQLite snippets.
+- `soul_search`: search stored Soul graph facts by ID/name/path and return Soul documents, Rust/C# source annotations, Markdown references, and gaps.
 
 ## Read-Only Resources
 
@@ -23,6 +24,8 @@
 ## Query Guidance
 
 Use `fts_search` first when the request asks which files contain text, searches file contents, names literal terms, asks for case-insensitive text results, wants snippets, or is grep-like. Set `limit` between 1 and 50. If the response has `nextCursor`, call `fts_search` again with that cursor until `nextCursor` is absent or null.
+
+Use `soul_search` for Soul IDs, Soul Markdown docs, source annotations, Rust/C# links, Markdown backlinks, or doc/source coverage gaps. It reads only SemanticGraph SQLite `nodes`, `edges`, and `files`; it does not call Soul, read `.soul/index.db`, or use FTS. Do not use `fts_search` as evidence that a Soul doc is linked to source code. Omit `query` or pass a blank query to list all indexed Soul IDs; ID-list requests default to concise output and return counts without source annotation arrays, then follow `nextCursor` until null. Use `coverage` values `linked`, `docs_without_source`, `annotations_without_doc`, or `unlinked_annotations` for direct gap checks. Do not call Soul MCP/CLI tools such as `soul_list_documents`, `soul_list_gaps`, or `soul_index`, and do not query `.soul/index.db`, after a successful `soul_search` result unless the user explicitly asks for Soul's own index instead of SemanticGraph.
 
 For "which files contain X" or other file-list answers, collect `hits[].path` from every FTS page, deduplicate paths, and answer with the complete MCP-derived path list. Do not use `graph_search_nodes` as a substitute for file-content search. Do not announce, run, recommend, cite, or use `rg`, `find`, `grep`, `git grep`, IDE search, or another shell text search after successful FTS pagination. Do not provide a shell command as a substitute for the requested list.
 

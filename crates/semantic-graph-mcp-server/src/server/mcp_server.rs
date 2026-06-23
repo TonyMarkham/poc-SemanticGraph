@@ -6,8 +6,8 @@ use crate::{
         EdgeDetailsParams, EmptyToolParams, FTS_SEARCH, FileSummaryParams, FtsSearchParams,
         GRAPH_EDGE_DETAILS, GRAPH_FILE_SUMMARY, GRAPH_NEIGHBORS, GRAPH_NODE_DETAILS,
         GRAPH_PROJECTION, GRAPH_ROUTE_STATUS, GRAPH_SEARCH_NODES, GRAPH_SHORTEST_PATH, GRAPH_STATS,
-        NeighborsParams, NodeDetailsParams, ProjectionParams, RouteStatusParams, SearchNodesParams,
-        ShortestPathParams, ToolRegistry,
+        NeighborsParams, NodeDetailsParams, ProjectionParams, RouteStatusParams, SOUL_SEARCH,
+        SearchNodesParams, ShortestPathParams, SoulSearchParams, ToolRegistry,
     },
 };
 
@@ -176,6 +176,16 @@ impl ServerHandler for SemanticGraphMcpServer {
                     .await
                     .map_err(query_error_to_mcp)?;
                 structured_tool_result("FTS search completed.", results)
+            }
+            SOUL_SEARCH => {
+                let params = deserialize_tool_arguments::<SoulSearchParams>(request.arguments)?;
+                let results = self
+                    .state
+                    .query_service()
+                    .soul_search(params.into())
+                    .await
+                    .map_err(query_error_to_mcp)?;
+                structured_tool_result("Soul search completed.", results)
             }
             name => Err(ErrorData::invalid_params(
                 "unknown tool",

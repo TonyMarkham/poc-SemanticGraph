@@ -75,6 +75,17 @@ same config discovery described above. Communication is always stdio, and the
 server is read-only: it exposes graph query tools and resources but does not
 run extractors or mutate the graph.
 
+For Soul lookup, use the read-only `soul_search` MCP tool. It searches stored
+SemanticGraph SQLite facts by Soul ID, node name, qualified name, doc path, or
+source path and returns the matching Soul document, Rust/C# source annotations,
+Markdown references, and doc/source gaps. It does not call Soul, read
+`.soul/index.db`, or use FTS. Omit `query` or pass a blank query to list indexed
+Soul IDs. Use `cursor`/`nextCursor` for additional pages. `coverage` accepts
+`all`, `linked`, `docs_without_source`, `annotations_without_doc`, and
+`unlinked_annotations`. ID-list requests default to concise output: counts are
+returned, but source annotations and Markdown references are omitted unless
+`includeSourceAnnotations` or `includeMarkdownSources` is explicitly `true`.
+
 Start it from config:
 
 ```sh

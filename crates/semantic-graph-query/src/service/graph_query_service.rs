@@ -5,12 +5,14 @@ use crate::{
         GraphPathStep, GraphProjection, GraphStats, NeighborDirection, NeighborsRequest,
         NodeDetails, NodeDetailsRequest, NodeNeighbor, NodeNeighbors, NodeSearchRequest,
         NodeSearchResults, NodeSummary, ProjectionMetadata, ProjectionRequest, RouteStatus,
-        RouteStatusRequest, RouteStatusResults, ShortestPathRequest,
+        RouteStatusRequest, RouteStatusResults, ShortestPathRequest, SoulSearchRequest,
+        SoulSearchResult, SoulSearchResults,
     },
     row::{
         EdgeDetailsRow, EdgeEndpointRow, EdgeEvidenceRow, EdgeSummaryRow, ExtractionRunSummaryRow,
         FileSummaryFileRow, NodeDetailsRow, NodeNeighborRow, NodeOccurrenceRow,
-        NodeRelationSummaryRow, NodeSearchResultRow, NodeSummaryRow, RouteStatusRow,
+        NodeRelationSummaryRow, NodeSearchResultRow, NodeSummaryRow, RouteStatusRow, SoulIdRow,
+        SoulLinkedSourceRow,
     },
     service::route_status_filters::RouteStatusFilters,
     sqlite::{escape_like_pattern, open_read_only_pool},
@@ -31,6 +33,7 @@ const DEFAULT_FILE_EDGE_LIMIT: i64 = 50;
 const DEFAULT_ROUTE_STATUS_LIMIT: i64 = 50;
 const DEFAULT_SHORTEST_PATH_DEPTH: i64 = 6;
 const DEFAULT_SHORTEST_PATH_VISITED: i64 = 500;
+const DEFAULT_SOUL_SEARCH_LIMIT: i64 = 25;
 
 #[derive(Debug, Clone)]
 pub struct GraphQueryService {
@@ -340,6 +343,92 @@ impl GraphQueryService {
             statuses,
             requested_limit: request.limit,
             applied_limit: limit,
+        })
+    }
+
+    pub async fn soul_search(&self, request: SoulSearchRequest) -> QueryResult<SoulSearchResults> {
+        let workspace_id = optional_positive_id(request.workspace_id, "workspaceId")?;
+        let root_uri = optional_text(request.root_uri, "rootUri")?;
+        let query = optional_blank_text(request.query);
+        let is_soul_id_list = query.is_none();
+        let coverage_filter = resolve_soul_coverage_filter(request.coverage)?;
+        let include_markdown_sources = request.include_markdown_sources.unwrap_or(!is_soul_id_list);
+        let include_source_annotations = request
+            .include_source_annotations
+            .unwrap_or(!is_soul_id_list);
+        let limit = resolve_limit(
+            request.limit,
+            DEFAULT_SOUL_SEARCH_LIMIT,
+            self.query_service_config.max_file_edge_limit(),
+            "limit",
+        )?;
+        let offset = resolve_cursor(request.cursor.as_deref())?;
+        let pool = open_read_only_pool(&self.database_path).await?;
+        let soul_page = load_soul_ids(
+            &pool,
+            SoulIdSearchFilters {
+                workspace_id,
+                root_uri: root_uri.as_deref(),
+                query: query.as_deref(),
+                include_markdown_sources,
+                coverage_filter,
+                limit,
+                offset,
+            },
+        )
+        .await?;
+        let mut results = Vec::with_capacity(soul_page.soul_ids.len());
+
+        for soul_id in soul_page.soul_ids {
+            let document =
+                load_soul_document(&pool, soul_id.workspace_id, &soul_id.soul_id).await?;
+            let source_annotations = if include_source_annotations {
+                let document_node_id = document.as_ref().map(|node| node.node_id.as_str());
+                load_soul_source_annotations(
+                    &pool,
+                    soul_id.workspace_id,
+                    &soul_id.soul_id,
+                    document_node_id,
+                    include_markdown_sources,
+                )
+                .await?
+            } else {
+                Vec::new()
+            };
+            let markdown_references = if include_markdown_sources {
+                load_soul_markdown_references(&pool, soul_id.workspace_id, &soul_id.soul_id).await?
+            } else {
+                Vec::new()
+            };
+            let source_annotation_count = sqlite_count_to_usize(soul_id.source_annotation_count);
+            let linked_source_annotation_count =
+                sqlite_count_to_usize(soul_id.linked_source_annotation_count);
+
+            results.push(SoulSearchResult {
+                workspace_id: soul_id.workspace_id,
+                root_uri: soul_id.root_uri,
+                soul_id: soul_id.soul_id,
+                has_document: soul_id.has_document != 0,
+                source_annotation_count,
+                linked_source_annotation_count,
+                markdown_reference_count: markdown_references.len(),
+                document,
+                source_annotations,
+                markdown_references,
+            });
+        }
+
+        let next_offset = offset.saturating_add(limit as usize);
+        let next_cursor = (i64::try_from(next_offset).unwrap_or(i64::MAX)
+            < soul_page.total_results)
+            .then(|| next_offset.to_string());
+
+        Ok(SoulSearchResults {
+            results,
+            requested_limit: request.limit,
+            applied_limit: limit,
+            total_results: soul_page.total_results,
+            next_cursor,
         })
     }
 }
@@ -1423,6 +1512,444 @@ async fn load_route_statuses(
     rows.into_iter().map(RouteStatusRow::into_model).collect()
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SoulCoverageFilter {
+    All,
+    Linked,
+    DocsWithoutSource,
+    AnnotationsWithoutDoc,
+    UnlinkedAnnotations,
+}
+
+impl SoulCoverageFilter {
+    fn as_sql_value(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Linked => "linked",
+            Self::DocsWithoutSource => "docs_without_source",
+            Self::AnnotationsWithoutDoc => "annotations_without_doc",
+            Self::UnlinkedAnnotations => "unlinked_annotations",
+        }
+    }
+}
+
+#[derive(Debug)]
+struct SoulIdPage {
+    soul_ids: Vec<SoulIdRow>,
+    total_results: i64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SoulIdSearchFilters<'a> {
+    workspace_id: Option<i64>,
+    root_uri: Option<&'a str>,
+    query: Option<&'a str>,
+    include_markdown_sources: bool,
+    coverage_filter: SoulCoverageFilter,
+    limit: i64,
+    offset: usize,
+}
+
+async fn load_soul_ids(
+    pool: &SqlitePool,
+    filters: SoulIdSearchFilters<'_>,
+) -> QueryResult<SoulIdPage> {
+    let contains_pattern = filters
+        .query
+        .map(|value| format!("%{}%", escape_like_pattern(value)));
+    let include_markdown_sources = if filters.include_markdown_sources {
+        1_i64
+    } else {
+        0_i64
+    };
+    let coverage = filters.coverage_filter.as_sql_value();
+
+    let total_results = bind_soul_id_metrics_params(
+        sqlx::query_as::<_, (i64,)>(SOUL_ID_COUNT_SQL),
+        filters.workspace_id,
+        filters.root_uri,
+        contains_pattern.as_deref(),
+        include_markdown_sources,
+        coverage,
+    )
+    .fetch_one(pool)
+    .await
+    .map_err(QueryError::database)?
+    .0;
+    let soul_ids = bind_soul_id_metrics_params(
+        sqlx::query_as::<_, SoulIdRow>(SOUL_ID_PAGE_SQL),
+        filters.workspace_id,
+        filters.root_uri,
+        contains_pattern.as_deref(),
+        include_markdown_sources,
+        coverage,
+    )
+    .bind(filters.query)
+    .bind(filters.query)
+    .bind(filters.limit)
+    .bind(i64::try_from(filters.offset).unwrap_or(i64::MAX))
+    .fetch_all(pool)
+    .await
+    .map_err(QueryError::database)?;
+
+    Ok(SoulIdPage {
+        soul_ids,
+        total_results,
+    })
+}
+
+macro_rules! soul_id_metrics_cte {
+    () => {
+        r#"
+WITH candidate_soul_ids AS (
+  SELECT
+    n.workspace_id AS workspace_id,
+    w.root_uri AS root_uri,
+    n.name AS soul_id
+  FROM nodes n
+  JOIN workspaces w ON w.id = n.workspace_id
+  LEFT JOIN files f ON f.id = n.file_id
+  WHERE n.language = 'soul'
+    AND n.valid_to_run_id IS NULL
+    AND n.kind IN ('file', 'object')
+    AND (n.kind <> 'file' OR n.selection_start_line IS NOT NULL)
+    AND (? IS NULL OR n.workspace_id = ?)
+    AND (? IS NULL OR w.root_uri = ?)
+    AND (
+      ? IS NULL
+      OR n.name LIKE ? ESCAPE '\'
+      OR COALESCE(n.display_name, '') LIKE ? ESCAPE '\'
+      OR COALESCE(n.qualified_name, '') LIKE ? ESCAPE '\'
+      OR COALESCE(f.path, '') LIKE ? ESCAPE '\'
+    )
+  GROUP BY
+    n.workspace_id,
+    w.root_uri,
+    n.name
+),
+metrics AS (
+  SELECT
+    candidate.workspace_id AS workspace_id,
+    candidate.root_uri AS root_uri,
+    candidate.soul_id AS soul_id,
+    EXISTS (
+      SELECT 1
+      FROM nodes doc
+      JOIN files doc_file ON doc_file.id = doc.file_id
+      WHERE doc.workspace_id = candidate.workspace_id
+        AND doc.language = 'soul'
+        AND doc.valid_to_run_id IS NULL
+        AND doc.kind = 'file'
+        AND doc.selection_start_line IS NOT NULL
+        AND doc.name = candidate.soul_id
+        AND (doc_file.path LIKE '%.md' OR doc_file.path LIKE '%.markdown')
+    ) AS has_document,
+    (
+      SELECT COUNT(*)
+      FROM nodes source
+      LEFT JOIN files source_file ON source_file.id = source.file_id
+      WHERE source.workspace_id = candidate.workspace_id
+        AND source.language = 'soul'
+        AND source.valid_to_run_id IS NULL
+        AND source.kind = 'object'
+        AND source.name = candidate.soul_id
+        AND (
+          ? = 1
+          OR (
+            COALESCE(source_file.path, '') NOT LIKE '%.md'
+            AND COALESCE(source_file.path, '') NOT LIKE '%.markdown'
+          )
+        )
+    ) AS source_annotation_count,
+    (
+      SELECT COUNT(*)
+      FROM nodes source
+      LEFT JOIN files source_file ON source_file.id = source.file_id
+      JOIN edges edge
+        ON edge.src_node_id = source.id
+       AND edge.relation = 'references'
+       AND edge.valid_to_run_id IS NULL
+      JOIN nodes doc
+        ON doc.id = edge.dst_node_id
+       AND doc.workspace_id = candidate.workspace_id
+       AND doc.language = 'soul'
+       AND doc.valid_to_run_id IS NULL
+       AND doc.kind = 'file'
+       AND doc.selection_start_line IS NOT NULL
+       AND doc.name = candidate.soul_id
+      JOIN files doc_file ON doc_file.id = doc.file_id
+      WHERE source.workspace_id = candidate.workspace_id
+        AND source.language = 'soul'
+        AND source.valid_to_run_id IS NULL
+        AND source.kind = 'object'
+        AND source.name = candidate.soul_id
+        AND (doc_file.path LIKE '%.md' OR doc_file.path LIKE '%.markdown')
+        AND (
+          ? = 1
+          OR (
+            COALESCE(source_file.path, '') NOT LIKE '%.md'
+            AND COALESCE(source_file.path, '') NOT LIKE '%.markdown'
+          )
+        )
+    ) AS linked_source_annotation_count
+  FROM candidate_soul_ids candidate
+),
+filtered_metrics AS (
+  SELECT *
+  FROM metrics
+  WHERE
+    ? = 'all'
+    OR (? = 'linked' AND has_document = 1 AND linked_source_annotation_count > 0)
+    OR (? = 'docs_without_source' AND has_document = 1 AND source_annotation_count = 0)
+    OR (? = 'annotations_without_doc' AND has_document = 0 AND source_annotation_count > 0)
+    OR (? = 'unlinked_annotations' AND source_annotation_count > linked_source_annotation_count)
+)
+"#
+    };
+}
+
+const SOUL_ID_COUNT_SQL: &str = concat!(
+    soul_id_metrics_cte!(),
+    r#"
+SELECT COUNT(*)
+FROM filtered_metrics
+"#
+);
+
+const SOUL_ID_PAGE_SQL: &str = concat!(
+    soul_id_metrics_cte!(),
+    r#"
+SELECT
+  workspace_id,
+  root_uri,
+  soul_id,
+  has_document,
+  source_annotation_count,
+  linked_source_annotation_count
+FROM filtered_metrics
+ORDER BY
+  CASE
+    WHEN ? IS NOT NULL AND soul_id = ? COLLATE NOCASE THEN 0
+    ELSE 1
+  END,
+  workspace_id,
+  soul_id
+LIMIT ? OFFSET ?
+"#
+);
+
+fn bind_soul_id_metrics_params<'q, O>(
+    query: sqlx::query::QueryAs<'q, sqlx::Sqlite, O, sqlx::sqlite::SqliteArguments>,
+    workspace_id: Option<i64>,
+    root_uri: Option<&'q str>,
+    contains_pattern: Option<&'q str>,
+    include_markdown_sources: i64,
+    coverage: &'q str,
+) -> sqlx::query::QueryAs<'q, sqlx::Sqlite, O, sqlx::sqlite::SqliteArguments>
+where
+    O: for<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow> + Send + Unpin,
+{
+    query
+        .bind(workspace_id)
+        .bind(workspace_id)
+        .bind(root_uri)
+        .bind(root_uri)
+        .bind(contains_pattern)
+        .bind(contains_pattern)
+        .bind(contains_pattern)
+        .bind(contains_pattern)
+        .bind(contains_pattern)
+        .bind(include_markdown_sources)
+        .bind(include_markdown_sources)
+        .bind(coverage)
+        .bind(coverage)
+        .bind(coverage)
+        .bind(coverage)
+        .bind(coverage)
+}
+
+async fn load_soul_document(
+    pool: &SqlitePool,
+    workspace_id: i64,
+    soul_id: &str,
+) -> QueryResult<Option<NodeSummary>> {
+    let row = sqlx::query_as::<_, NodeSummaryRow>(
+        r#"
+        SELECT
+          n.id AS node_id,
+          n.kind AS kind,
+          n.name AS name,
+          COALESCE(n.display_name, n.name) AS display_label,
+          n.qualified_name AS qualified_name,
+          n.language AS language,
+          f.path AS source_file_path,
+          n.valid_to_run_id AS valid_to_run_id
+        FROM nodes n
+        JOIN workspaces w ON w.id = n.workspace_id
+        JOIN files f ON f.id = n.file_id
+        WHERE n.language = 'soul'
+          AND n.valid_to_run_id IS NULL
+          AND n.kind = 'file'
+          AND n.selection_start_line IS NOT NULL
+          AND n.name = ?
+          AND (f.path LIKE '%.md' OR f.path LIKE '%.markdown')
+          AND n.workspace_id = ?
+        ORDER BY
+          f.path,
+          n.id
+        LIMIT 1
+        "#,
+    )
+    .bind(soul_id)
+    .bind(workspace_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(QueryError::database)?;
+
+    Ok(row.map(NodeSummaryRow::into_model))
+}
+
+async fn load_soul_source_annotations(
+    pool: &SqlitePool,
+    workspace_id: i64,
+    soul_id: &str,
+    document_node_id: Option<&str>,
+    include_markdown_sources: bool,
+) -> QueryResult<Vec<crate::SoulLinkedSource>> {
+    let include_markdown_sources = if include_markdown_sources {
+        1_i64
+    } else {
+        0_i64
+    };
+    let rows = sqlx::query_as::<_, SoulLinkedSourceRow>(
+        r#"
+        SELECT
+          source.id AS source_node_id,
+          source.kind AS source_kind,
+          source.name AS source_name,
+          COALESCE(source.display_name, source.name) AS source_display_label,
+          source.qualified_name AS source_qualified_name,
+          source.language AS source_language,
+          f.path AS source_file_path,
+          source.valid_to_run_id AS source_valid_to_run_id,
+          source.start_line AS source_start_line,
+          source.start_col AS source_start_col,
+          source.end_line AS source_end_line,
+          source.end_col AS source_end_col,
+          edge.id AS edge_id,
+          edge.src_node_id AS edge_source_node_id,
+          edge.dst_node_id AS edge_target_node_id,
+          edge.relation AS edge_relation,
+          edge.context AS edge_context,
+          edge.confidence AS edge_confidence,
+          edge.confidence_score AS edge_confidence_score,
+          edge.weight AS edge_weight,
+          edge.valid_to_run_id AS edge_valid_to_run_id
+        FROM nodes source
+        JOIN workspaces w ON w.id = source.workspace_id
+        LEFT JOIN files f ON f.id = source.file_id
+        LEFT JOIN edges edge
+          ON edge.src_node_id = source.id
+         AND edge.relation = 'references'
+         AND edge.valid_to_run_id IS NULL
+         AND (? IS NOT NULL AND edge.dst_node_id = ?)
+        WHERE source.language = 'soul'
+          AND source.valid_to_run_id IS NULL
+          AND source.kind = 'object'
+          AND source.name = ?
+          AND source.workspace_id = ?
+          AND (
+            ? = 1
+            OR (
+              COALESCE(f.path, '') NOT LIKE '%.md'
+              AND COALESCE(f.path, '') NOT LIKE '%.markdown'
+            )
+          )
+        ORDER BY
+          COALESCE(f.path, ''),
+          source.start_line,
+          source.start_col,
+          source.id,
+          edge.id
+        "#,
+    )
+    .bind(document_node_id)
+    .bind(document_node_id)
+    .bind(soul_id)
+    .bind(workspace_id)
+    .bind(include_markdown_sources)
+    .fetch_all(pool)
+    .await
+    .map_err(QueryError::database)?;
+
+    Ok(rows
+        .into_iter()
+        .map(SoulLinkedSourceRow::into_model)
+        .collect())
+}
+
+async fn load_soul_markdown_references(
+    pool: &SqlitePool,
+    workspace_id: i64,
+    soul_id: &str,
+) -> QueryResult<Vec<crate::SoulLinkedSource>> {
+    let rows = sqlx::query_as::<_, SoulLinkedSourceRow>(
+        r#"
+        SELECT
+          source.id AS source_node_id,
+          source.kind AS source_kind,
+          source.name AS source_name,
+          COALESCE(source.display_name, source.name) AS source_display_label,
+          source.qualified_name AS source_qualified_name,
+          source.language AS source_language,
+          f.path AS source_file_path,
+          source.valid_to_run_id AS source_valid_to_run_id,
+          source.start_line AS source_start_line,
+          source.start_col AS source_start_col,
+          source.end_line AS source_end_line,
+          source.end_col AS source_end_col,
+          edge.id AS edge_id,
+          edge.src_node_id AS edge_source_node_id,
+          edge.dst_node_id AS edge_target_node_id,
+          edge.relation AS edge_relation,
+          edge.context AS edge_context,
+          edge.confidence AS edge_confidence,
+          edge.confidence_score AS edge_confidence_score,
+          edge.weight AS edge_weight,
+          edge.valid_to_run_id AS edge_valid_to_run_id
+        FROM edges edge
+        JOIN nodes source ON source.id = edge.src_node_id
+        JOIN nodes target ON target.id = edge.dst_node_id
+        JOIN workspaces w ON w.id = edge.workspace_id
+        LEFT JOIN files f ON f.id = source.file_id
+        WHERE edge.relation = 'references'
+          AND edge.valid_to_run_id IS NULL
+          AND source.valid_to_run_id IS NULL
+          AND target.valid_to_run_id IS NULL
+          AND target.language = 'soul'
+          AND target.name = ?
+          AND (f.path LIKE '%.md' OR f.path LIKE '%.markdown')
+          AND edge.workspace_id = ?
+        ORDER BY
+          COALESCE(f.path, ''),
+          source.start_line,
+          source.start_col,
+          source.id,
+          edge.id
+        "#,
+    )
+    .bind(soul_id)
+    .bind(workspace_id)
+    .fetch_all(pool)
+    .await
+    .map_err(QueryError::database)?;
+
+    Ok(rows
+        .into_iter()
+        .map(SoulLinkedSourceRow::into_model)
+        .collect())
+}
+
 fn resolve_limit(
     requested: Option<i64>,
     default_value: i64,
@@ -1438,6 +1965,10 @@ fn resolve_limit(
     }
 
     Ok(limit)
+}
+
+fn sqlite_count_to_usize(value: i64) -> usize {
+    usize::try_from(value).unwrap_or(usize::MAX)
 }
 
 fn required_text(value: String, field_name: &str) -> QueryResult<String> {
@@ -1456,6 +1987,53 @@ fn optional_text(value: Option<String>, field_name: &str) -> QueryResult<Option<
     match value {
         Some(value) => required_text(value, field_name).map(Some),
         None => Ok(None),
+    }
+}
+
+fn optional_blank_text(value: Option<String>) -> Option<String> {
+    match value {
+        Some(value) if value.trim().is_empty() => None,
+        Some(value) => Some(value.trim().to_string()),
+        None => None,
+    }
+}
+
+fn resolve_cursor(cursor: Option<&str>) -> QueryResult<usize> {
+    let Some(cursor) = cursor else {
+        return Ok(0);
+    };
+    let cursor = cursor.trim();
+    if cursor.is_empty() {
+        return Err(QueryError::invalid_params("cursor must not be blank"));
+    }
+
+    cursor
+        .parse::<usize>()
+        .map_err(|_error| QueryError::invalid_params("cursor must be a non-negative offset"))
+}
+
+fn resolve_soul_coverage_filter(coverage: Option<String>) -> QueryResult<SoulCoverageFilter> {
+    let Some(coverage) = coverage else {
+        return Ok(SoulCoverageFilter::All);
+    };
+    let coverage = coverage.trim();
+    if coverage.is_empty() {
+        return Ok(SoulCoverageFilter::All);
+    }
+
+    match coverage {
+        "all" => Ok(SoulCoverageFilter::All),
+        "linked" => Ok(SoulCoverageFilter::Linked),
+        "docs_without_source" | "docsWithoutSource" => Ok(SoulCoverageFilter::DocsWithoutSource),
+        "annotations_without_doc" | "annotationsWithoutDoc" => {
+            Ok(SoulCoverageFilter::AnnotationsWithoutDoc)
+        }
+        "unlinked_annotations" | "unlinkedAnnotations" => {
+            Ok(SoulCoverageFilter::UnlinkedAnnotations)
+        }
+        _ => Err(QueryError::invalid_params(
+            "coverage must be one of all, linked, docs_without_source, annotations_without_doc, unlinked_annotations",
+        )),
     }
 }
 

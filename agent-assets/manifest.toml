@@ -39,6 +39,14 @@ fragments = [
 ]
 
 [[references]]
+name = "soul-extraction"
+title = "Soul Extraction"
+output_path = ".agents/skills/semantic-graph/references/soul-extraction.md"
+fragments = [
+  "common/soul-extraction.md",
+]
+
+[[references]]
 name = "local-testbeds"
 title = "Local Testbeds"
 output_path = ".agents/skills/semantic-graph/references/local-testbeds.md"
