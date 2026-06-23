@@ -22,3 +22,6 @@
 [submodule "submodules/gpui-component"]
 	path = submodules/gpui-component
 	url = https://github.com/longbridge/gpui-component.git
+[submodule "submodules/soul"]
+	path = submodules/soul
+	url = https://github.com/TonyMarkham/soul.git
