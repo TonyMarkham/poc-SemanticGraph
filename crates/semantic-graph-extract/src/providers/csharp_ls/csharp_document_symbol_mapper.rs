@@ -13,7 +13,7 @@ use crate::document_symbols::paths::{
 use crate::error::{ExtractError, ExtractResult};
 use crate::model::{
     DocumentSymbolExtraction, DocumentSymbolRequest, ExtractedRelation, ExtractedSymbol,
-    GraphLanguage, ProviderId, SourceFile,
+    GraphLanguage, ProviderId, SourceFile, SourceLanguage,
 };
 
 pub struct CSharpDocumentSymbolMapper;
@@ -57,12 +57,13 @@ impl CSharpDocumentSymbolMapper {
             file_symbol_key: file_symbol_key(&uri),
             uri: uri.clone(),
             relative_path,
-            language: GraphLanguage::CSharp,
+            language: SourceLanguage::CSharp,
             content_hash: Some(content_hash(&file_contents)),
         };
 
         let mut extraction = DocumentSymbolExtraction {
             provider: ProviderId::csharp_language_server(),
+            language: GraphLanguage::CSharp,
             provider_version,
             source_file,
             symbols: Vec::new(),

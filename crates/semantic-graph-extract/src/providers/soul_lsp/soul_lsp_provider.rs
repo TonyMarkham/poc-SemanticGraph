@@ -78,6 +78,7 @@ impl SoulLspProvider {
 
         Ok(DocumentSymbolBatchExtraction {
             provider: self.provider_id(),
+            language: self.language(),
             provider_version,
             extractions,
             raw_metadata: json!({

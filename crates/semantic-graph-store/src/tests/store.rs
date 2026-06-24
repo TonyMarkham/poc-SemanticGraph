@@ -10,7 +10,10 @@ use semantic_graph_db_manager::{
     TextRange, WriteHandle, WriteManager, edge_id, node_id,
 };
 use serde_json::json;
-use sqlx::SqlitePool;
+use sqlx::{
+    SqlitePool,
+    sqlite::{SqliteConnectOptions, SqlitePoolOptions},
+};
 
 const PROVIDER: &str = "rust-analyzer";
 const ROUTE_DOCUMENT_SYMBOLS: &str = "rust.document_symbols";
@@ -206,6 +209,120 @@ async fn migration_creates_empty_core_schema() -> Result<(), Box<dyn Error>> {
     .fetch_one(&pool)
     .await?;
     assert_eq!(fts_table_count, 2);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn migration_08_reclassifies_existing_soul_file_languages() -> Result<(), Box<dyn Error>> {
+    let path = temp_db_path()?;
+    let pool = create_sqlite_pool(&path).await?;
+    sqlx::migrate!("./migrations").run_to(7, &pool).await?;
+
+    sqlx::query("INSERT INTO workspaces (id, root_uri, kind) VALUES (1, 'file:///demo', 'soul')")
+        .execute(&pool)
+        .await?;
+    sqlx::query(
+        r#"
+        INSERT INTO files (
+            id,
+            workspace_id,
+            uri,
+            path,
+            language,
+            content_hash,
+            properties_json
+        )
+        VALUES (1, 1, 'file:///demo/src/lib.rs', 'src/lib.rs', 'soul', 'hash-rs', '{}')
+        "#,
+    )
+    .execute(&pool)
+    .await?;
+    sqlx::query(
+        r#"
+        INSERT INTO nodes (
+            id,
+            workspace_id,
+            language,
+            kind,
+            name,
+            qualified_name,
+            symbol_key,
+            file_id,
+            properties_json
+        )
+        VALUES (
+            'soul-node',
+            1,
+            'soul',
+            'file',
+            'src/lib.rs',
+            'src/lib.rs',
+            'file:///demo/src/lib.rs',
+            1,
+            '{}'
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await?;
+    sqlx::query(
+        r#"
+        INSERT INTO fts_documents (
+            id,
+            workspace_id,
+            file_id,
+            language,
+            content_hash,
+            byte_len,
+            properties_json
+        )
+        VALUES (1, 1, 1, 'soul', 'hash-rs', 12, '{}')
+        "#,
+    )
+    .execute(&pool)
+    .await?;
+    sqlx::query(
+        r#"
+        INSERT INTO fts_document_contents (
+            document_id,
+            file_id,
+            path,
+            language,
+            content
+        )
+        VALUES (1, 1, 'src/lib.rs', 'soul', 'fn run() {}')
+        "#,
+    )
+    .execute(&pool)
+    .await?;
+    pool.close().await;
+
+    let writer = WriteManager::start(&path).await?;
+    writer.migrate().await?;
+    writer.shutdown().await?;
+
+    let pool = sqlite_pool(&path).await?;
+    let file_language: String = sqlx::query_scalar("SELECT language FROM files WHERE id = 1")
+        .fetch_one(&pool)
+        .await?;
+    let fts_document_language: String =
+        sqlx::query_scalar("SELECT language FROM fts_documents WHERE id = 1")
+            .fetch_one(&pool)
+            .await?;
+    let fts_content_language: String =
+        sqlx::query_scalar("SELECT language FROM fts_document_contents WHERE document_id = 1")
+            .fetch_one(&pool)
+            .await?;
+    let soul_node_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM nodes WHERE language = 'soul'")
+            .fetch_one(&pool)
+            .await?;
+
+    assert_eq!(file_language, "rust");
+    assert_eq!(fts_document_language, "rust");
+    assert_eq!(fts_content_language, "rust");
+    assert_eq!(soul_node_count, 1);
 
     Ok(())
 }
@@ -1028,6 +1145,17 @@ async fn upsert_edge_updates_call_weight() -> Result<(), Box<dyn Error>> {
 
 async fn sqlite_pool(path: &Path) -> Result<SqlitePool, Box<dyn Error>> {
     Ok(SqlitePool::connect(&format!("sqlite://{}", path.display())).await?)
+}
+
+async fn create_sqlite_pool(path: &Path) -> Result<SqlitePool, Box<dyn Error>> {
+    let options = SqliteConnectOptions::new()
+        .filename(path)
+        .create_if_missing(true)
+        .foreign_keys(true);
+    Ok(SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await?)
 }
 
 async fn insert_file(

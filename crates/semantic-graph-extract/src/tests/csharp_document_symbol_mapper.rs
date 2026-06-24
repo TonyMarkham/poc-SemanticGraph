@@ -2,7 +2,7 @@
 
 use crate::{
     document_symbols::mapper::range_for_line,
-    model::{DocumentSymbolBatchRequest, DocumentSymbolRequest, GraphLanguage},
+    model::{DocumentSymbolBatchRequest, DocumentSymbolRequest, SourceLanguage},
     providers::csharp_ls::{CSharpDocumentSymbolMapper, CSharpLsProvider},
 };
 
@@ -54,7 +54,7 @@ fn unwraps_csharp_file_root_document_symbol() -> Result<(), Box<dyn Error>> {
         json!({}),
     )?;
 
-    assert_eq!(extraction.source_file.language, GraphLanguage::CSharp);
+    assert_eq!(extraction.source_file.language, SourceLanguage::CSharp);
     assert_eq!(extraction.symbols.len(), 1);
     assert_eq!(extraction.symbols[0].name, "Demo");
     assert_eq!(extraction.symbols[0].parent_symbol_key, None);

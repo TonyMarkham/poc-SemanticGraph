@@ -14,7 +14,7 @@ use crate::document_symbols::paths::{
 use crate::error::{ExtractError, ExtractResult};
 use crate::model::{
     DocumentSymbolExtraction, DocumentSymbolRequest, ExtractedRelation, ExtractedSymbol,
-    GraphLanguage, ProviderId, SourceFile,
+    GraphLanguage, ProviderId, SourceFile, SourceLanguage,
 };
 
 pub struct RustDocumentSymbolMapper;
@@ -58,12 +58,13 @@ impl RustDocumentSymbolMapper {
             file_symbol_key: file_symbol_key(&uri),
             uri: uri.clone(),
             relative_path,
-            language: GraphLanguage::Rust,
+            language: SourceLanguage::Rust,
             content_hash: Some(content_hash(&file_contents)),
         };
 
         let mut extraction = DocumentSymbolExtraction {
             provider: ProviderId::rust_analyzer(),
+            language: GraphLanguage::Rust,
             provider_version,
             source_file,
             symbols: Vec::new(),

@@ -151,10 +151,13 @@ impl WriteWorker {
             }
             Commands::ActiveFileSymbols {
                 workspace_id,
+                language,
                 file_uris,
                 response,
             } => {
-                let result = self.active_file_symbols(workspace_id, &file_uris).await;
+                let result = self
+                    .active_file_symbols(workspace_id, &language, &file_uris)
+                    .await;
                 let _send_result = response.send(result);
             }
             Commands::NodeExists { node_id, response } => {
@@ -425,6 +428,7 @@ impl WriteWorker {
     async fn active_file_symbols(
         &self,
         workspace_id: i64,
+        language: &str,
         file_uris: &[String],
     ) -> DbManagerResult<Vec<ActiveFileSymbols>> {
         let mut files = Vec::with_capacity(file_uris.len());
@@ -466,6 +470,7 @@ impl WriteWorker {
                 FROM nodes
                 WHERE workspace_id = ?
                   AND file_id = ?
+                  AND language = ?
                   AND valid_to_run_id IS NULL
                   AND kind <> 'file'
                 ORDER BY
@@ -478,6 +483,7 @@ impl WriteWorker {
             )
             .bind(workspace_id)
             .bind(file_id)
+            .bind(language)
             .fetch_all(&self.pool)
             .await
             .map_err(DbManagerError::database)?;

@@ -114,12 +114,14 @@ impl WriteHandle {
     pub async fn active_file_symbols(
         &self,
         workspace_id: i64,
+        language: &str,
         file_uris: &[String],
     ) -> DbManagerResult<Vec<ActiveFileSymbols>> {
         let (response, receiver) = oneshot::channel();
         self.sender
             .send(Commands::ActiveFileSymbols {
                 workspace_id,
+                language: language.to_string(),
                 file_uris: file_uris.to_vec(),
                 response,
             })

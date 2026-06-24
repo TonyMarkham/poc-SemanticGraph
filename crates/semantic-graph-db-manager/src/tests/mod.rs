@@ -1082,7 +1082,7 @@ async fn file_route_hashes_and_active_symbols_can_be_read() -> Result<(), Box<dy
         .file_route_content_hashes(workspace_id, "rust.document_symbols", "rust-analyzer")
         .await?;
     let active_files = writer
-        .active_file_symbols(workspace_id, &[file_uri.to_string()])
+        .active_file_symbols(workspace_id, "rust", &[file_uri.to_string()])
         .await?;
     writer.finish_run(run_id, "complete").await?;
     writer.shutdown().await?;

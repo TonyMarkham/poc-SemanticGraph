@@ -19,6 +19,7 @@ mod reference_route_summary;
 mod route_name;
 mod route_scope;
 mod source_file;
+mod source_language;
 
 // ---------------------------------------------------------------------------------------------- //
 
@@ -43,3 +44,4 @@ pub use reference_route_summary::ReferenceRouteSummary;
 pub use route_name::RouteName;
 pub use route_scope::RouteScope;
 pub use source_file::SourceFile;
+pub use source_language::SourceLanguage;

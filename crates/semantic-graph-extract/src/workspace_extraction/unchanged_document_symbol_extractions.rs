@@ -1,7 +1,10 @@
 use crate::{
     ExtractError, ExtractResult,
     document_symbols::paths::file_symbol_key,
-    model::{DocumentSymbolExtraction, ExtractedSymbol, GraphLanguage, ProviderId, SourceFile},
+    model::{
+        DocumentSymbolExtraction, ExtractedSymbol, GraphLanguage, ProviderId, SourceFile,
+        SourceLanguage,
+    },
 };
 
 use semantic_graph_db_manager::{ActiveFileSymbols, TextRange, WriteHandle};
@@ -12,6 +15,7 @@ pub async fn load_unchanged_document_symbol_extractions(
     store: &WriteHandle,
     workspace_id: i64,
     provider: ProviderId,
+    language: GraphLanguage,
     provider_version: Option<String>,
     file_uris: &HashSet<String>,
 ) -> ExtractResult<Vec<DocumentSymbolExtraction>> {
@@ -22,13 +26,14 @@ pub async fn load_unchanged_document_symbol_extractions(
     let mut file_uris = file_uris.iter().cloned().collect::<Vec<_>>();
     file_uris.sort();
     let active_files = store
-        .active_file_symbols(workspace_id, &file_uris)
+        .active_file_symbols(workspace_id, language.as_store_str(), &file_uris)
         .await
         .map_err(ExtractError::storage)?;
     let mut extractions = Vec::with_capacity(active_files.len());
     for active_file in active_files {
         extractions.push(document_symbol_extraction_from_active_file(
             provider,
+            language,
             provider_version.clone(),
             active_file,
         )?);
@@ -39,10 +44,11 @@ pub async fn load_unchanged_document_symbol_extractions(
 
 fn document_symbol_extraction_from_active_file(
     provider: ProviderId,
+    language: GraphLanguage,
     provider_version: Option<String>,
     active_file: ActiveFileSymbols,
 ) -> ExtractResult<DocumentSymbolExtraction> {
-    let language = graph_language_from_store(
+    let source_language = source_language_from_store(
         provider.as_str(),
         "load active document symbols",
         &active_file.language,
@@ -56,7 +62,7 @@ fn document_symbol_extraction_from_active_file(
     let source_file = SourceFile {
         uri: active_file.uri.clone(),
         relative_path: active_file.relative_path,
-        language,
+        language: source_language,
         file_symbol_key: file_symbol_key(&active_file.uri),
         content_hash: active_file.content_hash,
     };
@@ -122,6 +128,7 @@ fn document_symbol_extraction_from_active_file(
 
     Ok(DocumentSymbolExtraction {
         provider,
+        language,
         provider_version,
         source_file,
         symbols,
@@ -183,19 +190,20 @@ fn json_i64(provider: ProviderId, value: &Value, field: &str) -> ExtractResult<i
     })
 }
 
-fn graph_language_from_store(
+fn source_language_from_store(
     provider: &str,
     method: &str,
     language: &str,
-) -> ExtractResult<GraphLanguage> {
+) -> ExtractResult<SourceLanguage> {
     match language {
-        "rust" => Ok(GraphLanguage::Rust),
-        "csharp" => Ok(GraphLanguage::CSharp),
-        "soul" => Ok(GraphLanguage::Soul),
+        "rust" => Ok(SourceLanguage::Rust),
+        "csharp" => Ok(SourceLanguage::CSharp),
+        "markdown" => Ok(SourceLanguage::Markdown),
+        "other" => Ok(SourceLanguage::Other),
         _ => Err(ExtractError::response_shape(
             provider,
             method,
-            format!("unsupported graph language {language}"),
+            format!("unsupported source language {language}"),
         )),
     }
 }

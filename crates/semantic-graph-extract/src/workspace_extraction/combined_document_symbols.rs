@@ -19,6 +19,7 @@ pub fn combined_document_symbols(
 
     DocumentSymbolBatchExtraction {
         provider,
+        language: changed_document_symbols.language,
         provider_version,
         extractions,
         raw_metadata: json!({

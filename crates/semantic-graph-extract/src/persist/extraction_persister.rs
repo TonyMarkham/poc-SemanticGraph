@@ -177,10 +177,7 @@ impl ExtractionPersister {
         extraction: &DocumentSymbolExtraction,
     ) -> ExtractResult<PersistenceSummary> {
         let workspace_id = store
-            .create_workspace(
-                workspace_root_uri,
-                extraction.source_file.language.workspace_kind(),
-            )
+            .create_workspace(workspace_root_uri, extraction.language.workspace_kind())
             .await
             .map_err(ExtractError::storage)?;
         let run_id = store
@@ -221,18 +218,15 @@ impl ExtractionPersister {
         workspace_root_uri: &str,
         extraction: &DocumentSymbolBatchExtraction,
     ) -> ExtractResult<PersistenceSummary> {
-        let first_extraction = extraction.extractions.first().ok_or_else(|| {
-            ExtractError::response_shape(
+        if extraction.extractions.is_empty() {
+            return Err(ExtractError::response_shape(
                 extraction.provider.as_str(),
                 "textDocument/documentSymbol",
                 "document symbol batch contained no files",
-            )
-        })?;
+            ));
+        }
         let workspace_id = store
-            .create_workspace(
-                workspace_root_uri,
-                first_extraction.source_file.language.workspace_kind(),
-            )
+            .create_workspace(workspace_root_uri, extraction.language.workspace_kind())
             .await
             .map_err(ExtractError::storage)?;
         let run_id = store
@@ -274,18 +268,15 @@ impl ExtractionPersister {
         extraction: &DocumentSymbolBatchExtraction,
         close_stale: bool,
     ) -> ExtractResult<PersistenceSummary> {
-        let first_extraction = extraction.extractions.first().ok_or_else(|| {
-            ExtractError::response_shape(
+        if extraction.extractions.is_empty() {
+            return Err(ExtractError::response_shape(
                 extraction.provider.as_str(),
                 "textDocument/documentSymbol",
                 "document symbol batch contained no files",
-            )
-        })?;
+            ));
+        }
         let workspace_id = store
-            .create_workspace(
-                workspace_root_uri,
-                first_extraction.source_file.language.workspace_kind(),
-            )
+            .create_workspace(workspace_root_uri, extraction.language.workspace_kind())
             .await
             .map_err(ExtractError::storage)?;
         let run_id = store
@@ -332,22 +323,17 @@ impl ExtractionPersister {
         workspace_root_uri: &str,
         extraction: &ReferenceBatchExtraction,
     ) -> ExtractResult<PersistenceSummary> {
-        let first_extraction =
-            extraction
-                .document_symbols
-                .extractions
-                .first()
-                .ok_or_else(|| {
-                    ExtractError::response_shape(
-                        extraction.provider.as_str(),
-                        "textDocument/references",
-                        "reference batch contained no document-symbol files",
-                    )
-                })?;
+        if extraction.document_symbols.extractions.is_empty() {
+            return Err(ExtractError::response_shape(
+                extraction.provider.as_str(),
+                "textDocument/references",
+                "reference batch contained no document-symbol files",
+            ));
+        }
         let workspace_id = store
             .create_workspace(
                 workspace_root_uri,
-                first_extraction.source_file.language.workspace_kind(),
+                extraction.document_symbols.language.workspace_kind(),
             )
             .await
             .map_err(ExtractError::storage)?;
@@ -1615,22 +1601,17 @@ impl ExtractionPersister {
         workspace_root_uri: &str,
         extraction: &CallBatchExtraction,
     ) -> ExtractResult<PersistenceSummary> {
-        let first_extraction =
-            extraction
-                .document_symbols
-                .extractions
-                .first()
-                .ok_or_else(|| {
-                    ExtractError::response_shape(
-                        extraction.provider.as_str(),
-                        "callHierarchy/outgoingCalls",
-                        "call batch contained no document-symbol files",
-                    )
-                })?;
+        if extraction.document_symbols.extractions.is_empty() {
+            return Err(ExtractError::response_shape(
+                extraction.provider.as_str(),
+                "callHierarchy/outgoingCalls",
+                "call batch contained no document-symbol files",
+            ));
+        }
         let workspace_id = store
             .create_workspace(
                 workspace_root_uri,
-                first_extraction.source_file.language.workspace_kind(),
+                extraction.document_symbols.language.workspace_kind(),
             )
             .await
             .map_err(ExtractError::storage)?;
@@ -2915,7 +2896,8 @@ impl ExtractionPersister {
                     last_seen_run_id: Some(run_id),
                     properties_json: json!({
                         "provider": file_extraction.provider.as_str(),
-                        "language": file_extraction.source_file.language.as_store_str(),
+                        "source_language": file_extraction.source_file.language.as_store_str(),
+                        "semantic_language": file_extraction.language.as_store_str(),
                         "raw_metadata": file_extraction.raw_metadata,
                     }),
                 })
@@ -3439,11 +3421,11 @@ impl ExtractionPersister {
         extraction: &DocumentSymbolExtraction,
         close_stale: bool,
     ) -> ExtractResult<()> {
-        let route_name = RouteName::document_symbols_for_language(extraction.source_file.language);
+        let route_name = RouteName::document_symbols_for_language(extraction.language);
         let file_uri = &extraction.source_file.uri;
         let file_node_id = node_id(
             workspace_id,
-            extraction.source_file.language.as_store_str(),
+            extraction.language.as_store_str(),
             &extraction.source_file.file_symbol_key,
         );
         let file_name = basename_from_relative_path(&extraction.source_file.relative_path);
@@ -3462,7 +3444,8 @@ impl ExtractionPersister {
             last_seen_run_id: Some(run_id),
             properties_json: json!({
                 "provider": extraction.provider.as_str(),
-                "language": extraction.source_file.language.as_store_str(),
+                "source_language": extraction.source_file.language.as_store_str(),
+                "semantic_language": extraction.language.as_store_str(),
                 "raw_metadata": extraction.raw_metadata,
             }),
         });
@@ -3485,7 +3468,7 @@ impl ExtractionPersister {
 
         batch.nodes.push(DocumentSymbolWriteBatchNodeInput {
             workspace_id,
-            language: extraction.source_file.language.as_store_str().to_string(),
+            language: extraction.language.as_store_str().to_string(),
             kind: "file".to_string(),
             name: file_name.clone(),
             qualified_name: Some(extraction.source_file.relative_path.clone()),
@@ -3497,7 +3480,8 @@ impl ExtractionPersister {
             container_node_id: None,
             properties_json: json!({
                 "provider": extraction.provider.as_str(),
-                "language": extraction.source_file.language.as_store_str(),
+                "source_language": extraction.source_file.language.as_store_str(),
+                "semantic_language": extraction.language.as_store_str(),
                 "uri": extraction.source_file.uri,
             }),
             run_id: Some(run_id),
@@ -3731,7 +3715,7 @@ impl ExtractionPersister {
         run_id: i64,
         extraction: &DocumentSymbolExtraction,
     ) -> ExtractResult<PersistenceSummary> {
-        let route_name = RouteName::document_symbols_for_language(extraction.source_file.language);
+        let route_name = RouteName::document_symbols_for_language(extraction.language);
         let file_id = store
             .upsert_file(FileInput {
                 workspace_id,
@@ -3742,7 +3726,8 @@ impl ExtractionPersister {
                 last_seen_run_id: Some(run_id),
                 properties_json: json!({
                     "provider": extraction.provider.as_str(),
-                    "language": extraction.source_file.language.as_store_str(),
+                    "source_language": extraction.source_file.language.as_store_str(),
+                    "semantic_language": extraction.language.as_store_str(),
                     "raw_metadata": extraction.raw_metadata,
                 }),
             })
@@ -4032,7 +4017,7 @@ impl ExtractionPersister {
         store
             .upsert_node(NodeInput {
                 workspace_id,
-                language: extraction.source_file.language.as_store_str(),
+                language: extraction.language.as_store_str(),
                 kind: "file",
                 name: &file_name,
                 qualified_name: Some(&extraction.source_file.relative_path),
@@ -4044,7 +4029,8 @@ impl ExtractionPersister {
                 container_node_id: None,
                 properties_json: json!({
                     "provider": extraction.provider.as_str(),
-                    "language": extraction.source_file.language.as_store_str(),
+                    "source_language": extraction.source_file.language.as_store_str(),
+                    "semantic_language": extraction.language.as_store_str(),
                     "uri": extraction.source_file.uri,
                 }),
                 run_id: Some(run_id),
@@ -4062,7 +4048,7 @@ impl ExtractionPersister {
         extraction: &DocumentSymbolExtraction,
         node_id: &str,
     ) -> ExtractResult<()> {
-        let route_name = RouteName::document_symbols_for_language(extraction.source_file.language);
+        let route_name = RouteName::document_symbols_for_language(extraction.language);
         store
             .record_route_observation(RouteObservationInput {
                 workspace_id,
@@ -4091,7 +4077,7 @@ impl ExtractionPersister {
         extraction: &DocumentSymbolExtraction,
         edge_id: &str,
     ) -> ExtractResult<()> {
-        let route_name = RouteName::document_symbols_for_language(extraction.source_file.language);
+        let route_name = RouteName::document_symbols_for_language(extraction.language);
         store
             .record_route_observation(RouteObservationInput {
                 workspace_id,
@@ -4168,29 +4154,34 @@ fn document_symbol_batch_language(
     method: &str,
     extraction: &DocumentSymbolBatchExtraction,
 ) -> ExtractResult<GraphLanguage> {
-    let first_language = extraction
-        .extractions
-        .first()
-        .map(|file_extraction| file_extraction.source_file.language)
-        .ok_or_else(|| {
-            ExtractError::response_shape(
-                provider,
-                method,
-                "relation batch contained no document-symbol files",
-            )
-        })?;
+    if extraction.extractions.is_empty() {
+        return Err(ExtractError::response_shape(
+            provider,
+            method,
+            "relation batch contained no document-symbol files",
+        ));
+    }
 
     for file_extraction in &extraction.extractions {
-        if file_extraction.source_file.language != first_language {
+        if file_extraction.language != extraction.language {
             return Err(ExtractError::response_shape(
                 provider,
                 method,
-                "relation batch contained mixed source languages",
+                "relation batch contained mixed document-symbol languages",
             ));
+        }
+        for symbol in &file_extraction.symbols {
+            if symbol.language != extraction.language {
+                return Err(ExtractError::response_shape(
+                    provider,
+                    method,
+                    "relation batch contained mixed symbol languages",
+                ));
+            }
         }
     }
 
-    Ok(first_language)
+    Ok(extraction.language)
 }
 
 fn symbol_prerequisite_commands(language: GraphLanguage) -> &'static str {

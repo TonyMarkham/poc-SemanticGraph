@@ -2,7 +2,7 @@
 
 use crate::{
     document_symbols::mapper::range_for_line,
-    model::{DocumentSymbolBatchRequest, GraphLanguage},
+    model::{DocumentSymbolBatchRequest, GraphLanguage, SourceLanguage},
     providers::soul_lsp::SoulLspProvider,
 };
 
@@ -69,6 +69,10 @@ title: Feature B
 
     assert_eq!(
         document_symbols.extractions[0].source_file.language,
+        SourceLanguage::Markdown
+    );
+    assert_eq!(
+        document_symbols.extractions[0].language,
         GraphLanguage::Soul
     );
     assert!(

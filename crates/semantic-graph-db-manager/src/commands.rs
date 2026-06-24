@@ -43,6 +43,7 @@ pub(crate) enum Commands {
     },
     ActiveFileSymbols {
         workspace_id: i64,
+        language: String,
         file_uris: Vec<String>,
         response: oneshot::Sender<DbManagerResult<Vec<ActiveFileSymbols>>>,
     },

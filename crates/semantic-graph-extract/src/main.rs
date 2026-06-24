@@ -1619,6 +1619,7 @@ async fn run_csharp_route_batch(
             &store,
             workspace_id,
             provider.provider_id(),
+            provider.language(),
             csharp_ls_lib::provider_version(),
             &fresh_unchanged_file_uris,
         )

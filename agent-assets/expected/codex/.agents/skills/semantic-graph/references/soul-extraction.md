@@ -22,6 +22,11 @@ unless `--symbols` is selected in the same invocation.
 - `soul.document_symbols`
 - `soul.references`
 
+Soul extraction is a semantic overlay, not a source-file language. It writes
+`soul.*` routes and `soul` graph nodes, but `files.language` and FTS document
+language remain the physical source language such as `rust`, `csharp`,
+`markdown`, or `other`.
+
 Soul extraction reads `[soul]` from `.refactor-radar/config.toml`, loads
 configured annotation plugins, and runs `indexer::scan_repository` in memory
 through `soul-lsp-lib`. The extractor must not read `.soul/soul.toml` for this

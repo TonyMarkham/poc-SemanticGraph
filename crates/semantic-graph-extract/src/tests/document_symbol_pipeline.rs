@@ -1,3 +1,5 @@
+#![allow(deprecated)]
+
 use std::env;
 use std::error::Error;
 use std::fs;
@@ -8,11 +10,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::document_symbols::paths::{file_uri, validate_document_symbol_batch_request};
 use crate::error::ExtractError;
 use crate::model::{
-    DocumentSymbolBatchExtraction, DocumentSymbolBatchRequest, DocumentSymbolRequest, ProviderId,
+    DocumentSymbolBatchExtraction, DocumentSymbolBatchRequest, DocumentSymbolRequest,
+    GraphLanguage, ProviderId,
 };
 use crate::persist::ExtractionPersister;
-use crate::providers::rust_analyzer::RustDocumentSymbolMapper;
-use lsp_types::DocumentSymbolResponse;
+use crate::providers::{
+    rust_analyzer::RustDocumentSymbolMapper, soul_lsp::SoulDocumentSymbolMapper,
+};
+use lsp_types::{DocumentSymbol, DocumentSymbolResponse, Position, Range, SymbolKind};
 use semantic_graph_db_manager::WriteManager;
 use semantic_graph_store::{GraphStore, GraphStoreStats};
 use serde_json::json;
@@ -84,6 +89,7 @@ fn batch_fixture_extraction() -> Result<DocumentSymbolBatchExtraction, Box<dyn E
 
     Ok(DocumentSymbolBatchExtraction {
         provider: ProviderId::rust_analyzer(),
+        language: GraphLanguage::Rust,
         provider_version,
         extractions,
         raw_metadata: json!({ "fixture": "crate batch" }),
@@ -104,6 +110,37 @@ fn temp_workspace_path(name: &str) -> Result<PathBuf, Box<dyn Error>> {
         "poc-semanticgraph-extract-{name}-{}-{stamp}",
         std::process::id()
     )))
+}
+
+fn simple_symbol(name: &str, kind: SymbolKind) -> DocumentSymbol {
+    DocumentSymbol {
+        name: name.to_string(),
+        detail: None,
+        kind,
+        tags: None,
+        deprecated: None,
+        range: Range {
+            start: Position {
+                line: 0,
+                character: 0,
+            },
+            end: Position {
+                line: 0,
+                character: 20,
+            },
+        },
+        selection_range: Range {
+            start: Position {
+                line: 0,
+                character: 3,
+            },
+            end: Position {
+                line: 0,
+                character: 6,
+            },
+        },
+        children: None,
+    }
 }
 
 #[test]
@@ -293,6 +330,112 @@ async fn persists_batch_fixture_symbols_into_one_sqlite_run() -> Result<(), Box<
     assert_eq!(file_nodes, 3);
     assert_eq!(model_file_contains_widget_id, 1);
     assert_eq!(nested_new_on_widget_id, 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn soul_symbols_do_not_rewrite_rust_file_language() -> Result<(), Box<dyn Error>> {
+    let root = temp_workspace_path("soul-over-rust")?;
+    let source_path = root.join("src/lib.rs");
+    fs::create_dir_all(root.join("src"))?;
+    fs::write(&source_path, "fn run() {}\n")?;
+    let request = DocumentSymbolRequest {
+        workspace_root: root.clone(),
+        package_path: root.clone(),
+        file_path: source_path.clone(),
+    };
+
+    let rust_extraction = RustDocumentSymbolMapper::map_response(
+        request.clone(),
+        DocumentSymbolResponse::Nested(vec![simple_symbol("run", SymbolKind::FUNCTION)]),
+        Some("fixture-rust-analyzer".to_string()),
+        json!({ "fixture": "rust" }),
+    )?;
+    let soul_extraction = SoulDocumentSymbolMapper::map_response(
+        request,
+        DocumentSymbolResponse::Nested(vec![simple_symbol("coach.run", SymbolKind::FILE)]),
+        Some("fixture-soul-lsp".to_string()),
+        json!({ "fixture": "soul" }),
+    )?;
+
+    let db_path = temp_db_path()?;
+    let writer = WriteManager::start(&db_path).await?;
+    writer.migrate().await?;
+    let workspace_root_uri = file_uri(&root)?;
+
+    ExtractionPersister
+        .persist_document_symbol_batch(
+            &writer,
+            &workspace_root_uri,
+            &DocumentSymbolBatchExtraction {
+                provider: ProviderId::rust_analyzer(),
+                language: GraphLanguage::Rust,
+                provider_version: Some("fixture-rust-analyzer".to_string()),
+                extractions: vec![rust_extraction],
+                raw_metadata: json!({}),
+            },
+        )
+        .await?;
+    ExtractionPersister
+        .persist_document_symbol_batch(
+            &writer,
+            &workspace_root_uri,
+            &DocumentSymbolBatchExtraction {
+                provider: ProviderId::soul_lsp(),
+                language: GraphLanguage::Soul,
+                provider_version: Some("fixture-soul-lsp".to_string()),
+                extractions: vec![soul_extraction],
+                raw_metadata: json!({}),
+            },
+        )
+        .await?;
+    writer.shutdown().await?;
+
+    let pool = SqlitePool::connect(&format!("sqlite://{}", db_path.display())).await?;
+    let file_language: String =
+        sqlx::query_scalar("SELECT language FROM files WHERE path = 'src/lib.rs'")
+            .fetch_one(&pool)
+            .await?;
+    let rust_nodes: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM nodes
+        JOIN files ON files.id = nodes.file_id
+        WHERE files.path = 'src/lib.rs'
+          AND nodes.language = 'rust'
+          AND nodes.valid_to_run_id IS NULL
+        "#,
+    )
+    .fetch_one(&pool)
+    .await?;
+    let soul_nodes: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM nodes
+        JOIN files ON files.id = nodes.file_id
+        WHERE files.path = 'src/lib.rs'
+          AND nodes.language = 'soul'
+          AND nodes.valid_to_run_id IS NULL
+        "#,
+    )
+    .fetch_one(&pool)
+    .await?;
+    let route_count: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM extraction_route_status
+        WHERE route IN ('rust.document_symbols', 'soul.document_symbols')
+          AND scope = 'file'
+          AND last_status = 'complete'
+        "#,
+    )
+    .fetch_one(&pool)
+    .await?;
+
+    assert_eq!(file_language, "rust");
+    assert!(rust_nodes > 0);
+    assert!(soul_nodes > 0);
+    assert_eq!(route_count, 2);
     Ok(())
 }
 

@@ -112,6 +112,7 @@ impl SharedWorkspaceExtractionRunner {
                     store,
                     workspace_id,
                     provider.provider_id(),
+                    provider.language(),
                     rust_analyzer_lib::provider_version(),
                     &fresh_unchanged_file_uris,
                 )
