@@ -1,9 +1,10 @@
 use crate::{
     benchmark::BenchmarkSummary,
     fts::{
-        FtsExclusionSet, FtsExtractionOptions, FtsExtractionRunner, FtsFileDiscovery,
-        FtsFileLanguage,
+        FtsExclusionSet, FtsExtractionOptions, FtsExtractionRunRequest, FtsExtractionRunner,
+        FtsFileDiscovery, FtsFileLanguage,
     },
+    progress::ProgressReporter,
 };
 
 use semantic_graph_config::FtsConfig;
@@ -16,7 +17,9 @@ use sqlx::{
 use std::{
     error::Error,
     fs,
+    io::{self, Write},
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -216,12 +219,84 @@ async fn fts_runner_persists_content_without_fts5_and_updates_sidecar() -> Resul
     Ok(())
 }
 
+#[tokio::test]
+async fn fts_runner_progress_ticks_once_per_discovered_file() -> Result<(), Box<dyn Error>> {
+    let temp = temp_dir("fts-progress")?;
+    let root = temp.join("workspace");
+    fs::create_dir_all(&root)?;
+    write_file(&root.join("src/lib.rs"), "fn indexed() {}\n")?;
+    write_file(&root.join("README.md"), "indexed text\n")?;
+    write_bytes(&root.join("binary.bin"), &[0, 1, 2, 3])?;
+
+    let db_path = root.join(".refactor-radar/fts.db");
+    let index_path = root.join(".refactor-radar/fts.tantivy");
+    let writer = WriteManager::start(&db_path).await?;
+    writer.migrate().await?;
+
+    let buffer = Arc::new(Mutex::new(Vec::new()));
+    let progress = ProgressReporter::with_writer(Box::new(SharedBuffer::new(buffer.clone())));
+    let summary = FtsExtractionRunner::run_with_progress(
+        FtsExtractionRunRequest::new(
+            &writer,
+            &root,
+            &db_path,
+            &index_path,
+            &FtsConfig::default(),
+            FtsExtractionOptions::default(),
+            2,
+        ),
+        progress,
+    )
+    .await?;
+    writer.shutdown().await?;
+
+    assert_eq!(summary.files_hashed, 2);
+    assert_eq!(summary.skipped_binary_or_unreadable, 1);
+    let output = {
+        let bytes = buffer
+            .lock()
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        String::from_utf8(bytes.clone())?
+    };
+    assert!(
+        output.contains("3/3 100% fts files"),
+        "progress output did not reach discovered-file total: {output:?}"
+    );
+
+    Ok(())
+}
+
 fn assert_benchmark_line(summary: &BenchmarkSummary, expected: &str) {
     let lines = summary.lines();
     assert!(
         lines.iter().any(|line| line == expected),
         "missing benchmark line {expected}; actual lines: {lines:?}"
     );
+}
+
+struct SharedBuffer {
+    bytes: Arc<Mutex<Vec<u8>>>,
+}
+
+impl SharedBuffer {
+    fn new(bytes: Arc<Mutex<Vec<u8>>>) -> Self {
+        Self { bytes }
+    }
+}
+
+impl Write for SharedBuffer {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let mut bytes = self
+            .bytes
+            .lock()
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        bytes.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 fn assert_benchmark_prefix(summary: &BenchmarkSummary, expected_prefix: &str) {

@@ -1,7 +1,7 @@
 use crate::{
-    ActiveFileSymbols, DbManagerResult, DemoSeedSummary, DocumentSymbolWriteBatchInput,
-    DocumentSymbolWriteBatchSummary, FtsWriteBatchInput, RouteWriteBatchInput, StaleFileSummary,
-    WriteSummary,
+    ActiveFileSymbols, DbManagerResult, DbWriteProgressCallback, DemoSeedSummary,
+    DocumentSymbolWriteBatchInput, DocumentSymbolWriteBatchSummary, FtsWriteBatchInput,
+    RouteWriteBatchInput, StaleFileSummary, WriteSummary,
     models::{
         OwnedCloseStaleFileInput, OwnedCloseStaleFtsDocumentsInput, OwnedCloseStaleRouteInput,
         OwnedEdgeEvidenceInput, OwnedEdgeInput, OwnedFileInput, OwnedNodeInput,
@@ -101,10 +101,12 @@ pub(crate) enum Commands {
     },
     WriteRouteBatch {
         input: RouteWriteBatchInput,
+        progress: Option<DbWriteProgressCallback>,
         response: oneshot::Sender<DbManagerResult<()>>,
     },
     WriteDocumentSymbolBatch {
         input: DocumentSymbolWriteBatchInput,
+        progress: Option<DbWriteProgressCallback>,
         response: oneshot::Sender<DbManagerResult<DocumentSymbolWriteBatchSummary>>,
     },
     WriteFtsBatch {

@@ -1,7 +1,7 @@
 use crate::{
     SoulLspLibResult,
     model::{ResolvedReferenceSet, ResolvedReferenceTarget},
-    semantic::{DocumentSymbolItems, FileSemanticResult, FileSemanticWork},
+    semantic::{DocumentSymbolItems, FileSemanticResult, FileSemanticWork, ProgressCallback},
 };
 
 use std::path::PathBuf;
@@ -10,6 +10,7 @@ use tokio::sync::oneshot;
 pub(crate) enum AnalysisWorkerCommand {
     DocumentSymbols {
         file_paths: Vec<PathBuf>,
+        progress: Option<ProgressCallback>,
         response: oneshot::Sender<SoulLspLibResult<DocumentSymbolItems>>,
     },
     References {

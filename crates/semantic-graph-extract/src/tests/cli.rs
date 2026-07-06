@@ -20,6 +20,26 @@ use std::{
 };
 
 #[test]
+fn progress_defaults_to_disabled() -> Result<(), Box<dyn Error>> {
+    let cli = Cli::try_parse_from(["semantic-graph-extract", "fts"])?;
+
+    assert!(!cli.progress);
+    Ok(())
+}
+
+#[test]
+fn progress_is_global_before_subcommand() -> Result<(), Box<dyn Error>> {
+    let cli = Cli::try_parse_from(["semantic-graph-extract", "--progress", "rust-workspace"])?;
+
+    assert!(cli.progress);
+    match cli.command {
+        Command::RustWorkspace { .. } => {}
+        _ => return Err("expected rust-workspace command".into()),
+    }
+    Ok(())
+}
+
+#[test]
 fn fts_defaults_to_all_text_files() -> Result<(), Box<dyn Error>> {
     let cli = Cli::try_parse_from(["semantic-graph-extract", "fts"])?;
 

@@ -2,22 +2,26 @@ mod fts_discovered_file;
 mod fts_discovery_result;
 mod fts_exclusion_set;
 mod fts_extraction_options;
+mod fts_extraction_run_request;
 mod fts_extraction_runner;
 mod fts_extraction_summary;
 mod fts_file_discovery;
 mod fts_file_language;
 mod fts_file_work_result;
 mod fts_file_worker_config;
+mod fts_file_worker_input;
 mod fts_file_worker_join_handle;
 mod fts_file_worker_metric;
 mod fts_file_workers;
 mod fts_skip_reason;
+mod fts_started_extraction_request;
 mod fts_started_run;
 
 pub use fts_discovered_file::FtsDiscoveredFile;
 pub use fts_discovery_result::FtsDiscoveryResult;
 pub use fts_exclusion_set::FtsExclusionSet;
 pub use fts_extraction_options::FtsExtractionOptions;
+pub use fts_extraction_run_request::FtsExtractionRunRequest;
 pub use fts_extraction_runner::FtsExtractionRunner;
 pub use fts_extraction_summary::FtsExtractionSummary;
 pub use fts_file_discovery::FtsFileDiscovery;
@@ -26,11 +30,14 @@ pub use fts_skip_reason::FtsSkipReason;
 
 pub(crate) use fts_file_work_result::FtsFileWorkResult;
 pub(crate) use fts_file_worker_config::FtsFileWorkerConfig;
+pub(crate) use fts_file_worker_input::FtsFileWorkerInput;
 pub(crate) use fts_file_worker_join_handle::FtsFileWorkerJoinHandle;
 pub(crate) use fts_file_worker_metric::FtsFileWorkerMetric;
 pub(crate) use fts_file_workers::{
-    insert_fts_file_worker_metrics_with_prefix, route_content_hash, run_fts_file_workers,
+    insert_fts_file_worker_metrics_with_prefix, route_content_hash,
+    run_fts_file_workers_with_progress,
 };
+pub(crate) use fts_started_extraction_request::FtsStartedExtractionRequest;
 pub(crate) use fts_started_run::FtsStartedRun;
 
 use std::path::Path;

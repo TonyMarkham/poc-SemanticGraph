@@ -1,6 +1,6 @@
 use crate::{
-    ActiveFileSymbol, ActiveFileSymbols, DbManagerError, DbManagerResult, DbWriteProgressKind,
-    DemoSeedSummary, DocumentSymbolWriteBatchCloseStaleRouteInput,
+    ActiveFileSymbol, ActiveFileSymbols, DbManagerError, DbManagerResult, DbWriteProgressCallback,
+    DbWriteProgressKind, DemoSeedSummary, DocumentSymbolWriteBatchCloseStaleRouteInput,
     DocumentSymbolWriteBatchEdgeEvidenceInput, DocumentSymbolWriteBatchFileInput,
     DocumentSymbolWriteBatchInput, DocumentSymbolWriteBatchNodeInput,
     DocumentSymbolWriteBatchObservationInput, DocumentSymbolWriteBatchOccurrenceInput,
@@ -38,6 +38,12 @@ macro_rules! run_write_command {
             Err(error) => Err(error),
         }
     }};
+}
+
+fn tick_write_progress(progress: &Option<DbWriteProgressCallback>) {
+    if let Some(progress) = progress {
+        progress();
+    }
 }
 
 pub(crate) struct WriteWorker {
@@ -226,12 +232,21 @@ impl WriteWorker {
                 let result = run_write_command!(self, self.record_route_observation(input));
                 self.send_write_response(response, result).await;
             }
-            Commands::WriteRouteBatch { input, response } => {
-                let result = run_write_command!(self, self.write_route_batch(input));
+            Commands::WriteRouteBatch {
+                input,
+                progress,
+                response,
+            } => {
+                let result = run_write_command!(self, self.write_route_batch(input, progress));
                 self.send_write_response(response, result).await;
             }
-            Commands::WriteDocumentSymbolBatch { input, response } => {
-                let result = run_write_command!(self, self.write_document_symbol_batch(input));
+            Commands::WriteDocumentSymbolBatch {
+                input,
+                progress,
+                response,
+            } => {
+                let result =
+                    run_write_command!(self, self.write_document_symbol_batch(input, progress));
                 self.send_write_response(response, result).await;
             }
             Commands::WriteFtsBatch { input, response } => {
@@ -1309,21 +1324,29 @@ impl WriteWorker {
         Ok(())
     }
 
-    async fn write_route_batch(&self, input: RouteWriteBatchInput) -> DbManagerResult<()> {
+    async fn write_route_batch(
+        &self,
+        input: RouteWriteBatchInput,
+        progress: Option<DbWriteProgressCallback>,
+    ) -> DbManagerResult<()> {
         for edge in input.edges {
             self.upsert_edge(owned_edge_input(edge)).await?;
+            tick_write_progress(&progress);
         }
         for occurrence in input.occurrences {
             self.insert_occurrence(owned_occurrence_input(occurrence))
                 .await?;
+            tick_write_progress(&progress);
         }
         for edge_evidence in input.edge_evidence {
             self.insert_edge_evidence(owned_edge_evidence_input(edge_evidence))
                 .await?;
+            tick_write_progress(&progress);
         }
         for route_observation in input.route_observations {
             self.record_route_observation(owned_route_observation_input(route_observation))
                 .await?;
+            tick_write_progress(&progress);
         }
 
         Ok(())
@@ -1425,12 +1448,14 @@ impl WriteWorker {
     async fn write_document_symbol_batch(
         &self,
         input: DocumentSymbolWriteBatchInput,
+        progress: Option<DbWriteProgressCallback>,
     ) -> DbManagerResult<DocumentSymbolWriteBatchSummary> {
         let mut file_ids = HashMap::new();
         for file in input.files {
             let uri = file.uri.clone();
             let file_id = self.upsert_file(owned_file_input(file)).await?;
             file_ids.insert(uri, file_id);
+            tick_write_progress(&progress);
         }
 
         for route_status in input.route_status_starts {
@@ -1439,19 +1464,23 @@ impl WriteWorker {
                 &file_ids,
             )?)
             .await?;
+            tick_write_progress(&progress);
         }
         for node in input.nodes {
             self.upsert_node_without_select(owned_document_symbol_node_input(node, &file_ids)?)
                 .await?;
+            tick_write_progress(&progress);
         }
         for occurrence in input.occurrences {
             self.insert_occurrence_without_rowid(owned_document_symbol_occurrence_input(
                 occurrence, &file_ids,
             )?)
             .await?;
+            tick_write_progress(&progress);
         }
         for edge in input.edges {
             self.upsert_edge(owned_edge_input(edge)).await?;
+            tick_write_progress(&progress);
         }
         for edge_evidence in input.edge_evidence {
             self.insert_edge_evidence_without_rowid(owned_document_symbol_edge_evidence_input(
@@ -1459,6 +1488,7 @@ impl WriteWorker {
                 &file_ids,
             )?)
             .await?;
+            tick_write_progress(&progress);
         }
         for route_observation in input.route_observations {
             self.record_route_observation(owned_document_symbol_route_observation_input(
@@ -1466,22 +1496,29 @@ impl WriteWorker {
                 &file_ids,
             )?)
             .await?;
+            tick_write_progress(&progress);
         }
         for route_status in input.route_status_completes {
             self.complete_route_status(owned_document_symbol_route_status_complete_input(
                 route_status,
             ))
             .await?;
+            tick_write_progress(&progress);
         }
 
-        self.close_stale_document_symbol_batch(&input.close_stale_nodes, &input.close_stale_edges)
-            .await
+        self.close_stale_document_symbol_batch(
+            &input.close_stale_nodes,
+            &input.close_stale_edges,
+            &progress,
+        )
+        .await
     }
 
     async fn close_stale_document_symbol_batch(
         &self,
         close_stale_nodes: &[DocumentSymbolWriteBatchCloseStaleRouteInput],
         close_stale_edges: &[DocumentSymbolWriteBatchCloseStaleRouteInput],
+        progress: &Option<DbWriteProgressCallback>,
     ) -> DbManagerResult<DocumentSymbolWriteBatchSummary> {
         if close_stale_nodes.is_empty() && close_stale_edges.is_empty() {
             return Ok(DocumentSymbolWriteBatchSummary::default());
@@ -1491,10 +1528,12 @@ impl WriteWorker {
         for close_stale in close_stale_nodes {
             self.insert_document_symbol_close_stale_request("node", close_stale)
                 .await?;
+            tick_write_progress(progress);
         }
         for close_stale in close_stale_edges {
             self.insert_document_symbol_close_stale_request("edge", close_stale)
                 .await?;
+            tick_write_progress(progress);
         }
 
         let stale_nodes_closed = self.close_stale_document_symbol_batch_nodes().await?;

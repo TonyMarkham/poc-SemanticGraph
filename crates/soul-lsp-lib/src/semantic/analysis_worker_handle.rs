@@ -2,7 +2,7 @@ use crate::{
     SoulLspLibError, SoulLspLibResult,
     model::{ResolvedReferenceSet, ResolvedReferenceTarget},
     semantic::analysis_worker_command::AnalysisWorkerCommand,
-    semantic::{DocumentSymbolItems, FileSemanticResult, FileSemanticWork},
+    semantic::{DocumentSymbolItems, FileSemanticResult, FileSemanticWork, ProgressCallback},
 };
 
 use std::{path::PathBuf, sync::mpsc};
@@ -22,10 +22,29 @@ impl AnalysisWorkerHandle {
         &self,
         file_paths: Vec<PathBuf>,
     ) -> SoulLspLibResult<DocumentSymbolItems> {
+        self.document_symbols_for_files_internal(file_paths, None)
+            .await
+    }
+
+    pub async fn document_symbols_for_files_with_progress(
+        &self,
+        file_paths: Vec<PathBuf>,
+        progress: ProgressCallback,
+    ) -> SoulLspLibResult<DocumentSymbolItems> {
+        self.document_symbols_for_files_internal(file_paths, Some(progress))
+            .await
+    }
+
+    async fn document_symbols_for_files_internal(
+        &self,
+        file_paths: Vec<PathBuf>,
+        progress: Option<ProgressCallback>,
+    ) -> SoulLspLibResult<DocumentSymbolItems> {
         let (response, receiver) = oneshot::channel();
         self.sender
             .send(AnalysisWorkerCommand::DocumentSymbols {
                 file_paths,
+                progress,
                 response,
             })
             .map_err(|_| {

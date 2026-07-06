@@ -197,11 +197,11 @@ csharp-file-deleted-smoke:
 
 # Exercise complete workspace extraction as part of confidence checks.
 confidence-rust-workspace:
-    ./target/release/semantic-graph-extract rust-workspace
+    ./target/release/semantic-graph-extract rust-workspace --progress
 
 # Exercise complete C# solution extraction as part of confidence checks.
 confidence-csharp-solution:
-    ./target/release/semantic-graph-extract csharp-solution
+    ./target/release/semantic-graph-extract csharp-solution --progress
 
 # Exercise complete workspace-scoped rust-analyzer extraction in one CLI call.
 rust-workspace-smoke:

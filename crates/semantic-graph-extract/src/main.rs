@@ -1,5 +1,8 @@
+mod cli_route_batch_storage;
+
+use crate::cli_route_batch_storage::CliRouteBatchStorage;
 use semantic_graph_config::{discover_config, load_config};
-use semantic_graph_db_manager::{Config, WriteHandle, WriteManager};
+use semantic_graph_db_manager::{Config, DbWriteProgressCallback, WriteHandle, WriteManager};
 use semantic_graph_extract::{
     ExtractError, ExtractResult,
     benchmark::{BenchmarkSummary, Stopwatch},
@@ -13,12 +16,16 @@ use semantic_graph_extract::{
         symbol_key_belongs_to_file, validate_deleted_rust_file_request,
     },
     document_symbols::paths::{file_uri, validate_document_symbol_batch_request},
-    fts::{FtsExtractionOptions, FtsExtractionRunner, FtsExtractionSummary},
+    fts::{
+        FtsExtractionOptions, FtsExtractionRunRequest, FtsExtractionRunner, FtsExtractionSummary,
+    },
     model::{
         CallBatchExtraction, CallRouteSummary, DocumentSymbolBatchExtraction,
-        DocumentSymbolBatchRequest, GraphLanguage, ProviderId, ReferenceRouteSummary, RouteName,
+        DocumentSymbolBatchRequest, GraphLanguage, ProviderId, ReferenceBatchExtraction,
+        ReferenceRouteSummary, RouteName,
     },
     persist::{ExtractionPersister, PersistenceSummary},
+    progress::{ProgressReporter, ProgressTask},
     providers::csharp_ls::CSharpLsProvider,
     providers::rust_analyzer::RustAnalyzerProvider,
     providers::soul_lsp::SoulLspProvider,
@@ -38,6 +45,7 @@ use std::{
     collections::{BTreeMap, HashSet},
     error::Error,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 #[tokio::main]
@@ -51,6 +59,7 @@ async fn main() {
 async fn run() -> ExtractResult<()> {
     let cli = Cli::parse();
     let config = cli.config;
+    let progress = ProgressReporter::stderr(cli.progress);
 
     match cli.command {
         Command::Fts {
@@ -84,14 +93,17 @@ async fn run() -> ExtractResult<()> {
             benchmark.insert_duration_ms("writer_ready", writer_ready_timer.elapsed());
 
             let fts_runner_timer = Stopwatch::start_new();
-            let summary = FtsExtractionRunner::run(
-                &store,
-                &workspace_root,
-                &db,
-                &index_path,
-                &fts_config,
-                FtsExtractionOptions::new(no_rust, no_csharp, no_submodules),
-                analysis_worker_count,
+            let summary = FtsExtractionRunner::run_with_progress(
+                FtsExtractionRunRequest::new(
+                    &store,
+                    &workspace_root,
+                    &db,
+                    &index_path,
+                    &fts_config,
+                    FtsExtractionOptions::new(no_rust, no_csharp, no_submodules),
+                    analysis_worker_count,
+                ),
+                progress.clone(),
             )
             .await;
             benchmark.insert_duration_ms("fts_runner", fts_runner_timer.elapsed());
@@ -130,8 +142,13 @@ async fn run() -> ExtractResult<()> {
             let store = start_writer(db, &config, &document_request.workspace_root).await?;
 
             let provider = RustAnalyzerProvider::new();
-            let extractions =
-                extract_rust_file_with_single_worker(&provider, document_request, mode).await?;
+            let extractions = extract_rust_file_with_single_worker(
+                &provider,
+                document_request,
+                mode,
+                progress.clone(),
+            )
+            .await?;
             let summary =
                 persist_rust_file_extractions(&store, &workspace_root_uri, mode, &extractions)
                     .await?;
@@ -180,13 +197,13 @@ async fn run() -> ExtractResult<()> {
                     file_paths,
                 })?;
             let summary = run_threaded_rust_route_batch(
-                &config,
-                db,
+                CliRouteBatchStorage::new(&config, db),
                 &provider,
                 document_request,
                 routes,
                 analysis_workers,
                 Some(("discovery", discovery_elapsed)),
+                progress.clone(),
             )
             .await?;
 
@@ -215,13 +232,13 @@ async fn run() -> ExtractResult<()> {
                     file_paths,
                 })?;
             let summary = run_shared_rust_route_batch(
-                &config,
-                db,
+                CliRouteBatchStorage::new(&config, db),
                 &provider,
                 document_request,
                 routes,
                 analysis_workers,
                 Some(("discovery", discovery_elapsed)),
+                progress.clone(),
             )
             .await?;
 
@@ -263,9 +280,14 @@ async fn run() -> ExtractResult<()> {
             let db = resolve_cli_database_path(db, &config, &workspace_root)?;
             let store = start_writer(db, &config, &workspace_root).await?;
 
-            let extractions =
-                extract_csharp_file_with_single_worker(&provider, &plan, document_request, mode)
-                    .await?;
+            let extractions = extract_csharp_file_with_single_worker(
+                &provider,
+                &plan,
+                document_request,
+                mode,
+                progress.clone(),
+            )
+            .await?;
             let summary =
                 persist_csharp_file_extractions(&store, &workspace_root_uri, mode, &extractions)
                     .await?;
@@ -350,8 +372,7 @@ async fn run() -> ExtractResult<()> {
                     file_paths,
                 })?;
             let summary = run_csharp_route_batch(
-                &config,
-                db,
+                CliRouteBatchStorage::new(&config, db),
                 &provider,
                 &plan,
                 document_request,
@@ -360,6 +381,7 @@ async fn run() -> ExtractResult<()> {
                     CSharpRouteBatchScope::Project,
                     Some(discovery_elapsed),
                 ),
+                progress.clone(),
             )
             .await?;
 
@@ -397,8 +419,7 @@ async fn run() -> ExtractResult<()> {
                     file_paths,
                 })?;
             let summary = run_csharp_route_batch(
-                &config,
-                db,
+                CliRouteBatchStorage::new(&config, db),
                 &provider,
                 &plan,
                 document_request,
@@ -407,6 +428,7 @@ async fn run() -> ExtractResult<()> {
                     CSharpRouteBatchScope::Solution,
                     Some(discovery_elapsed),
                 ),
+                progress.clone(),
             )
             .await?;
 
@@ -438,6 +460,7 @@ async fn run() -> ExtractResult<()> {
                 &soul_config,
                 document_request,
                 mode,
+                progress.clone(),
             )
             .await?;
             let summary =
@@ -468,13 +491,13 @@ async fn run() -> ExtractResult<()> {
                     file_paths,
                 })?;
             let summary = run_soul_route_batch(
-                &config,
-                db,
+                CliRouteBatchStorage::new(&config, db),
                 &provider,
                 &soul_config,
                 document_request,
                 routes,
                 Some(("discovery", discovery_elapsed)),
+                progress.clone(),
             )
             .await?;
 
@@ -512,12 +535,14 @@ async fn extract_rust_file_with_single_worker(
     provider: &RustAnalyzerProvider,
     document_request: DocumentSymbolBatchRequest,
     mode: RustFileMode,
+    progress: ProgressReporter,
 ) -> ExtractResult<RustFileExtractions> {
     let worker = rust_analyzer_lib::AnalysisWorker::start(&document_request.workspace_root)
         .map_err(|source| {
             ExtractError::rust_analyzer_lib("start single rust-file worker", source)
         })?;
-    let result = extract_rust_file_with_worker(provider, &worker, document_request, mode).await;
+    let result =
+        extract_rust_file_with_worker(provider, &worker, document_request, mode, progress).await;
     let shutdown_result = worker.shutdown().await.map_err(|source| {
         ExtractError::rust_analyzer_lib("shutdown single rust-file worker", source)
     });
@@ -534,10 +559,12 @@ async fn extract_rust_file_with_worker(
     worker: &rust_analyzer_lib::AnalysisWorkerHandle,
     document_request: DocumentSymbolBatchRequest,
     mode: RustFileMode,
+    progress: ProgressReporter,
 ) -> ExtractResult<RustFileExtractions> {
     let file_scope_key = file_uri(&document_request.file_paths[0])?;
     let document_symbols =
-        document_symbols_with_worker(provider, worker, document_request.clone()).await?;
+        document_symbols_with_worker(provider, worker, document_request.clone(), progress.clone())
+            .await?;
 
     if !mode.includes_references() && !mode.includes_calls() {
         return Ok(RustFileExtractions {
@@ -549,7 +576,7 @@ async fn extract_rust_file_with_worker(
     }
 
     let (relation_document_request, relation_document_symbols) =
-        rust_file_relation_document_symbols(provider, worker, &document_request).await?;
+        rust_file_relation_document_symbols(provider, worker, &document_request, progress).await?;
 
     let reference_targets = if mode.includes_references() {
         provider.reference_targets_for_document_symbols(
@@ -634,13 +661,23 @@ async fn document_symbols_with_worker(
     provider: &RustAnalyzerProvider,
     worker: &rust_analyzer_lib::AnalysisWorkerHandle,
     document_request: DocumentSymbolBatchRequest,
+    progress: ProgressReporter,
 ) -> ExtractResult<DocumentSymbolBatchExtraction> {
-    let document_symbol_items = worker
-        .document_symbols_for_files(document_request.file_paths.clone())
-        .await
-        .map_err(|source| {
-            ExtractError::rust_analyzer_lib("rust-analyzer-lib document_symbols_for_files", source)
-        })?;
+    let progress_task = progress.task(document_request.file_paths.len(), "rust symbols");
+    let progress_callback: rust_analyzer_lib::ProgressCallback = Arc::new({
+        let progress_task = progress_task.clone();
+        move || progress_task.tick()
+    });
+    let document_symbol_items_result = worker
+        .document_symbols_for_files_with_progress(
+            document_request.file_paths.clone(),
+            progress_callback,
+        )
+        .await;
+    progress_task.finish();
+    let document_symbol_items = document_symbol_items_result.map_err(|source| {
+        ExtractError::rust_analyzer_lib("rust-analyzer-lib document_symbols_for_files", source)
+    })?;
 
     provider.map_document_symbol_items(document_request, document_symbol_items)
 }
@@ -649,6 +686,7 @@ async fn rust_file_relation_document_symbols(
     provider: &RustAnalyzerProvider,
     worker: &rust_analyzer_lib::AnalysisWorkerHandle,
     document_request: &DocumentSymbolBatchRequest,
+    progress: ProgressReporter,
 ) -> ExtractResult<(DocumentSymbolBatchRequest, DocumentSymbolBatchExtraction)> {
     let mut file_paths =
         provider.discover_rust_workspace_source_files(&document_request.workspace_root)?;
@@ -660,8 +698,13 @@ async fn rust_file_relation_document_symbols(
             workspace_root: document_request.workspace_root.clone(),
             file_paths,
         })?;
-    let relation_document_symbols =
-        document_symbols_with_worker(provider, worker, relation_document_request.clone()).await?;
+    let relation_document_symbols = document_symbols_with_worker(
+        provider,
+        worker,
+        relation_document_request.clone(),
+        progress,
+    )
+    .await?;
 
     Ok((relation_document_request, relation_document_symbols))
 }
@@ -807,6 +850,7 @@ async fn extract_csharp_file_with_single_worker(
     plan: &ResolvedCSharpExtractorPlan,
     document_request: DocumentSymbolBatchRequest,
     mode: CSharpFileMode,
+    progress: ProgressReporter,
 ) -> ExtractResult<CSharpFileExtractions> {
     let mut worker = start_csharp_worker(plan).await?;
     let result = extract_csharp_file_with_worker(
@@ -815,6 +859,7 @@ async fn extract_csharp_file_with_single_worker(
         document_request,
         mode,
         plan.solution(),
+        progress,
     )
     .await;
     let shutdown_result = worker.shutdown().await.map_err(|source| {
@@ -834,10 +879,16 @@ async fn extract_csharp_file_with_worker(
     document_request: DocumentSymbolBatchRequest,
     mode: CSharpFileMode,
     solution_path: &Path,
+    progress: ProgressReporter,
 ) -> ExtractResult<CSharpFileExtractions> {
     let file_scope_key = file_uri(&document_request.file_paths[0])?;
-    let document_symbols =
-        csharp_document_symbols_with_worker(provider, worker, document_request.clone()).await?;
+    let document_symbols = csharp_document_symbols_with_worker(
+        provider,
+        worker,
+        document_request.clone(),
+        progress.clone(),
+    )
+    .await?;
 
     if !mode.includes_references() && !mode.includes_calls() {
         return Ok(CSharpFileExtractions {
@@ -849,55 +900,74 @@ async fn extract_csharp_file_with_worker(
     }
 
     let (relation_document_request, relation_document_symbols) =
-        csharp_file_relation_document_symbols(provider, worker, &document_request, solution_path)
-            .await?;
+        csharp_file_relation_document_symbols(
+            provider,
+            worker,
+            &document_request,
+            solution_path,
+            progress.clone(),
+        )
+        .await?;
 
-    let references =
-        if mode.includes_references() {
-            let reference_targets = provider.reference_targets_for_document_symbols(
-                &relation_document_request,
-                &relation_document_symbols,
-            )?;
-            let mut reference_sets = Vec::with_capacity(reference_targets.len());
-            for target in &reference_targets {
-                reference_sets.push(worker.references_for_symbol(target).await.map_err(
-                    |source| {
-                        ExtractError::csharp_ls_lib("csharp-ls-lib references_for_symbol", source)
-                    },
-                )?);
-            }
-            let reference_sets = csharp_reference_sets_for_file_relations(
-                reference_sets,
-                &document_request.file_paths[0],
-            );
-            Some(provider.map_reference_sets(
-                &relation_document_request,
-                relation_document_symbols.clone(),
-                reference_sets,
-                reference_targets.len(),
-            )?)
-        } else {
-            None
-        };
+    let references = if mode.includes_references() {
+        let reference_targets = provider.reference_targets_for_document_symbols(
+            &relation_document_request,
+            &relation_document_symbols,
+        )?;
+        let reference_target_count = reference_targets.len();
+        let reference_work_items = csharp_reference_work_items_by_file(reference_targets);
+        let reference_progress = progress.task(reference_work_items.len(), "csharp references");
+        let file_results_result = csharp_file_semantic_work_items_with_worker(
+            worker,
+            reference_work_items,
+            reference_progress.clone(),
+            "csharp-ls-lib file reference work",
+        )
+        .await;
+        reference_progress.finish();
+        let reference_sets = file_results_result?
+            .into_iter()
+            .flat_map(|result| result.reference_sets)
+            .collect::<Vec<_>>();
+        let reference_sets = csharp_reference_sets_for_file_relations(
+            reference_sets,
+            &document_request.file_paths[0],
+        );
+        Some(provider.map_reference_sets(
+            &relation_document_request,
+            relation_document_symbols.clone(),
+            reference_sets,
+            reference_target_count,
+        )?)
+    } else {
+        None
+    };
 
     let calls = if mode.includes_calls() {
         let call_targets = provider.call_targets_for_document_symbols(
             &relation_document_request,
             &relation_document_symbols,
         )?;
-        let mut incoming_call_sets = Vec::with_capacity(call_targets.len());
-        for target in &call_targets {
-            incoming_call_sets.push(worker.incoming_calls_for_symbol(target).await.map_err(
-                |source| {
-                    ExtractError::csharp_ls_lib("csharp-ls-lib incoming_calls_for_symbol", source)
-                },
-            )?);
-        }
+        let call_target_count = call_targets.len();
+        let call_work_items = csharp_call_work_items_by_file(call_targets);
+        let call_progress = progress.task(call_work_items.len(), "csharp calls");
+        let file_results_result = csharp_file_semantic_work_items_with_worker(
+            worker,
+            call_work_items,
+            call_progress.clone(),
+            "csharp-ls-lib file call work",
+        )
+        .await;
+        call_progress.finish();
+        let incoming_call_sets = file_results_result?
+            .into_iter()
+            .flat_map(|result| result.incoming_call_sets)
+            .collect::<Vec<_>>();
         let calls = provider.map_incoming_call_sets(
             &relation_document_request,
             relation_document_symbols,
             incoming_call_sets,
-            call_targets.len(),
+            call_target_count,
         )?;
         Some(call_extraction_for_file_relations(calls, &file_scope_key))
     } else {
@@ -916,13 +986,23 @@ async fn csharp_document_symbols_with_worker(
     provider: &CSharpLsProvider,
     worker: &mut csharp_ls_lib::CSharpLsWorker,
     document_request: DocumentSymbolBatchRequest,
+    progress: ProgressReporter,
 ) -> ExtractResult<DocumentSymbolBatchExtraction> {
-    let document_symbol_items = worker
-        .document_symbols_for_files(document_request.file_paths.clone())
-        .await
-        .map_err(|source| {
-            ExtractError::csharp_ls_lib("csharp-ls-lib document_symbols_for_files", source)
-        })?;
+    let progress_task = progress.task(document_request.file_paths.len(), "csharp symbols");
+    let progress_callback: csharp_ls_lib::ProgressCallback = Arc::new({
+        let progress_task = progress_task.clone();
+        move || progress_task.tick()
+    });
+    let document_symbol_items_result = worker
+        .document_symbols_for_files_with_progress(
+            document_request.file_paths.clone(),
+            progress_callback,
+        )
+        .await;
+    progress_task.finish();
+    let document_symbol_items = document_symbol_items_result.map_err(|source| {
+        ExtractError::csharp_ls_lib("csharp-ls-lib document_symbols_for_files", source)
+    })?;
 
     provider.map_document_symbol_items(document_request, document_symbol_items)
 }
@@ -932,6 +1012,7 @@ async fn csharp_file_relation_document_symbols(
     worker: &mut csharp_ls_lib::CSharpLsWorker,
     document_request: &DocumentSymbolBatchRequest,
     solution_path: &Path,
+    progress: ProgressReporter,
 ) -> ExtractResult<(DocumentSymbolBatchRequest, DocumentSymbolBatchExtraction)> {
     let mut file_paths = provider.discover_csharp_solution_source_files(solution_path)?;
     file_paths.push(document_request.file_paths[0].clone());
@@ -942,9 +1023,13 @@ async fn csharp_file_relation_document_symbols(
             workspace_root: document_request.workspace_root.clone(),
             file_paths,
         })?;
-    let relation_document_symbols =
-        csharp_document_symbols_with_worker(provider, worker, relation_document_request.clone())
-            .await?;
+    let relation_document_symbols = csharp_document_symbols_with_worker(
+        provider,
+        worker,
+        relation_document_request.clone(),
+        progress,
+    )
+    .await?;
 
     Ok((relation_document_request, relation_document_symbols))
 }
@@ -964,6 +1049,26 @@ fn csharp_reference_sets_for_file_relations(
         .into_iter()
         .filter(|reference_set| !reference_set.references.is_empty())
         .collect()
+}
+
+async fn csharp_file_semantic_work_items_with_worker(
+    worker: &mut csharp_ls_lib::CSharpLsWorker,
+    work_items: Vec<csharp_ls_lib::FileSemanticWork>,
+    progress_task: ProgressTask,
+    error_context: &'static str,
+) -> ExtractResult<Vec<csharp_ls_lib::FileSemanticResult>> {
+    let mut results = Vec::with_capacity(work_items.len());
+    for work_item in work_items {
+        results.push(
+            worker
+                .file_semantic_work(work_item)
+                .await
+                .map_err(|source| ExtractError::csharp_ls_lib(error_context, source))?,
+        );
+        progress_task.tick();
+    }
+
+    Ok(results)
 }
 
 async fn persist_csharp_file_extractions(
@@ -1019,14 +1124,22 @@ async fn extract_soul_file_with_single_worker(
     soul_config: &soul_lsp_lib::SoulLspConfig,
     document_request: DocumentSymbolBatchRequest,
     mode: SoulFileMode,
+    progress: ProgressReporter,
 ) -> ExtractResult<SoulFileExtractions> {
     let worker = soul_lsp_lib::AnalysisWorker::start_with_config(
         &document_request.workspace_root,
         soul_config.clone(),
     )
     .map_err(|source| ExtractError::soul_lsp_lib("start single soul-file worker", source))?;
-    let result =
-        extract_soul_file_with_worker(provider, soul_config, &worker, document_request, mode).await;
+    let result = extract_soul_file_with_worker(
+        provider,
+        soul_config,
+        &worker,
+        document_request,
+        mode,
+        progress,
+    )
+    .await;
     let shutdown_result = worker
         .shutdown()
         .await
@@ -1045,10 +1158,16 @@ async fn extract_soul_file_with_worker(
     worker: &soul_lsp_lib::AnalysisWorkerHandle,
     document_request: DocumentSymbolBatchRequest,
     mode: SoulFileMode,
+    progress: ProgressReporter,
 ) -> ExtractResult<SoulFileExtractions> {
     let file_scope_key = file_uri(&document_request.file_paths[0])?;
-    let document_symbols =
-        soul_document_symbols_with_worker(provider, worker, document_request.clone()).await?;
+    let document_symbols = soul_document_symbols_with_worker(
+        provider,
+        worker,
+        document_request.clone(),
+        progress.clone(),
+    )
+    .await?;
 
     if !mode.includes_references() {
         return Ok(SoulFileExtractions {
@@ -1059,8 +1178,14 @@ async fn extract_soul_file_with_worker(
     }
 
     let (relation_document_request, relation_document_symbols) =
-        soul_file_relation_document_symbols(provider, soul_config, worker, &document_request)
-            .await?;
+        soul_file_relation_document_symbols(
+            provider,
+            soul_config,
+            worker,
+            &document_request,
+            progress,
+        )
+        .await?;
     let reference_targets = provider.reference_targets_for_document_symbols(
         &relation_document_request,
         &relation_document_symbols,
@@ -1095,13 +1220,23 @@ async fn soul_document_symbols_with_worker(
     provider: &SoulLspProvider,
     worker: &soul_lsp_lib::AnalysisWorkerHandle,
     document_request: DocumentSymbolBatchRequest,
+    progress: ProgressReporter,
 ) -> ExtractResult<DocumentSymbolBatchExtraction> {
-    let document_symbol_items = worker
-        .document_symbols_for_files(document_request.file_paths.clone())
-        .await
-        .map_err(|source| {
-            ExtractError::soul_lsp_lib("soul-lsp-lib document_symbols_for_files", source)
-        })?;
+    let progress_task = progress.task(document_request.file_paths.len(), "soul symbols");
+    let progress_callback: soul_lsp_lib::ProgressCallback = Arc::new({
+        let progress_task = progress_task.clone();
+        move || progress_task.tick()
+    });
+    let document_symbol_items_result = worker
+        .document_symbols_for_files_with_progress(
+            document_request.file_paths.clone(),
+            progress_callback,
+        )
+        .await;
+    progress_task.finish();
+    let document_symbol_items = document_symbol_items_result.map_err(|source| {
+        ExtractError::soul_lsp_lib("soul-lsp-lib document_symbols_for_files", source)
+    })?;
 
     provider.map_document_symbol_items(document_request, document_symbol_items)
 }
@@ -1111,6 +1246,7 @@ async fn soul_file_relation_document_symbols(
     soul_config: &soul_lsp_lib::SoulLspConfig,
     worker: &soul_lsp_lib::AnalysisWorkerHandle,
     document_request: &DocumentSymbolBatchRequest,
+    progress: ProgressReporter,
 ) -> ExtractResult<(DocumentSymbolBatchRequest, DocumentSymbolBatchExtraction)> {
     let mut file_paths =
         provider.discover_soul_source_files(&document_request.workspace_root, soul_config)?;
@@ -1122,9 +1258,13 @@ async fn soul_file_relation_document_symbols(
             workspace_root: document_request.workspace_root.clone(),
             file_paths,
         })?;
-    let relation_document_symbols =
-        soul_document_symbols_with_worker(provider, worker, relation_document_request.clone())
-            .await?;
+    let relation_document_symbols = soul_document_symbols_with_worker(
+        provider,
+        worker,
+        relation_document_request.clone(),
+        progress,
+    )
+    .await?;
 
     Ok((relation_document_request, relation_document_symbols))
 }
@@ -1357,13 +1497,13 @@ fn print_csharp_route_batch_summary(
 }
 
 async fn run_threaded_rust_route_batch(
-    config: &Option<PathBuf>,
-    db: Option<PathBuf>,
+    storage: CliRouteBatchStorage<'_>,
     provider: &RustAnalyzerProvider,
     document_request: DocumentSymbolBatchRequest,
     routes: WorkspaceExtractionRoutes,
     analysis_workers: Option<usize>,
     discovery_metric: Option<(&str, std::time::Duration)>,
+    progress: ProgressReporter,
 ) -> ExtractResult<WorkspaceExtractionSummary> {
     let total_timer = Stopwatch::start_new();
     let mut benchmark = BenchmarkSummary::new();
@@ -1374,13 +1514,14 @@ async fn run_threaded_rust_route_batch(
     benchmark.insert_count("files_discovered", document_request.file_paths.len());
 
     let writer_ready_timer = Stopwatch::start_new();
-    let db = resolve_cli_database_path(db, config, &document_request.workspace_root)?;
-    let store = start_writer(db, config, &document_request.workspace_root).await?;
+    let db =
+        resolve_cli_database_path(storage.db, storage.config, &document_request.workspace_root)?;
+    let store = start_writer(db, storage.config, &document_request.workspace_root).await?;
     benchmark.insert_duration_ms("writer_ready", writer_ready_timer.elapsed());
 
     let extractor_plan_timer = Stopwatch::start_new();
     let analysis_worker_count = resolve_threaded_route_analysis_workers(
-        config,
+        storage.config,
         &document_request.workspace_root,
         analysis_workers,
     )?;
@@ -1402,7 +1543,7 @@ async fn run_threaded_rust_route_batch(
     benchmark.insert_count("call_jobs", call_jobs);
 
     let threaded_timer = Stopwatch::start_new();
-    let summary = ThreadedWorkspaceExtractionRunner::run(
+    let summary = ThreadedWorkspaceExtractionRunner::run_with_progress(
         &store,
         provider,
         document_request,
@@ -1414,6 +1555,7 @@ async fn run_threaded_rust_route_batch(
             0,
             routes,
         ),
+        progress,
     )
     .await;
     benchmark.insert_duration_ms("threaded_runner", threaded_timer.elapsed());
@@ -1430,13 +1572,13 @@ async fn run_threaded_rust_route_batch(
 }
 
 async fn run_shared_rust_route_batch(
-    config: &Option<PathBuf>,
-    db: Option<PathBuf>,
+    storage: CliRouteBatchStorage<'_>,
     provider: &RustAnalyzerProvider,
     document_request: DocumentSymbolBatchRequest,
     routes: WorkspaceExtractionRoutes,
     analysis_workers: Option<usize>,
     discovery_metric: Option<(&str, std::time::Duration)>,
+    progress: ProgressReporter,
 ) -> ExtractResult<WorkspaceExtractionSummary> {
     let total_timer = Stopwatch::start_new();
     let mut benchmark = BenchmarkSummary::new();
@@ -1450,14 +1592,15 @@ async fn run_shared_rust_route_batch(
     benchmark.insert_count("files_discovered", document_request.file_paths.len());
 
     let writer_ready_timer = Stopwatch::start_new();
-    let db = resolve_cli_database_path(db, config, &document_request.workspace_root)?;
+    let db =
+        resolve_cli_database_path(storage.db, storage.config, &document_request.workspace_root)?;
     let close_stale_document_symbols = db.exists();
-    let store = start_writer(db, config, &document_request.workspace_root).await?;
+    let store = start_writer(db, storage.config, &document_request.workspace_root).await?;
     benchmark.insert_duration_ms("writer_ready", writer_ready_timer.elapsed());
 
     let extractor_plan_timer = Stopwatch::start_new();
     let analysis_worker_count = resolve_threaded_route_analysis_workers(
-        config,
+        storage.config,
         &document_request.workspace_root,
         analysis_workers,
     )?;
@@ -1477,7 +1620,7 @@ async fn run_shared_rust_route_batch(
     benchmark.insert_count("call_jobs", call_jobs);
 
     let shared_runner_timer = Stopwatch::start_new();
-    let summary = SharedWorkspaceExtractionRunner::run(
+    let summary = SharedWorkspaceExtractionRunner::run_with_progress(
         &store,
         provider,
         document_request,
@@ -1490,6 +1633,7 @@ async fn run_shared_rust_route_batch(
             routes,
         ),
         close_stale_document_symbols,
+        progress,
     )
     .await;
     benchmark.insert_duration_ms("shared_workspace_runner", shared_runner_timer.elapsed());
@@ -1506,13 +1650,13 @@ async fn run_shared_rust_route_batch(
 }
 
 async fn run_csharp_route_batch(
-    config: &Option<PathBuf>,
-    db: Option<PathBuf>,
+    storage: CliRouteBatchStorage<'_>,
     provider: &CSharpLsProvider,
     plan: &ResolvedCSharpExtractorPlan,
     document_request: DocumentSymbolBatchRequest,
     routes: WorkspaceExtractionRoutes,
     context: CSharpRouteBatchContext,
+    progress: ProgressReporter,
 ) -> ExtractResult<WorkspaceExtractionSummary> {
     let total_timer = Stopwatch::start_new();
     let mut benchmark = BenchmarkSummary::new();
@@ -1563,8 +1707,9 @@ async fn run_csharp_route_batch(
         workspace_root_uri_timer.elapsed(),
     );
     let writer_ready_timer = Stopwatch::start_new();
-    let db = resolve_cli_database_path(db, config, &document_request.workspace_root)?;
-    let store = start_writer(db, config, &document_request.workspace_root).await?;
+    let db =
+        resolve_cli_database_path(storage.db, storage.config, &document_request.workspace_root)?;
+    let store = start_writer(db, storage.config, &document_request.workspace_root).await?;
     benchmark.insert_duration_ms("writer_ready", writer_ready_timer.elapsed());
 
     let incremental_solution = scope == CSharpRouteBatchScope::Solution;
@@ -1703,16 +1848,26 @@ async fn run_csharp_route_batch(
     let mut changed_document_request = document_request.clone();
     changed_document_request.file_paths = changed_file_paths.clone();
     let document_symbols_query_timer = Stopwatch::start_new();
-    let document_symbol_items = if let Some(worker_pool) = worker_pool.as_mut() {
+    let document_progress = progress.task(changed_file_paths.len(), "csharp symbols");
+    let document_symbol_items_result = if let Some(worker_pool) = worker_pool.as_mut() {
+        let document_progress_callback: csharp_ls_lib::ProgressCallback = Arc::new({
+            let document_progress = document_progress.clone();
+            move || document_progress.tick()
+        });
         worker_pool
-            .document_symbols_for_files(changed_file_paths.clone())
+            .document_symbols_for_files_with_progress(
+                changed_file_paths.clone(),
+                document_progress_callback,
+            )
             .await
             .map_err(|source| {
                 ExtractError::csharp_ls_lib("csharp-ls-lib document_symbols_for_files", source)
-            })?
+            })
     } else {
-        Vec::new()
+        Ok(Vec::new())
     };
+    document_progress.finish();
+    let document_symbol_items = document_symbol_items_result?;
     benchmark.insert_duration_ms(
         &format!("{route_prefix}.document_symbols_query"),
         document_symbols_query_timer.elapsed(),
@@ -1818,22 +1973,30 @@ async fn run_csharp_route_batch(
             reference_work_build_timer.elapsed(),
         );
         let reference_work_timer = Stopwatch::start_new();
-        let file_results = if work_items.is_empty() {
-            Vec::new()
+        let reference_progress = progress.task(work_items.len(), "csharp references");
+        let file_results_result = if work_items.is_empty() {
+            Ok(Vec::new())
         } else {
-            worker_pool
-                .as_mut()
-                .ok_or_else(|| {
-                    ExtractError::response_shape(
-                        provider.provider_id().as_str(),
-                        "csharp-solution",
-                        "reference work was scheduled without a C# worker pool",
-                    )
-                })?
-                .file_semantic_work_items(work_items)
-                .await
-                .map_err(|source| ExtractError::csharp_ls_lib("C# reference work items", source))?
+            let reference_progress_callback: csharp_ls_lib::ProgressCallback = Arc::new({
+                let reference_progress = reference_progress.clone();
+                move || reference_progress.tick()
+            });
+            match worker_pool.as_mut() {
+                Some(worker_pool) => worker_pool
+                    .file_semantic_work_items_with_progress(work_items, reference_progress_callback)
+                    .await
+                    .map_err(|source| {
+                        ExtractError::csharp_ls_lib("C# reference work items", source)
+                    }),
+                None => Err(ExtractError::response_shape(
+                    provider.provider_id().as_str(),
+                    "csharp-solution",
+                    "reference work was scheduled without a C# worker pool",
+                )),
+            }
         };
+        reference_progress.finish();
+        let file_results = file_results_result?;
         benchmark.insert_duration_ms(
             &format!("{route_prefix}.reference_work"),
             reference_work_timer.elapsed(),
@@ -1909,22 +2072,28 @@ async fn run_csharp_route_batch(
             call_work_build_timer.elapsed(),
         );
         let call_work_timer = Stopwatch::start_new();
-        let file_results = if work_items.is_empty() {
-            Vec::new()
+        let call_progress = progress.task(work_items.len(), "csharp calls");
+        let file_results_result = if work_items.is_empty() {
+            Ok(Vec::new())
         } else {
-            worker_pool
-                .as_mut()
-                .ok_or_else(|| {
-                    ExtractError::response_shape(
-                        provider.provider_id().as_str(),
-                        "csharp-solution",
-                        "call work was scheduled without a C# worker pool",
-                    )
-                })?
-                .file_semantic_work_items(work_items)
-                .await
-                .map_err(|source| ExtractError::csharp_ls_lib("C# call work items", source))?
+            let call_progress_callback: csharp_ls_lib::ProgressCallback = Arc::new({
+                let call_progress = call_progress.clone();
+                move || call_progress.tick()
+            });
+            match worker_pool.as_mut() {
+                Some(worker_pool) => worker_pool
+                    .file_semantic_work_items_with_progress(work_items, call_progress_callback)
+                    .await
+                    .map_err(|source| ExtractError::csharp_ls_lib("C# call work items", source)),
+                None => Err(ExtractError::response_shape(
+                    provider.provider_id().as_str(),
+                    "csharp-solution",
+                    "call work was scheduled without a C# worker pool",
+                )),
+            }
         };
+        call_progress.finish();
+        let file_results = file_results_result?;
         benchmark.insert_duration_ms(
             &format!("{route_prefix}.call_work"),
             call_work_timer.elapsed(),
@@ -2010,13 +2179,13 @@ async fn run_csharp_route_batch(
 }
 
 async fn run_soul_route_batch(
-    config: &Option<PathBuf>,
-    db: Option<PathBuf>,
+    storage: CliRouteBatchStorage<'_>,
     provider: &SoulLspProvider,
     soul_config: &soul_lsp_lib::SoulLspConfig,
     document_request: DocumentSymbolBatchRequest,
     routes: WorkspaceExtractionRoutes,
     discovery_metric: Option<(&str, std::time::Duration)>,
+    progress: ProgressReporter,
 ) -> ExtractResult<WorkspaceExtractionSummary> {
     let total_timer = Stopwatch::start_new();
     let mut benchmark = BenchmarkSummary::new();
@@ -2034,8 +2203,9 @@ async fn run_soul_route_batch(
     benchmark.insert_duration_ms("workspace_root_uri", workspace_root_uri_timer.elapsed());
 
     let writer_ready_timer = Stopwatch::start_new();
-    let db = resolve_cli_database_path(db, config, &document_request.workspace_root)?;
-    let store = start_writer(db, config, &document_request.workspace_root).await?;
+    let db =
+        resolve_cli_database_path(storage.db, storage.config, &document_request.workspace_root)?;
+    let store = start_writer(db, storage.config, &document_request.workspace_root).await?;
     benchmark.insert_duration_ms("writer_ready", writer_ready_timer.elapsed());
 
     let worker_start_timer = Stopwatch::start_new();
@@ -2047,12 +2217,21 @@ async fn run_soul_route_batch(
     benchmark.insert_duration_ms("worker_start", worker_start_timer.elapsed());
 
     let document_symbols_query_timer = Stopwatch::start_new();
-    let document_symbol_items = worker
-        .document_symbols_for_files(document_request.file_paths.clone())
-        .await
-        .map_err(|source| {
-            ExtractError::soul_lsp_lib("soul-lsp-lib document_symbols_for_files", source)
-        })?;
+    let document_progress = progress.task(document_request.file_paths.len(), "soul symbols");
+    let document_progress_callback: soul_lsp_lib::ProgressCallback = Arc::new({
+        let document_progress = document_progress.clone();
+        move || document_progress.tick()
+    });
+    let document_symbol_items_result = worker
+        .document_symbols_for_files_with_progress(
+            document_request.file_paths.clone(),
+            document_progress_callback,
+        )
+        .await;
+    document_progress.finish();
+    let document_symbol_items = document_symbol_items_result.map_err(|source| {
+        ExtractError::soul_lsp_lib("soul-lsp-lib document_symbols_for_files", source)
+    })?;
     benchmark.insert_duration_ms(
         "document_symbols_query",
         document_symbols_query_timer.elapsed(),
@@ -2067,9 +2246,21 @@ async fn run_soul_route_batch(
 
     let mut document_summary = if routes.includes_symbols() {
         let document_symbols_persist_timer = Stopwatch::start_new();
-        let summary = ExtractionPersister
-            .persist_document_symbol_batch(&store, &workspace_root_uri, &document_symbols)
-            .await?;
+        let document_persist_progress = progress.task(
+            document_symbol_persist_progress_units(&document_symbols, true),
+            "persist symbols",
+        );
+        let document_persist_result = ExtractionPersister
+            .persist_document_symbol_batch_with_write_batch_and_progress(
+                &store,
+                &workspace_root_uri,
+                &document_symbols,
+                true,
+                Some(db_progress_callback(document_persist_progress.clone())),
+            )
+            .await;
+        document_persist_progress.finish();
+        let summary = document_persist_result?;
         benchmark.insert_duration_ms(
             "document_symbols_persist",
             document_symbols_persist_timer.elapsed(),
@@ -2118,9 +2309,20 @@ async fn run_soul_route_batch(
         reference_route_summary = extraction.summary.clone();
 
         let references_persist_timer = Stopwatch::start_new();
-        reference_summary = ExtractionPersister
-            .persist_reference_batch(&store, &workspace_root_uri, &extraction)
-            .await?;
+        let reference_persist_progress = progress.task(
+            reference_persist_progress_units(&extraction),
+            "persist references",
+        );
+        let reference_persist_result = ExtractionPersister
+            .persist_reference_batch_with_route_write_batch_and_progress(
+                &store,
+                &workspace_root_uri,
+                &extraction,
+                Some(db_progress_callback(reference_persist_progress.clone())),
+            )
+            .await;
+        reference_persist_progress.finish();
+        reference_summary = reference_persist_result?;
         benchmark.insert_duration_ms("references_persist", references_persist_timer.elapsed());
         if document_summary.workspace_id == 0 {
             document_summary.workspace_id = reference_summary.workspace_id;
@@ -2467,6 +2669,44 @@ fn csharp_workspace_fingerprint(extraction: &DocumentSymbolBatchExtraction) -> S
     }
 
     hex::encode(hasher.finalize())
+}
+
+fn db_progress_callback(progress_task: ProgressTask) -> DbWriteProgressCallback {
+    Arc::new(move || progress_task.tick())
+}
+
+fn document_symbol_persist_progress_units(
+    extraction: &DocumentSymbolBatchExtraction,
+    close_stale: bool,
+) -> usize {
+    extraction
+        .extractions
+        .iter()
+        .map(|file_extraction| {
+            let nodes = file_extraction.symbols.len() + 1;
+            let contains_edges = file_extraction.relations.len();
+            let close_stale_units = if close_stale { 2 } else { 0 };
+
+            1 // file upsert
+                + 1 // route status start
+                + nodes
+                + file_extraction.symbols.len()
+                + contains_edges
+                + contains_edges
+                + nodes
+                + contains_edges
+                + 1 // route status complete
+                + close_stale_units
+        })
+        .sum()
+}
+
+fn reference_persist_progress_units(extraction: &ReferenceBatchExtraction) -> usize {
+    extraction
+        .references
+        .iter()
+        .map(|reference| 1 + reference.occurrences.len() * 3)
+        .sum()
 }
 
 fn document_symbol_count(extraction: &DocumentSymbolBatchExtraction) -> usize {

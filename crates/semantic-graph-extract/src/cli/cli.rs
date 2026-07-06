@@ -9,6 +9,9 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub config: Option<PathBuf>,
 
+    #[arg(long, global = true)]
+    pub progress: bool,
+
     #[command(subcommand)]
     pub command: Command,
 }

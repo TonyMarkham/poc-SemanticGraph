@@ -6,11 +6,16 @@ use crate::{
         ResolvedIncomingCallSet, ResolvedReferenceLocation, ResolvedReferenceSet,
         ResolvedReferenceTarget,
     },
+    semantic::ProgressCallback,
 };
 
 use lsp_types::{CallHierarchyIncomingCall, CallHierarchyItem, DocumentSymbolResponse, Location};
 use serde_json::json;
-use std::{collections::HashSet, fs, path::PathBuf};
+use std::{
+    collections::HashSet,
+    fs,
+    path::{Path, PathBuf},
+};
 use tokio::time::{Duration, sleep};
 
 pub struct CSharpLsWorker {
@@ -47,40 +52,66 @@ impl CSharpLsWorker {
         &mut self,
         file_paths: Vec<PathBuf>,
     ) -> CSharpLsLibResult<Vec<(PathBuf, Vec<lsp_types::DocumentSymbol>)>> {
+        self.document_symbols_for_files_internal(file_paths, None)
+            .await
+    }
+
+    pub async fn document_symbols_for_files_with_progress(
+        &mut self,
+        file_paths: Vec<PathBuf>,
+        progress: ProgressCallback,
+    ) -> CSharpLsLibResult<Vec<(PathBuf, Vec<lsp_types::DocumentSymbol>)>> {
+        self.document_symbols_for_files_internal(file_paths, Some(progress))
+            .await
+    }
+
+    async fn document_symbols_for_files_internal(
+        &mut self,
+        file_paths: Vec<PathBuf>,
+        progress: Option<ProgressCallback>,
+    ) -> CSharpLsLibResult<Vec<(PathBuf, Vec<lsp_types::DocumentSymbol>)>> {
         let mut results = Vec::with_capacity(file_paths.len());
         for file_path in file_paths {
             self.open_document(&file_path).await?;
-            let uri = file_uri(&file_path)?;
-            let response_value: serde_json::Value = self
-                .client
-                .request(
-                    "textDocument/documentSymbol",
-                    json!({
-                        "textDocument": {
-                            "uri": uri,
-                        },
-                    }),
-                )
-                .await?;
-            let response_value = normalize_document_symbol_response(response_value);
-            let response: Option<DocumentSymbolResponse> = serde_json::from_value(response_value)
-                .map_err(|source| {
-                CSharpLsLibError::json("deserialize documentSymbol response", source)
-            })?;
-            let symbols = match response {
-                Some(DocumentSymbolResponse::Nested(symbols)) => symbols,
-                Some(DocumentSymbolResponse::Flat(_)) => {
-                    return Err(CSharpLsLibError::response_shape(
-                        "textDocument/documentSymbol",
-                        "expected hierarchical DocumentSymbol[] but received SymbolInformation[]",
-                    ));
-                }
-                None => Vec::new(),
-            };
+            let symbols = self.document_symbols_for_open_file(&file_path).await?;
+            if let Some(progress) = &progress {
+                progress();
+            }
             results.push((file_path, symbols));
         }
 
         Ok(results)
+    }
+
+    async fn document_symbols_for_open_file(
+        &mut self,
+        file_path: &Path,
+    ) -> CSharpLsLibResult<Vec<lsp_types::DocumentSymbol>> {
+        let uri = file_uri(file_path)?;
+        let response_value: serde_json::Value = self
+            .client
+            .request(
+                "textDocument/documentSymbol",
+                json!({
+                    "textDocument": {
+                        "uri": uri,
+                    },
+                }),
+            )
+            .await?;
+        let response_value = normalize_document_symbol_response(response_value);
+        let response: Option<DocumentSymbolResponse> = serde_json::from_value(response_value)
+            .map_err(|source| {
+                CSharpLsLibError::json("deserialize documentSymbol response", source)
+            })?;
+        match response {
+            Some(DocumentSymbolResponse::Nested(symbols)) => Ok(symbols),
+            Some(DocumentSymbolResponse::Flat(_)) => Err(CSharpLsLibError::response_shape(
+                "textDocument/documentSymbol",
+                "expected hierarchical DocumentSymbol[] but received SymbolInformation[]",
+            )),
+            None => Ok(Vec::new()),
+        }
     }
 
     pub async fn references_for_symbol(

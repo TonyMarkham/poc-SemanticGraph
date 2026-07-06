@@ -15,4 +15,4 @@ pub use model::{
     ResolvedReferenceLocation, ResolvedReferenceSet, ResolvedReferenceTarget,
 };
 pub use project::{load_solution, project_for_file, project_source_files, solution_source_files};
-pub use semantic::{CSharpLsWorker, CSharpLsWorkerPool, provider_version};
+pub use semantic::{CSharpLsWorker, CSharpLsWorkerPool, ProgressCallback, provider_version};

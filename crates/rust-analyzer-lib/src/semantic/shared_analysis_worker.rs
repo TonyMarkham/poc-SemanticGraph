@@ -53,9 +53,16 @@ fn handle_command(snapshot: &SharedAnalysisSnapshot, command: AnalysisWorkerComm
     match command {
         AnalysisWorkerCommand::DocumentSymbols {
             file_paths,
+            progress,
             response,
         } => {
-            let _send_result = response.send(snapshot.document_symbols_for_files(&file_paths));
+            let result = match progress {
+                Some(progress) => {
+                    snapshot.document_symbols_for_files_with_progress(&file_paths, progress)
+                }
+                None => snapshot.document_symbols_for_files(&file_paths),
+            };
+            let _send_result = response.send(result);
         }
         AnalysisWorkerCommand::References { target, response } => {
             let _send_result = response.send(snapshot.references_for_symbol(&target));

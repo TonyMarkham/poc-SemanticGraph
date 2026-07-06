@@ -6,6 +6,7 @@ pub mod fts;
 pub mod lsp_stdio;
 pub mod model;
 pub mod persist;
+pub mod progress;
 pub mod providers;
 #[cfg(test)]
 mod tests;

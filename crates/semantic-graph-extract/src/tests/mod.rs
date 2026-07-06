@@ -6,6 +6,7 @@ mod document_symbols_mapper;
 mod document_symbols_paths;
 mod fts;
 mod lsp_stdio_client;
+mod progress;
 mod reference_pipeline;
 mod rust_document_symbol_mapper;
 mod soul_document_symbol_mapper;

@@ -4,9 +4,11 @@ use crate::{
     document_symbols::paths::file_uri,
     fts::{
         FTS_PROVIDER, FTS_ROUTE, FTS_SCOPE, FtsExclusionSet, FtsExtractionOptions,
-        FtsExtractionSummary, FtsFileDiscovery, FtsStartedRun,
-        insert_fts_file_worker_metrics_with_prefix, route_content_hash, run_fts_file_workers,
+        FtsExtractionRunRequest, FtsExtractionSummary, FtsFileDiscovery, FtsFileWorkerInput,
+        FtsStartedExtractionRequest, FtsStartedRun, insert_fts_file_worker_metrics_with_prefix,
+        route_content_hash, run_fts_file_workers_with_progress,
     },
+    progress::ProgressReporter,
 };
 
 use semantic_graph_config::FtsConfig;
@@ -34,6 +36,25 @@ impl FtsExtractionRunner {
         options: FtsExtractionOptions,
         analysis_workers: usize,
     ) -> ExtractResult<FtsExtractionSummary> {
+        Self::run_with_progress(
+            FtsExtractionRunRequest::new(
+                store,
+                workspace_root,
+                db_path,
+                index_path,
+                config,
+                options,
+                analysis_workers,
+            ),
+            ProgressReporter::disabled(),
+        )
+        .await
+    }
+
+    pub async fn run_with_progress(
+        request: FtsExtractionRunRequest<'_>,
+        progress: ProgressReporter,
+    ) -> ExtractResult<FtsExtractionSummary> {
         let total_timer = Stopwatch::start_new();
         let mut benchmark = BenchmarkSummary::new();
         benchmark.insert_label("fts.execution_mode", "file_content_tantivy_index");
@@ -41,7 +62,8 @@ impl FtsExtractionRunner {
         benchmark.insert_label("fts.scope", FTS_SCOPE);
 
         let canonicalize_timer = Stopwatch::start_new();
-        let workspace_root = workspace_root
+        let workspace_root = request
+            .workspace_root
             .canonicalize()
             .map_err(|source| ExtractError::io("canonicalize FTS workspace root", None, source))?;
         benchmark.insert_duration_ms(
@@ -54,37 +76,43 @@ impl FtsExtractionRunner {
         benchmark.insert_duration_ms("fts.workspace_root_uri", workspace_root_uri_timer.elapsed());
 
         let create_workspace_timer = Stopwatch::start_new();
-        let workspace_id = store
+        let workspace_id = request
+            .store
             .create_workspace(&workspace_root_uri, "mixed")
             .await
             .map_err(ExtractError::storage)?;
         benchmark.insert_duration_ms("fts.create_workspace", create_workspace_timer.elapsed());
 
         let start_run_timer = Stopwatch::start_new();
-        let run_id = store
+        let run_id = request
+            .store
             .start_run(workspace_id, FTS_PROVIDER, None, None)
             .await
             .map_err(ExtractError::storage)?;
         benchmark.insert_duration_ms("fts.start_run", start_run_timer.elapsed());
 
         let result = Self::run_started(
-            store,
-            &workspace_root,
-            db_path,
-            index_path,
-            FtsStartedRun {
-                workspace_root_uri: workspace_root_uri.clone(),
-                workspace_id,
-                run_id,
-                analysis_workers,
+            FtsStartedExtractionRequest {
+                store: request.store,
+                workspace_root: &workspace_root,
+                db_path: request.db_path,
+                index_path: request.index_path,
+                started_run: FtsStartedRun {
+                    workspace_root_uri: workspace_root_uri.clone(),
+                    workspace_id,
+                    run_id,
+                    analysis_workers: request.analysis_workers,
+                },
+                config: request.config,
+                options: request.options,
             },
-            config,
-            options,
+            progress,
         )
         .await;
 
         if result.is_err() {
-            let _fail_route_result = store
+            let _fail_route_result = request
+                .store
                 .fail_route_status(RouteStatusFailInput {
                     workspace_id,
                     route: FTS_ROUTE,
@@ -95,7 +123,7 @@ impl FtsExtractionRunner {
                     diagnostics_json: json!({ "status": "failed" }),
                 })
                 .await;
-            let _finish_run_result = store.finish_run(run_id, "failed").await;
+            let _finish_run_result = request.store.finish_run(run_id, "failed").await;
         }
 
         let mut summary = result?;
@@ -107,26 +135,26 @@ impl FtsExtractionRunner {
     }
 
     async fn run_started(
-        store: &WriteHandle,
-        workspace_root: &Path,
-        db_path: &Path,
-        index_path: &Path,
-        started_run: FtsStartedRun,
-        config: &FtsConfig,
-        options: FtsExtractionOptions,
+        request: FtsStartedExtractionRequest<'_>,
+        progress: ProgressReporter,
     ) -> ExtractResult<FtsExtractionSummary> {
+        let started_run = request.started_run;
         let analysis_workers = started_run.analysis_workers.max(1);
-        let max_indexed_file_bytes = config.max_indexed_file_bytes();
+        let max_indexed_file_bytes = request.config.max_indexed_file_bytes();
         let mut benchmark = BenchmarkSummary::new();
         benchmark.insert_count("fts.analysis_workers", analysis_workers);
         benchmark.insert_label(
             "fts.max_indexed_file_bytes",
             max_indexed_file_bytes.to_string(),
         );
-        benchmark.insert_label("fts.index_path", index_path.to_string_lossy().to_string());
+        benchmark.insert_label(
+            "fts.index_path",
+            request.index_path.to_string_lossy().to_string(),
+        );
 
         let route_start_timer = Stopwatch::start_new();
-        store
+        request
+            .store
             .start_route_status(RouteStatusStartInput {
                 workspace_id: started_run.workspace_id,
                 route: FTS_ROUTE,
@@ -144,16 +172,20 @@ impl FtsExtractionRunner {
         benchmark.insert_duration_ms("fts.route_start", route_start_timer.elapsed());
 
         let discovery_timer = Stopwatch::start_new();
-        let (runtime_excluded_directories, runtime_excluded_files) =
-            runtime_artifact_exclusions(workspace_root, db_path, index_path);
+        let (runtime_excluded_directories, runtime_excluded_files) = runtime_artifact_exclusions(
+            request.workspace_root,
+            request.db_path,
+            request.index_path,
+        );
         benchmark.insert_count(
             "fts.runtime_excluded_directories",
             runtime_excluded_directories.len(),
         );
         benchmark.insert_count("fts.runtime_excluded_files", runtime_excluded_files.len());
-        let exclusions = FtsExclusionSet::new(workspace_root, config, options)?
-            .with_runtime_exclusions(runtime_excluded_directories, runtime_excluded_files);
-        let discovery = FtsFileDiscovery::discover(workspace_root, &exclusions)?;
+        let exclusions =
+            FtsExclusionSet::new(request.workspace_root, request.config, request.options)?
+                .with_runtime_exclusions(runtime_excluded_directories, runtime_excluded_files);
+        let discovery = FtsFileDiscovery::discover(request.workspace_root, &exclusions)?;
         benchmark.insert_duration_ms("fts.discovery", discovery_timer.elapsed());
         let mut summary = FtsExtractionSummary {
             benchmark: BenchmarkSummary::new(),
@@ -186,14 +218,15 @@ impl FtsExtractionRunner {
         );
 
         let active_hash_lookup_timer = Stopwatch::start_new();
-        let active_fts_document_hashes = store
+        let active_fts_document_hashes = request
+            .store
             .active_fts_document_hashes(started_run.workspace_id)
             .await
             .map_err(ExtractError::storage)?;
         benchmark.insert_duration_ms("fts.active_hash_lookup", active_hash_lookup_timer.elapsed());
         benchmark.insert_count("fts.active_hashes", active_fts_document_hashes.len());
 
-        let index_exists = index_path.join("meta.json").exists();
+        let index_exists = request.index_path.join("meta.json").exists();
         benchmark.insert_label("fts.index_exists", index_exists.to_string());
         let active_document_uris = active_fts_document_hashes
             .keys()
@@ -215,16 +248,22 @@ impl FtsExtractionRunner {
         let mut file_uri_elapsed = Duration::from_millis(0);
 
         let file_processing_timer = Stopwatch::start_new();
-        let (file_results, worker_metrics) = run_fts_file_workers(
-            discovery.files().to_vec(),
-            worker_active_hashes,
-            started_run.workspace_id,
-            started_run.run_id,
-            analysis_workers,
-            max_indexed_file_bytes,
-            FTS_ROUTE,
+        let file_progress = progress.task(discovery.files().len(), "fts files");
+        let file_worker_result = run_fts_file_workers_with_progress(
+            FtsFileWorkerInput {
+                files: discovery.files().to_vec(),
+                active_fts_document_hashes: worker_active_hashes,
+                workspace_id: started_run.workspace_id,
+                run_id: started_run.run_id,
+                analysis_workers,
+                max_indexed_file_bytes,
+                route: FTS_ROUTE,
+            },
+            file_progress.clone(),
         )
-        .await?;
+        .await;
+        file_progress.finish();
+        let (file_results, worker_metrics) = file_worker_result?;
         for result in file_results {
             file_read_elapsed += result.file_read_elapsed;
             file_hash_elapsed += result.file_hash_elapsed;
@@ -269,7 +308,7 @@ impl FtsExtractionRunner {
         deleted_uris.sort();
 
         let tantivy_update_timer = Stopwatch::start_new();
-        let tantivy_index = TantivyFtsIndex::open_or_create(index_path)
+        let tantivy_index = TantivyFtsIndex::open_or_create(request.index_path)
             .map_err(|source| ExtractError::tantivy_search("open fts tantivy index", source))?;
         let tantivy_update_summary = tantivy_index
             .apply_update(TantivyFtsIndexUpdate {
@@ -298,7 +337,8 @@ impl FtsExtractionRunner {
         );
 
         let write_batch_timer = Stopwatch::start_new();
-        store
+        request
+            .store
             .write_fts_batch(batch)
             .await
             .map_err(ExtractError::storage)?;
@@ -334,7 +374,8 @@ impl FtsExtractionRunner {
             "skipped_binary_or_unreadable": summary.skipped_binary_or_unreadable,
         });
         let route_complete_timer = Stopwatch::start_new();
-        store
+        request
+            .store
             .complete_route_status(RouteStatusCompleteInput {
                 workspace_id: started_run.workspace_id,
                 route: FTS_ROUTE,
@@ -351,7 +392,8 @@ impl FtsExtractionRunner {
         benchmark.insert_duration_ms("fts.route_complete", route_complete_timer.elapsed());
 
         let close_stale_timer = Stopwatch::start_new();
-        summary.stale_fts_documents_closed = store
+        summary.stale_fts_documents_closed = request
+            .store
             .close_stale_fts_documents_for_workspace(CloseStaleFtsDocumentsInput {
                 workspace_id: started_run.workspace_id,
                 run_id: started_run.run_id,
@@ -369,7 +411,8 @@ impl FtsExtractionRunner {
         );
 
         let finish_run_timer = Stopwatch::start_new();
-        store
+        request
+            .store
             .finish_run(started_run.run_id, "complete")
             .await
             .map_err(ExtractError::storage)?;

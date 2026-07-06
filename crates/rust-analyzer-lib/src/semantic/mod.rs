@@ -12,6 +12,7 @@ mod file_semantic_work;
 mod loaded_analysis;
 mod lsp_range;
 mod outgoing_calls_for_symbols;
+mod progress_callback;
 mod references_for_symbols;
 mod shared_analysis_host;
 mod shared_analysis_snapshot;
@@ -26,11 +27,14 @@ pub use analysis_worker_handle::AnalysisWorkerHandle;
 pub use analysis_worker_pool::AnalysisWorkerPool;
 pub use document_symbol_items::DocumentSymbolItems;
 pub use document_symbols_for_file::document_symbols_for_file;
-pub use document_symbols_for_files::document_symbols_for_files;
+pub use document_symbols_for_files::{
+    document_symbols_for_files, document_symbols_for_files_with_progress,
+};
 pub use file_semantic_result::FileSemanticResult;
 pub use file_semantic_work::FileSemanticWork;
 pub use loaded_analysis::LoadedAnalysis;
 pub use outgoing_calls_for_symbols::outgoing_calls_for_symbols;
+pub use progress_callback::ProgressCallback;
 pub use references_for_symbols::references_for_symbols;
 pub use shared_analysis_host::SharedAnalysisHost;
 pub use shared_analysis_snapshot::SharedAnalysisSnapshot;

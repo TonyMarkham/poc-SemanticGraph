@@ -7,15 +7,15 @@ use crate::{
         DocumentSymbolExtraction, ExtractedCall, ExtractedReference, GraphLanguage, ProviderId,
         ReferenceBatchExtraction, ReferenceRouteSummary, RouteName, RouteScope,
     },
-    persist::{PersistenceRun, PersistenceSummary, ScopedRoute},
+    persist::{PersistenceRun, PersistenceSummary, ReferenceRouteWriteBatchRequest, ScopedRoute},
 };
 
 use semantic_graph_db_manager::{
-    CloseStaleFileInput, CloseStaleRouteInput, DocumentSymbolWriteBatchCloseStaleRouteInput,
-    DocumentSymbolWriteBatchEdgeEvidenceInput, DocumentSymbolWriteBatchFileInput,
-    DocumentSymbolWriteBatchInput, DocumentSymbolWriteBatchNodeInput,
-    DocumentSymbolWriteBatchObservationInput, DocumentSymbolWriteBatchOccurrenceInput,
-    DocumentSymbolWriteBatchRouteStatusCompleteInput,
+    CloseStaleFileInput, CloseStaleRouteInput, DbWriteProgressCallback,
+    DocumentSymbolWriteBatchCloseStaleRouteInput, DocumentSymbolWriteBatchEdgeEvidenceInput,
+    DocumentSymbolWriteBatchFileInput, DocumentSymbolWriteBatchInput,
+    DocumentSymbolWriteBatchNodeInput, DocumentSymbolWriteBatchObservationInput,
+    DocumentSymbolWriteBatchOccurrenceInput, DocumentSymbolWriteBatchRouteStatusCompleteInput,
     DocumentSymbolWriteBatchRouteStatusStartInput, EdgeEvidenceInput, EdgeInput, FileInput,
     NodeInput, OccurrenceInput, RouteObservationInput, RouteStatusCompleteInput,
     RouteStatusFailInput, RouteStatusStartInput, RouteWriteBatchEdgeEvidenceInput,
@@ -268,6 +268,24 @@ impl ExtractionPersister {
         extraction: &DocumentSymbolBatchExtraction,
         close_stale: bool,
     ) -> ExtractResult<PersistenceSummary> {
+        self.persist_document_symbol_batch_with_write_batch_and_progress(
+            store,
+            workspace_root_uri,
+            extraction,
+            close_stale,
+            None,
+        )
+        .await
+    }
+
+    pub async fn persist_document_symbol_batch_with_write_batch_and_progress(
+        &self,
+        store: &WriteHandle,
+        workspace_root_uri: &str,
+        extraction: &DocumentSymbolBatchExtraction,
+        close_stale: bool,
+        progress: Option<DbWriteProgressCallback>,
+    ) -> ExtractResult<PersistenceSummary> {
         if extraction.extractions.is_empty() {
             return Err(ExtractError::response_shape(
                 extraction.provider.as_str(),
@@ -296,6 +314,7 @@ impl ExtractionPersister {
                 run_id,
                 extraction,
                 close_stale,
+                progress,
             )
             .await;
 
@@ -439,6 +458,22 @@ impl ExtractionPersister {
         workspace_root_uri: &str,
         extraction: &ReferenceBatchExtraction,
     ) -> ExtractResult<PersistenceSummary> {
+        self.persist_reference_batch_with_route_write_batch_and_progress(
+            store,
+            workspace_root_uri,
+            extraction,
+            None,
+        )
+        .await
+    }
+
+    pub async fn persist_reference_batch_with_route_write_batch_and_progress(
+        &self,
+        store: &WriteHandle,
+        workspace_root_uri: &str,
+        extraction: &ReferenceBatchExtraction,
+        progress: Option<DbWriteProgressCallback>,
+    ) -> ExtractResult<PersistenceSummary> {
         let language = document_symbol_batch_language(
             extraction.provider.as_str(),
             "textDocument/references",
@@ -470,6 +505,7 @@ impl ExtractionPersister {
                 run_id,
                 workspace_root_uri,
                 extraction,
+                progress,
             )
             .await;
 
@@ -753,6 +789,7 @@ impl ExtractionPersister {
         run_id: i64,
         workspace_root_uri: &str,
         extraction: &ReferenceBatchExtraction,
+        progress: Option<DbWriteProgressCallback>,
     ) -> ExtractResult<PersistenceSummary> {
         let language = document_symbol_batch_language(
             extraction.provider.as_str(),
@@ -793,15 +830,18 @@ impl ExtractionPersister {
 
         let result = self
             .persist_references_with_route_write_batch_after_scoped_route_started(
-                store,
-                PersistenceRun {
-                    workspace_id,
-                    run_id,
+                ReferenceRouteWriteBatchRequest {
+                    store,
+                    run: PersistenceRun {
+                        workspace_id,
+                        run_id,
+                    },
+                    route: ScopedRoute::workspace(workspace_root_uri),
+                    extraction,
+                    file_ids: &file_ids,
+                    language,
+                    progress,
                 },
-                ScopedRoute::workspace(workspace_root_uri),
-                extraction,
-                &file_ids,
-                language,
             )
             .await;
 
@@ -935,15 +975,18 @@ impl ExtractionPersister {
 
             let result = self
                 .persist_references_with_route_write_batch_after_scoped_route_started(
-                    store,
-                    PersistenceRun {
-                        workspace_id,
-                        run_id,
+                    ReferenceRouteWriteBatchRequest {
+                        store,
+                        run: PersistenceRun {
+                            workspace_id,
+                            run_id,
+                        },
+                        route: ScopedRoute::file(origin_file_uri),
+                        extraction: &filtered_extraction,
+                        file_ids: &file_ids,
+                        language,
+                        progress: None,
                     },
-                    ScopedRoute::file(origin_file_uri),
-                    &filtered_extraction,
-                    &file_ids,
-                    language,
                 )
                 .await;
 
@@ -1316,13 +1359,14 @@ impl ExtractionPersister {
 
     async fn persist_references_with_route_write_batch_after_scoped_route_started(
         &self,
-        store: &WriteHandle,
-        run: PersistenceRun,
-        route: ScopedRoute<'_>,
-        extraction: &ReferenceBatchExtraction,
-        file_ids: &HashMap<String, i64>,
-        language: GraphLanguage,
+        request: ReferenceRouteWriteBatchRequest<'_>,
     ) -> ExtractResult<PersistenceSummary> {
+        let store = request.store;
+        let run = request.run;
+        let route = request.route;
+        let extraction = request.extraction;
+        let file_ids = request.file_ids;
+        let language = request.language;
         let provider = extraction.provider.as_str();
         let route_name = RouteName::references_for_language(language);
         let mut batch = RouteWriteBatchInput::default();
@@ -1430,10 +1474,12 @@ impl ExtractionPersister {
             }
         }
 
-        store
-            .write_route_batch(batch)
-            .await
-            .map_err(ExtractError::storage)?;
+        if let Some(progress) = request.progress {
+            store.write_route_batch_with_progress(batch, progress).await
+        } else {
+            store.write_route_batch(batch).await
+        }
+        .map_err(ExtractError::storage)?;
 
         Ok(summary)
     }
@@ -3387,6 +3433,7 @@ impl ExtractionPersister {
         run_id: i64,
         extraction: &DocumentSymbolBatchExtraction,
         close_stale: bool,
+        progress: Option<DbWriteProgressCallback>,
     ) -> ExtractResult<PersistenceSummary> {
         let mut batch = DocumentSymbolWriteBatchInput::default();
         let mut summary = empty_summary(workspace_id, run_id);
@@ -3402,10 +3449,14 @@ impl ExtractionPersister {
             )?;
         }
 
-        let batch_summary = store
-            .write_document_symbol_batch(batch)
-            .await
-            .map_err(ExtractError::storage)?;
+        let batch_summary = if let Some(progress) = progress {
+            store
+                .write_document_symbol_batch_with_progress(batch, progress)
+                .await
+        } else {
+            store.write_document_symbol_batch(batch).await
+        }
+        .map_err(ExtractError::storage)?;
         summary.stale_nodes_closed = batch_summary.stale_nodes_closed as usize;
         summary.stale_edges_closed = batch_summary.stale_edges_closed as usize;
 

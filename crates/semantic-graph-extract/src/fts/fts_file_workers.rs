@@ -3,9 +3,10 @@ use crate::{
     benchmark::{BenchmarkSummary, Stopwatch},
     document_symbols::paths::file_uri,
     fts::{
-        FtsDiscoveredFile, FtsFileWorkResult, FtsFileWorkerConfig, FtsFileWorkerJoinHandle,
-        FtsFileWorkerMetric, FtsSkipReason,
+        FtsDiscoveredFile, FtsFileWorkResult, FtsFileWorkerConfig, FtsFileWorkerInput,
+        FtsFileWorkerJoinHandle, FtsFileWorkerMetric, FtsSkipReason,
     },
+    progress::ProgressTask,
 };
 
 use semantic_graph_db_manager::{FtsWriteBatchDocumentInput, FtsWriteBatchSeenDocumentInput};
@@ -22,27 +23,22 @@ use std::{
 };
 use tokio::task::JoinError;
 
-pub(crate) async fn run_fts_file_workers(
-    files: Vec<FtsDiscoveredFile>,
-    active_fts_document_hashes: HashMap<String, String>,
-    workspace_id: i64,
-    run_id: i64,
-    analysis_workers: usize,
-    max_indexed_file_bytes: u64,
-    route: &'static str,
+pub(crate) async fn run_fts_file_workers_with_progress(
+    input: FtsFileWorkerInput,
+    progress: ProgressTask,
 ) -> ExtractResult<(Vec<FtsFileWorkResult>, Vec<FtsFileWorkerMetric>)> {
-    if files.is_empty() {
+    if input.files.is_empty() {
         return Ok((Vec::new(), Vec::new()));
     }
 
-    let worker_count = analysis_workers.max(1).min(files.len());
-    let queue = Arc::new(Mutex::new(VecDeque::from(files)));
-    let active_hashes = Arc::new(active_fts_document_hashes);
+    let worker_count = input.analysis_workers.max(1).min(input.files.len());
+    let queue = Arc::new(Mutex::new(VecDeque::from(input.files)));
+    let active_hashes = Arc::new(input.active_fts_document_hashes);
     let worker_config = FtsFileWorkerConfig {
-        workspace_id,
-        run_id,
-        max_indexed_file_bytes,
-        route,
+        workspace_id: input.workspace_id,
+        run_id: input.run_id,
+        max_indexed_file_bytes: input.max_indexed_file_bytes,
+        route: input.route,
     };
     let failed = Arc::new(AtomicBool::new(false));
     let mut handles = Vec::with_capacity(worker_count);
@@ -52,6 +48,7 @@ pub(crate) async fn run_fts_file_workers(
         let worker_active_hashes = Arc::clone(&active_hashes);
         let worker_failed = Arc::clone(&failed);
         let worker_failed_for_result = Arc::clone(&worker_failed);
+        let worker_progress = progress.clone();
         handles.push(tokio::task::spawn_blocking(move || {
             let result = fts_file_worker(
                 worker_index,
@@ -59,6 +56,7 @@ pub(crate) async fn run_fts_file_workers(
                 worker_active_hashes,
                 worker_failed,
                 worker_config,
+                worker_progress,
             );
             if result.is_err() {
                 worker_failed_for_result.store(true, Ordering::SeqCst);
@@ -76,6 +74,7 @@ fn fts_file_worker(
     active_fts_document_hashes: Arc<HashMap<String, String>>,
     failed: Arc<AtomicBool>,
     worker_config: FtsFileWorkerConfig,
+    progress: ProgressTask,
 ) -> ExtractResult<(Vec<FtsFileWorkResult>, FtsFileWorkerMetric)> {
     let timer = Stopwatch::start_new();
     let mut results = Vec::new();
@@ -141,6 +140,7 @@ fn fts_file_worker(
             skipped_binary_or_unreadable += 1;
         }
         results.push(result);
+        progress.tick();
     }
 }
 

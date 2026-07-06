@@ -1,7 +1,7 @@
 use crate::{
     SoulLspConfig, SoulLspLibError, SoulLspLibResult,
     model::{ResolvedReferenceLocation, ResolvedReferenceSet, ResolvedReferenceTarget},
-    semantic::{DocumentSymbolItems, FileSemanticResult, FileSemanticWork},
+    semantic::{DocumentSymbolItems, FileSemanticResult, FileSemanticWork, ProgressCallback},
 };
 
 use indexer::{
@@ -57,12 +57,32 @@ impl LoadedSoulWorkspace {
         &self,
         file_paths: Vec<PathBuf>,
     ) -> SoulLspLibResult<DocumentSymbolItems> {
+        self.document_symbols_for_files_internal(file_paths, None)
+    }
+
+    pub fn document_symbols_for_files_with_progress(
+        &self,
+        file_paths: Vec<PathBuf>,
+        progress: ProgressCallback,
+    ) -> SoulLspLibResult<DocumentSymbolItems> {
+        self.document_symbols_for_files_internal(file_paths, Some(progress))
+    }
+
+    fn document_symbols_for_files_internal(
+        &self,
+        file_paths: Vec<PathBuf>,
+        progress: Option<ProgressCallback>,
+    ) -> SoulLspLibResult<DocumentSymbolItems> {
         file_paths
             .into_iter()
             .map(|file_path| {
                 self.validate_file_path(&file_path)?;
-                self.document_symbols_for_file(&file_path)
-                    .map(|symbols| (file_path, symbols))
+                self.document_symbols_for_file(&file_path).map(|symbols| {
+                    if let Some(progress) = &progress {
+                        progress();
+                    }
+                    (file_path, symbols)
+                })
             })
             .collect()
     }

@@ -3,7 +3,7 @@ use crate::{
     model::{
         ResolvedCallTarget, ResolvedOutgoingCallSet, ResolvedReferenceSet, ResolvedReferenceTarget,
     },
-    semantic::{AnalysisWorker, AnalysisWorkerHandle, DocumentSymbolItems},
+    semantic::{AnalysisWorker, AnalysisWorkerHandle, DocumentSymbolItems, ProgressCallback},
 };
 
 use std::{
@@ -86,11 +86,36 @@ impl AnalysisWorkerPool {
         &self,
         file_paths: Vec<PathBuf>,
     ) -> RustAnalyzerLibResult<DocumentSymbolItems> {
+        self.document_symbols_for_files_internal(file_paths, None)
+            .await
+    }
+
+    pub async fn document_symbols_for_files_with_progress(
+        &self,
+        file_paths: Vec<PathBuf>,
+        progress: ProgressCallback,
+    ) -> RustAnalyzerLibResult<DocumentSymbolItems> {
+        self.document_symbols_for_files_internal(file_paths, Some(progress))
+            .await
+    }
+
+    async fn document_symbols_for_files_internal(
+        &self,
+        file_paths: Vec<PathBuf>,
+        progress: Option<ProgressCallback>,
+    ) -> RustAnalyzerLibResult<DocumentSymbolItems> {
         if file_paths.is_empty() {
             return Ok(Vec::new());
         }
         if self.workers.len() == 1 {
-            return self.workers[0].document_symbols_for_files(file_paths).await;
+            return match progress {
+                Some(progress) => {
+                    self.workers[0]
+                        .document_symbols_for_files_with_progress(file_paths, progress)
+                        .await
+                }
+                None => self.workers[0].document_symbols_for_files(file_paths).await,
+            };
         }
 
         let mut assignments = vec![Vec::new(); self.workers.len()];
@@ -113,8 +138,16 @@ impl AnalysisWorkerPool {
                 .into_iter()
                 .map(|(_index, file_path)| file_path)
                 .collect::<Vec<_>>();
+            let progress = progress.clone();
             handles.push(tokio::spawn(async move {
-                let items = worker.document_symbols_for_files(file_paths).await?;
+                let items = match progress {
+                    Some(progress) => {
+                        worker
+                            .document_symbols_for_files_with_progress(file_paths, progress)
+                            .await?
+                    }
+                    None => worker.document_symbols_for_files(file_paths).await?,
+                };
                 Ok::<_, RustAnalyzerLibError>(
                     indices
                         .into_iter()

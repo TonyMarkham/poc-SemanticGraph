@@ -64,9 +64,16 @@ fn handle_command(loaded: &LoadedAnalysis, command: AnalysisWorkerCommand) {
     match command {
         AnalysisWorkerCommand::DocumentSymbols {
             file_paths,
+            progress,
             response,
         } => {
-            let _send_result = response.send(loaded.document_symbols_for_files(&file_paths));
+            let result = match progress {
+                Some(progress) => {
+                    loaded.document_symbols_for_files_with_progress(&file_paths, progress)
+                }
+                None => loaded.document_symbols_for_files(&file_paths),
+            };
+            let _send_result = response.send(result);
         }
         AnalysisWorkerCommand::References { target, response } => {
             let _send_result = response.send(loaded.references_for_symbol(&target));

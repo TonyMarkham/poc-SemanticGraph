@@ -7,6 +7,7 @@ use crate::{
         ReferenceRouteSummary, RouteName, RouteScope,
     },
     persist::{ExtractionPersister, PersistenceRun, PersistenceSummary},
+    progress::{ProgressReporter, ProgressTask},
     providers::rust_analyzer::RustAnalyzerProvider,
     workspace_extraction::{
         FileRelationContext, FileRelationRouteStart, FileRelationWorkerSummary,
@@ -38,6 +39,23 @@ impl ThreadedWorkspaceExtractionRunner {
         provider: &RustAnalyzerProvider,
         document_request: DocumentSymbolBatchRequest,
         config: ThreadedWorkspaceExtractionConfig,
+    ) -> ExtractResult<WorkspaceExtractionSummary> {
+        Self::run_with_progress(
+            store,
+            provider,
+            document_request,
+            config,
+            ProgressReporter::disabled(),
+        )
+        .await
+    }
+
+    pub async fn run_with_progress(
+        store: &WriteHandle,
+        provider: &RustAnalyzerProvider,
+        document_request: DocumentSymbolBatchRequest,
+        config: ThreadedWorkspaceExtractionConfig,
+        progress: ProgressReporter,
     ) -> ExtractResult<WorkspaceExtractionSummary> {
         let total_timer = Stopwatch::start_new();
         let mut benchmark = BenchmarkSummary::new();
@@ -94,15 +112,21 @@ impl ThreadedWorkspaceExtractionRunner {
         );
 
         let document_symbols_query_timer = Stopwatch::start_new();
-        let document_symbol_items = analysis_pool
-            .document_symbols_for_files(document_request.file_paths.clone())
-            .await
-            .map_err(|source| {
-                ExtractError::rust_analyzer_lib(
-                    "rust-analyzer-lib document_symbols_for_files",
-                    source,
-                )
-            })?;
+        let document_progress = progress.task(document_request.file_paths.len(), "rust symbols");
+        let document_progress_callback: rust_analyzer_lib::ProgressCallback = Arc::new({
+            let document_progress = document_progress.clone();
+            move || document_progress.tick()
+        });
+        let document_symbol_items_result = analysis_pool
+            .document_symbols_for_files_with_progress(
+                document_request.file_paths.clone(),
+                document_progress_callback,
+            )
+            .await;
+        document_progress.finish();
+        let document_symbol_items = document_symbol_items_result.map_err(|source| {
+            ExtractError::rust_analyzer_lib("rust-analyzer-lib document_symbols_for_files", source)
+        })?;
         benchmark.insert_duration_ms(
             "threaded.document_symbols_query",
             document_symbols_query_timer.elapsed(),
@@ -259,12 +283,15 @@ impl ThreadedWorkspaceExtractionRunner {
             };
 
             let relations_timer = Stopwatch::start_new();
+            let relation_progress = progress.task(file_work_items.len(), "rust relations");
             let relation_result = run_file_relation_workers(
                 relation_context.clone(),
                 file_work_items,
                 worker_handles,
+                relation_progress.clone(),
             )
             .await;
+            relation_progress.finish();
             benchmark.insert_duration_ms("threaded.file_relations", relations_timer.elapsed());
 
             match relation_result {
@@ -360,6 +387,7 @@ async fn run_file_relation_workers(
     context: FileRelationContext,
     file_work_items: Vec<rust_analyzer_lib::FileSemanticWork>,
     worker_handles: Vec<rust_analyzer_lib::AnalysisWorkerHandle>,
+    progress: ProgressTask,
 ) -> ExtractResult<FileRelationWorkerSummary> {
     let queue = Arc::new(Mutex::new(VecDeque::from(file_work_items)));
     let failed = Arc::new(AtomicBool::new(false));
@@ -374,8 +402,11 @@ async fn run_file_relation_workers(
         let worker_queue = Arc::clone(&queue);
         let worker_failed = Arc::clone(&failed);
         let worker_failed_for_result = Arc::clone(&worker_failed);
+        let worker_progress = progress.clone();
         handles.push(tokio::spawn(async move {
-            let result = file_relation_worker(worker_context, worker_queue, worker_failed).await;
+            let result =
+                file_relation_worker(worker_context, worker_queue, worker_failed, worker_progress)
+                    .await;
             if result.is_err() {
                 worker_failed_for_result.store(true, Ordering::SeqCst);
             }
@@ -390,6 +421,7 @@ async fn file_relation_worker(
     context: FileRelationContext,
     queue: Arc<Mutex<VecDeque<rust_analyzer_lib::FileSemanticWork>>>,
     failed: Arc<AtomicBool>,
+    progress: ProgressTask,
 ) -> ExtractResult<FileRelationWorkerSummary> {
     let mut summary = empty_file_relation_worker_summary(
         context.workspace_id,
@@ -417,6 +449,7 @@ async fn file_relation_worker(
             .map_err(|source| {
                 ExtractError::rust_analyzer_lib("rust-analyzer-lib file_semantic_work", source)
             })?;
+        progress.tick();
 
         let reference_target_count = file_result.reference_sets.len();
         if reference_target_count > 0 {

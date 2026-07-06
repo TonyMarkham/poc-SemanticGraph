@@ -7,7 +7,7 @@ use crate::{
         analysis_context::AnalysisContext, analysis_path_index::AnalysisPathIndex,
         document_symbols_for_file::document_symbols_for_path,
         file_semantic_result::FileSemanticResult, file_semantic_work::FileSemanticWork,
-        outgoing_calls_for_symbols::outgoing_calls_for_target,
+        outgoing_calls_for_symbols::outgoing_calls_for_target, progress_callback::ProgressCallback,
         references_for_symbols::references_for_target,
     },
 };
@@ -36,11 +36,31 @@ impl SharedAnalysisSnapshot {
         &self,
         file_paths: &[PathBuf],
     ) -> RustAnalyzerLibResult<Vec<(PathBuf, Vec<DocumentSymbol>)>> {
+        self.document_symbols_for_files_internal(file_paths, None)
+    }
+
+    pub fn document_symbols_for_files_with_progress(
+        &self,
+        file_paths: &[PathBuf],
+        progress: ProgressCallback,
+    ) -> RustAnalyzerLibResult<Vec<(PathBuf, Vec<DocumentSymbol>)>> {
+        self.document_symbols_for_files_internal(file_paths, Some(progress))
+    }
+
+    fn document_symbols_for_files_internal(
+        &self,
+        file_paths: &[PathBuf],
+        progress: Option<ProgressCallback>,
+    ) -> RustAnalyzerLibResult<Vec<(PathBuf, Vec<DocumentSymbol>)>> {
         file_paths
             .iter()
             .map(|file_path| {
-                document_symbols_for_path(self, file_path)
-                    .map(|symbols| (file_path.clone(), symbols))
+                document_symbols_for_path(self, file_path).map(|symbols| {
+                    if let Some(progress) = &progress {
+                        progress();
+                    }
+                    (file_path.clone(), symbols)
+                })
             })
             .collect()
     }

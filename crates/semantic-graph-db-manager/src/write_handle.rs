@@ -1,10 +1,10 @@
 use crate::{
     ActiveFileSymbols, CloseStaleFileInput, CloseStaleFtsDocumentsInput, CloseStaleRouteInput,
-    DbManagerError, DbManagerResult, DemoSeedSummary, DocumentSymbolWriteBatchInput,
-    DocumentSymbolWriteBatchSummary, EdgeEvidenceInput, EdgeInput, FileInput, FtsWriteBatchInput,
-    NodeInput, OccurrenceInput, RouteObservationInput, RouteStatusCompleteInput,
-    RouteStatusFailInput, RouteStatusStartInput, RouteWriteBatchInput, StaleFileSummary,
-    WriteProgress, WriteSummary, commands::Commands,
+    DbManagerError, DbManagerResult, DbWriteProgressCallback, DemoSeedSummary,
+    DocumentSymbolWriteBatchInput, DocumentSymbolWriteBatchSummary, EdgeEvidenceInput, EdgeInput,
+    FileInput, FtsWriteBatchInput, NodeInput, OccurrenceInput, RouteObservationInput,
+    RouteStatusCompleteInput, RouteStatusFailInput, RouteStatusStartInput, RouteWriteBatchInput,
+    StaleFileSummary, WriteProgress, WriteSummary, commands::Commands,
 };
 
 use std::collections::HashMap;
@@ -281,9 +281,29 @@ impl WriteHandle {
     }
 
     pub async fn write_route_batch(&self, input: RouteWriteBatchInput) -> DbManagerResult<()> {
+        self.write_route_batch_internal(input, None).await
+    }
+
+    pub async fn write_route_batch_with_progress(
+        &self,
+        input: RouteWriteBatchInput,
+        progress: DbWriteProgressCallback,
+    ) -> DbManagerResult<()> {
+        self.write_route_batch_internal(input, Some(progress)).await
+    }
+
+    async fn write_route_batch_internal(
+        &self,
+        input: RouteWriteBatchInput,
+        progress: Option<DbWriteProgressCallback>,
+    ) -> DbManagerResult<()> {
         let (response, receiver) = oneshot::channel();
         self.sender
-            .send(Commands::WriteRouteBatch { input, response })
+            .send(Commands::WriteRouteBatch {
+                input,
+                progress,
+                response,
+            })
             .await?;
         receiver.await?
     }
@@ -292,9 +312,30 @@ impl WriteHandle {
         &self,
         input: DocumentSymbolWriteBatchInput,
     ) -> DbManagerResult<DocumentSymbolWriteBatchSummary> {
+        self.write_document_symbol_batch_internal(input, None).await
+    }
+
+    pub async fn write_document_symbol_batch_with_progress(
+        &self,
+        input: DocumentSymbolWriteBatchInput,
+        progress: DbWriteProgressCallback,
+    ) -> DbManagerResult<DocumentSymbolWriteBatchSummary> {
+        self.write_document_symbol_batch_internal(input, Some(progress))
+            .await
+    }
+
+    async fn write_document_symbol_batch_internal(
+        &self,
+        input: DocumentSymbolWriteBatchInput,
+        progress: Option<DbWriteProgressCallback>,
+    ) -> DbManagerResult<DocumentSymbolWriteBatchSummary> {
         let (response, receiver) = oneshot::channel();
         self.sender
-            .send(Commands::WriteDocumentSymbolBatch { input, response })
+            .send(Commands::WriteDocumentSymbolBatch {
+                input,
+                progress,
+                response,
+            })
             .await?;
         receiver.await?
     }

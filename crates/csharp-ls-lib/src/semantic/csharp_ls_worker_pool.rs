@@ -1,4 +1,6 @@
-use crate::{CSharpLsLibError, CSharpLsLibResult, model::FileSemanticWork};
+use crate::{
+    CSharpLsLibError, CSharpLsLibResult, model::FileSemanticWork, semantic::ProgressCallback,
+};
 
 use std::{
     collections::HashMap,
@@ -58,6 +60,24 @@ impl CSharpLsWorkerPool {
         &mut self,
         file_paths: Vec<PathBuf>,
     ) -> CSharpLsLibResult<Vec<(PathBuf, Vec<lsp_types::DocumentSymbol>)>> {
+        self.document_symbols_for_files_internal(file_paths, None)
+            .await
+    }
+
+    pub async fn document_symbols_for_files_with_progress(
+        &mut self,
+        file_paths: Vec<PathBuf>,
+        progress: ProgressCallback,
+    ) -> CSharpLsLibResult<Vec<(PathBuf, Vec<lsp_types::DocumentSymbol>)>> {
+        self.document_symbols_for_files_internal(file_paths, Some(progress))
+            .await
+    }
+
+    async fn document_symbols_for_files_internal(
+        &mut self,
+        file_paths: Vec<PathBuf>,
+        progress: Option<ProgressCallback>,
+    ) -> CSharpLsLibResult<Vec<(PathBuf, Vec<lsp_types::DocumentSymbol>)>> {
         let worker_index = 0;
         let worker = self.workers.get_mut(worker_index).ok_or_else(|| {
             CSharpLsLibError::response_shape(
@@ -65,9 +85,18 @@ impl CSharpLsWorkerPool {
                 "worker pool contained no workers",
             )
         })?;
-        let results = worker
-            .document_symbols_for_files(file_paths.clone())
-            .await?;
+        let results = match progress {
+            Some(progress) => {
+                worker
+                    .document_symbols_for_files_with_progress(file_paths.clone(), progress)
+                    .await?
+            }
+            None => {
+                worker
+                    .document_symbols_for_files(file_paths.clone())
+                    .await?
+            }
+        };
         for file_path in file_paths {
             self.opened_file_workers.insert(file_path, worker_index);
         }
@@ -79,11 +108,32 @@ impl CSharpLsWorkerPool {
         &mut self,
         work_items: Vec<FileSemanticWork>,
     ) -> CSharpLsLibResult<Vec<crate::model::FileSemanticResult>> {
+        self.file_semantic_work_items_internal(work_items, None)
+            .await
+    }
+
+    pub async fn file_semantic_work_items_with_progress(
+        &mut self,
+        work_items: Vec<FileSemanticWork>,
+        progress: ProgressCallback,
+    ) -> CSharpLsLibResult<Vec<crate::model::FileSemanticResult>> {
+        self.file_semantic_work_items_internal(work_items, Some(progress))
+            .await
+    }
+
+    async fn file_semantic_work_items_internal(
+        &mut self,
+        work_items: Vec<FileSemanticWork>,
+        progress: Option<ProgressCallback>,
+    ) -> CSharpLsLibResult<Vec<crate::model::FileSemanticResult>> {
         let mut results = Vec::with_capacity(work_items.len());
         for (index, work) in work_items.into_iter().enumerate() {
             let worker_index = self.worker_index_for_file(&work.file_path, index);
             let file_path = work.file_path.clone();
             results.push(self.workers[worker_index].file_semantic_work(work).await?);
+            if let Some(progress) = &progress {
+                progress();
+            }
             self.opened_file_workers.insert(file_path, worker_index);
         }
 
