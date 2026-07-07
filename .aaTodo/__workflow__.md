@@ -9,7 +9,7 @@ I want you to Audit the graphify repo in this repo's submodules with the followi
 - It is my intention to use `csharp-language-server` (source in this repo's submodules) as an LSP for building the semantic model for C# solutions
 ```
 
-```tex
+```text
 When running `semantic-graph-extract rust-workspace --symbols` can we calculate a file hash per file and save it to the db
 
 Then, when we do subsequent passes, we can test the current file hash against the db hash. If same, exclude that file from any further extraction work
@@ -35,8 +35,14 @@ Create VS-1500.md as the implementation plan for Phase 5 from the VS-100.md bein
 
 ---
 
+## Init
+
 ```text
-/goal implement VS-2000.md
+/goal Implement `VS-20.md` into a COMPLETE, professional and production-ready implementation.
+
+**CRITICAL** Be sure to use all rust coding directives found in AGENTS.md
+
+Feel free to create a temporary worktree if you want to experiment.
 ```
 
 ---

@@ -40,6 +40,26 @@ fn progress_is_global_before_subcommand() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+fn verbose_defaults_to_disabled() -> Result<(), Box<dyn Error>> {
+    let cli = Cli::try_parse_from(["semantic-graph-extract", "fts"])?;
+
+    assert!(!cli.verbose);
+    Ok(())
+}
+
+#[test]
+fn verbose_is_global_before_subcommand() -> Result<(), Box<dyn Error>> {
+    let cli = Cli::try_parse_from(["semantic-graph-extract", "--verbose", "rust-workspace"])?;
+
+    assert!(cli.verbose);
+    match cli.command {
+        Command::RustWorkspace { .. } => {}
+        _ => return Err("expected rust-workspace command".into()),
+    }
+    Ok(())
+}
+
+#[test]
 fn fts_defaults_to_all_text_files() -> Result<(), Box<dyn Error>> {
     let cli = Cli::try_parse_from(["semantic-graph-extract", "fts"])?;
 

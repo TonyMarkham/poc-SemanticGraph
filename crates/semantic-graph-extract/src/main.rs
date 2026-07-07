@@ -58,6 +58,7 @@ async fn main() {
 
 async fn run() -> ExtractResult<()> {
     let cli = Cli::parse();
+    let verbose = cli.verbose;
     let config = cli.config;
     let progress = ProgressReporter::stderr(cli.progress);
 
@@ -118,7 +119,9 @@ async fn run() -> ExtractResult<()> {
             summary.benchmark = benchmark;
 
             print_fts_summary(&summary);
-            print_benchmark_summary(&summary.benchmark);
+            if verbose {
+                print_benchmark_summary(&summary.benchmark);
+            }
         }
         Command::RustFile {
             db,
@@ -208,7 +211,9 @@ async fn run() -> ExtractResult<()> {
             .await?;
 
             print_rust_route_batch_summary("crate", routes, &summary);
-            print_benchmark_summary(&summary.benchmark);
+            if verbose {
+                print_benchmark_summary(&summary.benchmark);
+            }
         }
         Command::RustWorkspace {
             db,
@@ -243,7 +248,9 @@ async fn run() -> ExtractResult<()> {
             .await?;
 
             print_rust_route_batch_summary("workspace", routes, &summary);
-            print_benchmark_summary(&summary.benchmark);
+            if verbose {
+                print_benchmark_summary(&summary.benchmark);
+            }
         }
         Command::CSharpFile {
             db,
@@ -386,7 +393,9 @@ async fn run() -> ExtractResult<()> {
             .await?;
 
             print_csharp_route_batch_summary("project", routes, &summary);
-            print_benchmark_summary(&summary.benchmark);
+            if verbose {
+                print_benchmark_summary(&summary.benchmark);
+            }
         }
         Command::CSharpSolution {
             db,
@@ -433,7 +442,9 @@ async fn run() -> ExtractResult<()> {
             .await?;
 
             print_csharp_route_batch_summary("solution", routes, &summary);
-            print_benchmark_summary(&summary.benchmark);
+            if verbose {
+                print_benchmark_summary(&summary.benchmark);
+            }
         }
         Command::SoulFile {
             db,
@@ -502,7 +513,9 @@ async fn run() -> ExtractResult<()> {
             .await?;
 
             print_soul_route_batch_summary("workspace", routes, &summary);
-            print_benchmark_summary(&summary.benchmark);
+            if verbose {
+                print_benchmark_summary(&summary.benchmark);
+            }
         }
     }
 

@@ -12,6 +12,9 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub progress: bool,
 
+    #[arg(long, global = true)]
+    pub verbose: bool,
+
     #[command(subcommand)]
     pub command: Command,
 }
